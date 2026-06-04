@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package rag;
+
+// Core retrieval types shared across the RAG service.
+
+message ChunkResult {
+  string project_id = 1;
+  string user_id = 2;
+  string kb_id = 3;
+  string doc_id = 4;
+  string chunk_id = 5;
+  int32 chunk_index = 6;
+  string text = 7;
+  double score = 8;
+  map<string, string> metadata = 9;
+}
+
+message SearchRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string query = 3;
+  repeated string kb_ids = 4;
+  bool include_shared = 5;
+}
+
+message SearchResponse {
+  repeated ChunkResult chunks = 1;
+  int64 elapsed_ms = 2;
+  bool cache_hit = 3;
+}
+
+message IngestRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string kb_id = 3;
+  string doc_id = 4;
+  string source_uri = 5;
+  string content_type = 6;
+  map<string, string> metadata = 7;
+}
+
+message IngestResponse {
+  string job_id = 1;
+  string status = 2;
+}
+
+message GetIngestJobStatusRequest {
+  string job_id = 1;
+}
+
+message GetIngestJobStatusResponse {
+  string job_id = 1;
+  string status = 2;
+  string error = 3;
+  string doc_id = 4;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status = 1;
+  map<string, string> components = 2;
+}
+
+message GenerateRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string query = 3;
+  repeated ChunkResult chunks = 4;
+  string openrouter_api_key = 5;
+  string model = 6;
+}
+
+message GenerateResponse {
+  string response = 1;
+  bool cache_hit = 2;
+}
+
+service RagService {
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc Ingest(IngestRequest) returns (IngestResponse);
+  rpc GetIngestJobStatus(GetIngestJobStatusRequest) returns (GetIngestJobStatusResponse);
+  rpc Generate(GenerateRequest) returns (GenerateResponse);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}

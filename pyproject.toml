@@ -1,0 +1,25 @@
+[project]
+name = "qdrant-rag-server"
+version = "0.1.0"
+description = "Async multi-tenant RAG service with Qdrant and OpenRouter"
+requires-python = ">=3.12"
+dependencies = [
+    "grpcio>=1.60",
+    "grpcio-tools>=1.60",
+    "qdrant-client>=1.7",
+    "sentence-transformers>=2.7",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.setuptools.packages.find]
+include = ["rag_server*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
