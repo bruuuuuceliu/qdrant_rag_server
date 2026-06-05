@@ -9,22 +9,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from qdrant_client import models as qdrant_models
-
 from rag_server.gateway.handler import SearchPlan, IngestPlan
 from rag_server.core.models import (
     BaseChunkPayload,
+    BaseProjectConfig,
     BaseRetrievalFilter,
     IngestJobStatus,
     SHARED_USER_ID,
 )
-from rag_server.services.vector_store import QdrantStore
+from rag_server.services.vector_store import QdrantStore, models as qdrant_models
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +43,20 @@ class SearchResult:
 class IngestResult:
     job_id: str
     status: IngestJobStatus
+    doc_id: str = ""
+    error: str | None = None
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
 
 
 @dataclass
 class GenerateResult:
     response: str
     cache_hit: bool
+
+
+class GenerationUnavailableError(RuntimeError):
+    """Raised when answer generation is disabled for this deployment."""
 
 
 def _make_search_cache_key(plan: SearchPlan) -> str:
@@ -80,7 +87,8 @@ class RagEngine:
     def __init__(
         self,
         *,
-        embed_fn: Any,
+        embedding_provider: Any = None,
+        embed_fn: Any = None,
         qdrant_store: QdrantStore,
         rerank_fn: Any = None,
         tier1_cache: Any = None,
@@ -91,7 +99,9 @@ class RagEngine:
         object_storage: Any = None,
         ingest_worker_count: int = 4,
     ) -> None:
-        self._embed_fn = embed_fn
+        if embedding_provider is None and embed_fn is None:
+            raise ValueError("embedding_provider is required")
+        self._embedding_provider = embedding_provider if embedding_provider is not None else embed_fn
         self._qdrant_store = qdrant_store
         self._rerank_fn = rerank_fn
         self._tier1_cache = tier1_cache
@@ -108,8 +118,7 @@ class RagEngine:
         ]
 
     async def search(self, plan: SearchPlan) -> SearchResult:
-        import time as _time
-        start_ns = _time.monotonic_ns()
+        start_ns = time.monotonic_ns()
 
         if self._metrics is not None:
             self._metrics.record_search_request()
@@ -121,11 +130,13 @@ class RagEngine:
                 plan.config.project_id, cache_key
             )
             if cached is not None:
+                cached = dict(cached)
                 cached["cache_hit"] = True
                 if self._metrics is not None:
                     self._metrics.record_search_cache_hit()
-                    latency_ms = (_time.monotonic_ns() - start_ns) / 1e6
+                    latency_ms = (time.monotonic_ns() - start_ns) / 1e6
                     self._metrics.record_search_latency(latency_ms)
+                cached["elapsed_ms"] = max(1, _elapsed_ms(start_ns))
                 return SearchResult(**cached)
 
         config = plan.config
@@ -134,7 +145,7 @@ class RagEngine:
             config.retrieval_config.get("candidate_count", DEFAULT_CANDIDATE_COUNT)
         )
 
-        query_vector = await self._embed_fn(plan.request.query)
+        query_vector = await _encode_query(self._embedding_provider, plan.request.query)
 
         qdrant_filter = _build_qdrant_filter(plan.retrieval_filter)
 
@@ -166,7 +177,8 @@ class RagEngine:
             chunk["score"] = score
             chunks.append(chunk)
 
-        result = SearchResult(chunks=chunks, cache_hit=False)
+        elapsed_ms = max(1, _elapsed_ms(start_ns))
+        result = SearchResult(chunks=chunks, elapsed_ms=elapsed_ms, cache_hit=False)
 
         if self._tier1_cache is not None:
             await self._tier1_cache.set(
@@ -176,7 +188,7 @@ class RagEngine:
             )
 
         if self._metrics is not None:
-            latency_ms = (_time.monotonic_ns() - start_ns) / 1e6
+            latency_ms = (time.monotonic_ns() - start_ns) / 1e6
             self._metrics.record_search_latency(latency_ms)
 
         return result
@@ -193,6 +205,9 @@ class RagEngine:
     ) -> GenerateResult:
         if self._metrics is not None:
             self._metrics.record_generate_request()
+
+        if self._openrouter is None:
+            raise GenerationUnavailableError("generation is disabled for this deployment")
 
         cache_key = _make_response_cache_key(
             project_id, user_id, query, chunks
@@ -233,11 +248,17 @@ class RagEngine:
 
     async def schedule_ingest(self, plan: IngestPlan) -> IngestResult:
         job_id = str(uuid.uuid4())
-        result = IngestResult(job_id=job_id, status=IngestJobStatus.PENDING)
+        result = IngestResult(
+            job_id=job_id,
+            status=IngestJobStatus.PENDING,
+            doc_id=plan.request.doc_id,
+        )
         if self._metrics is not None:
             self._metrics.record_ingest_job()
         self._ingest_status[job_id] = result
         await self._ingest_queue.put((job_id, plan))
+        if self._metrics is not None:
+            self._metrics.set_queue_depth(self._ingest_queue.qsize())
         return result
 
     async def get_ingest_status(self, job_id: str) -> IngestResult | None:
@@ -253,18 +274,27 @@ class RagEngine:
             result = self._ingest_status.get(job_id)
             if result is not None:
                 result.status = IngestJobStatus.RUNNING
+                result.updated_at = time.time()
 
             try:
                 await self._run_ingest(job_id, plan)
                 if result is not None:
                     result.status = IngestJobStatus.COMPLETED
+                    result.error = None
+                    result.updated_at = time.time()
                 await self._invalidate_caches(plan)
             except Exception as exc:
                 logger.exception("ingest job %s failed", job_id)
                 if result is not None:
                     result.status = IngestJobStatus.FAILED
+                    result.error = str(exc)
+                    result.updated_at = time.time()
                 if self._metrics is not None:
                     self._metrics.record_ingest_job_failed()
+            finally:
+                self._ingest_queue.task_done()
+                if self._metrics is not None:
+                    self._metrics.set_queue_depth(self._ingest_queue.qsize())
 
     async def _run_ingest(self, job_id: str, plan: IngestPlan) -> None:
         adapter = plan.adapter
@@ -293,7 +323,7 @@ class RagEngine:
             return
 
         texts = [chunk.text for chunk in chunks]
-        vectors = await self._embed_fn.encode_batch(texts)
+        vectors = await _encode_batch(self._embedding_provider, texts)
 
         payloads = [
             await adapter.build_payload(chunk)
@@ -325,12 +355,19 @@ class RagEngine:
     async def delete_document(
         self,
         *,
-        project_id: str,
+        config: BaseProjectConfig,
         user_id: str,
+        kb_id: str,
         doc_id: str,
-        collection_name: str,
     ) -> None:
-        await self._qdrant_store.delete_document(collection_name, doc_id)
+        project_id = config.project_id
+        await self._qdrant_store.delete_document(
+            collection_name=config.collection_name,
+            project_id=project_id,
+            user_id=user_id,
+            kb_id=kb_id,
+            doc_id=doc_id,
+        )
 
         if self._object_storage is not None:
             from rag_server.storage.base import make_storage_key
@@ -428,3 +465,21 @@ def _build_qdrant_filter(
             )
 
     return qdrant_models.Filter(must=must)
+
+
+def _elapsed_ms(start_ns: int) -> int:
+    return int((time.monotonic_ns() - start_ns) / 1e6)
+
+
+async def _encode_query(embedding_provider: Any, text: str) -> list[float]:
+    if hasattr(embedding_provider, "encode"):
+        return await embedding_provider.encode(text)
+    if callable(embedding_provider):
+        return await embedding_provider(text)
+    raise TypeError("embedding_provider must expose encode()")
+
+
+async def _encode_batch(embedding_provider: Any, texts: list[str]) -> list[list[float]]:
+    if hasattr(embedding_provider, "encode_batch"):
+        return await embedding_provider.encode_batch(texts)
+    raise TypeError("embedding_provider must expose encode_batch()")

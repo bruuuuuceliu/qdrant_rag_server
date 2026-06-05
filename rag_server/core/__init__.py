@@ -7,6 +7,8 @@ from rag_server.core.models import (
     BaseProjectConfig,
     BaseQueryScope,
     BaseRetrievalFilter,
+    DEFAULT_KB_ID,
     IngestJobStatus,
     SHARED_USER_ID,
+    Visibility,
 )

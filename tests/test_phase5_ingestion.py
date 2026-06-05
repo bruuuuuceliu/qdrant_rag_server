@@ -16,6 +16,7 @@ from rag_server.storage import (
 )
 from rag_server.engine import RagEngine
 from rag_server.core.models import BaseDocument, BaseChunk
+from rag_server.core.models import BaseProjectConfig
 from rag_server.adapters import ProjectAdapter
 
 
@@ -146,14 +147,28 @@ class EngineIngestWithStorageTest(unittest.IsolatedAsyncioTestCase):
             object_storage=storage,
         )
 
-        await engine.delete_document(
+        config = BaseProjectConfig(
             project_id="p1",
+            project_type="test",
+            active_embedding_version="v1",
+            embedding_model="bge-base",
+            reranker_model="bge-reranker-base",
+        )
+        await engine.delete_document(
+            config=config,
             user_id="u1",
+            kb_id="kb_a",
             doc_id="d1",
-            collection_name="rag_p1_v1",
         )
 
         self.assertFalse(await storage.exists(storage_key))
+        engine._qdrant_store.delete_document.assert_called_once_with(
+            collection_name="rag_p1_v1",
+            project_id="p1",
+            user_id="u1",
+            kb_id="kb_a",
+            doc_id="d1",
+        )
 
         await engine.shutdown()
 

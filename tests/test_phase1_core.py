@@ -23,6 +23,8 @@ from rag_server.core.models import (
     BaseProjectConfig,
     BaseQueryScope,
     BaseRetrievalFilter,
+    DEFAULT_KB_ID,
+    Visibility,
 )
 
 
@@ -73,6 +75,39 @@ class ModelsTest(unittest.TestCase):
 
         self.assertEqual(retrieval_filter.allowed_user_ids, ("user_a",))
 
+    def test_blank_kb_id_defaults_to_shared_default(self) -> None:
+        document = BaseDocument(
+            project_id="project_a",
+            user_id="user_a",
+            kb_id=" ",
+            doc_id="doc_a",
+            source_uri="s3://doc",
+            content_type="text/plain",
+        )
+
+        chunk = BaseChunk(
+            project_id="project_a",
+            user_id="user_a",
+            kb_id="",
+            doc_id="doc_a",
+            chunk_id="chunk_a",
+            chunk_index=0,
+            text="hello",
+        )
+
+        self.assertEqual(document.kb_id, DEFAULT_KB_ID)
+        self.assertEqual(chunk.kb_id, DEFAULT_KB_ID)
+        self.assertEqual(BaseChunkPayload.from_chunk(chunk).kb_id, DEFAULT_KB_ID)
+
+    def test_blank_search_kb_ids_are_ignored(self) -> None:
+        scope = BaseQueryScope(
+            project_id="project_a",
+            user_id="user_a",
+            kb_ids=(" ", "", "kb_a"),
+        )
+
+        self.assertEqual(scope.kb_ids, ("kb_a",))
+
     def test_chunk_payload_converts_to_qdrant_payload(self) -> None:
         chunk = BaseChunk(
             project_id="project_a",
@@ -89,7 +124,46 @@ class ModelsTest(unittest.TestCase):
 
         self.assertEqual(payload["project_id"], "project_a")
         self.assertEqual(payload["user_id"], "user_a")
+        self.assertEqual(payload["data_type"], "document")
+        self.assertEqual(payload["visibility"], "private")
+        self.assertEqual(payload["chunker_version"], "v1")
         self.assertEqual(payload["metadata"], {"section": "intro"})
+
+    def test_chunk_payload_preserves_text_first_fields(self) -> None:
+        chunk = BaseChunk(
+            project_id="project_a",
+            user_id="user_a",
+            kb_id="kb_a",
+            doc_id="run_1",
+            chunk_id="run_1:0",
+            chunk_index=0,
+            text="User ran 5.2 km.",
+            data_type="running_record",
+            visibility=Visibility.SHARED,
+            content_hash="abc123",
+            embedding_version="embed_v2",
+            chunker_version="chunk_v3",
+        )
+
+        payload = BaseChunkPayload.from_chunk(chunk).to_qdrant_payload()
+
+        self.assertEqual(payload["data_type"], "running_record")
+        self.assertEqual(payload["visibility"], "shared")
+        self.assertEqual(payload["content_hash"], "abc123")
+        self.assertEqual(payload["embedding_version"], "embed_v2")
+        self.assertEqual(payload["chunker_version"], "chunk_v3")
+
+    def test_invalid_visibility_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "visibility must be one of"):
+            BaseDocument(
+                project_id="project_a",
+                user_id="user_a",
+                kb_id="kb_a",
+                doc_id="doc_a",
+                source_uri="s3://doc",
+                content_type="text/plain",
+                visibility="public",
+            )
 
     def test_chunk_requires_non_negative_index(self) -> None:
         with self.assertRaisesRegex(ValueError, "chunk_index must be non-negative"):
@@ -259,4 +333,3 @@ class DummyAdapter(ProjectAdapter):
 
 if __name__ == "__main__":
     unittest.main()
-

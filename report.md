@@ -403,3 +403,63 @@ Safe project/user-scoped ingest, search, delete, and raw document backup.
 ```
 
 Once that is reliable, future capabilities can be added naturally.
+
+## 2026-06-05 Source Review Addendum
+
+I re-read the related implementation files before updating the documentation:
+
+```text
+rag_server/core/models.py
+rag_server/adapters/base.py
+rag_server/adapters/website.py
+rag_server/config/repository.py
+rag_server/gateway/handler.py
+rag_server/engine/engine.py
+rag_server/services/vector_store.py
+rag_server/services/cache.py
+rag_server/services/embedding.py
+rag_server/services/reranker.py
+rag_server/services/generation.py
+rag_server/storage/base.py
+rag_server/storage/memory.py
+rag_server/storage/filesystem.py
+rag_server/storage/s3.py
+rag_server/versioning/manager.py
+rag_server/health/health.py
+rag_server/grpc/server.py
+proto/rag_service.proto
+tests/test_phase*_*.py
+```
+
+### Confirmed By Code
+
+- The adapter boundary is real and worth preserving.
+- The gateway rejects raw client filters for search and builds server-side scope.
+- Qdrant filters include `project_id`, allowed `user_id` values, optional `kb_id`, and optional `doc_id`.
+- Query-time text comes from Qdrant payloads, not object storage.
+- Embedding and reranking use executor-backed async wrappers.
+- Tier-1 retrieval cache and Tier-2 SQLite response cache exist.
+- Object storage has memory, filesystem, and S3-compatible implementations.
+- gRPC delegates to gateway and engine rather than embedding logic directly in transport code.
+
+### Still Confirmed As Gaps
+
+- `BaseDocument`, `BaseChunk`, and `BaseChunkPayload` do not yet have `data_type`, `visibility`, `content_hash`, `embedding_version`, or `chunker_version` fields.
+- `QdrantStore.upsert()` still uses `payload.chunk_id` as point ID.
+- `QdrantStore.delete_document()` still filters only by `doc_id`.
+- `RagEngine._ingest_status` is in memory, and `_ingest_queue` is unbounded.
+- Ingest failures set status to `FAILED` but do not preserve the exception text in a durable job record.
+- Raw storage still depends on `document.metadata["raw_text"]`.
+- `make_storage_key()` is only `project_id/user_id/doc_id`; it does not include `kb_id` or `content_hash`.
+- `WebsiteProjectAdapter.get_config()` still returns hard-coded config.
+- `IngestRequest` in `proto/rag_service.proto` has no first-class raw content field.
+- `Generate` exists as a server endpoint, but it bypasses adapter prompt builders and should remain experimental.
+- `rag_server/__init__.py` eagerly imports heavy optional modules.
+
+### Documentation Corrections Made
+
+- `progress.md` now describes the project as a prototype/core scaffold rather than `~97%` production-complete.
+- `README.md` now explains the actual architecture, known gaps, and development commands.
+- `report.md` now records this source-backed addendum.
+
+No code changes were made during this documentation update.

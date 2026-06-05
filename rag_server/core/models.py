@@ -8,6 +8,7 @@ from typing import Any
 
 
 SHARED_USER_ID = "__shared__"
+DEFAULT_KB_ID = "default"
 
 
 class IngestJobStatus(StrEnum):
@@ -17,6 +18,13 @@ class IngestJobStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class Visibility(StrEnum):
+    """Minimal payload visibility marker."""
+
+    PRIVATE = "private"
+    SHARED = "shared"
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +60,7 @@ class BaseQueryScope:
     def __post_init__(self) -> None:
         _require_non_empty("project_id", self.project_id)
         _require_non_empty("user_id", self.user_id)
-        object.__setattr__(self, "kb_ids", tuple(self.kb_ids))
+        object.__setattr__(self, "kb_ids", _normalize_kb_ids(self.kb_ids))
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +74,7 @@ class BaseRetrievalFilter:
     def __post_init__(self) -> None:
         _require_non_empty("project_id", self.project_id)
         _require_non_empty("user_id", self.user_id)
-        object.__setattr__(self, "kb_ids", tuple(self.kb_ids))
+        object.__setattr__(self, "kb_ids", _normalize_kb_ids(self.kb_ids))
         object.__setattr__(self, "doc_ids", tuple(self.doc_ids))
 
     @classmethod
@@ -100,15 +108,23 @@ class BaseDocument:
     doc_id: str
     source_uri: str
     content_type: str
+    data_type: str = "document"
+    visibility: str = Visibility.PRIVATE
+    content_hash: str = ""
+    embedding_version: str = ""
+    chunker_version: str = "v1"
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _require_non_empty("project_id", self.project_id)
         _require_non_empty("user_id", self.user_id)
-        _require_non_empty("kb_id", self.kb_id)
+        object.__setattr__(self, "kb_id", _normalize_kb_id(self.kb_id))
         _require_non_empty("doc_id", self.doc_id)
         _require_non_empty("source_uri", self.source_uri)
         _require_non_empty("content_type", self.content_type)
+        _require_non_empty("data_type", self.data_type)
+        _validate_visibility(self.visibility)
+        _require_non_empty("chunker_version", self.chunker_version)
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,15 +136,23 @@ class BaseChunk:
     chunk_id: str
     chunk_index: int
     text: str
+    data_type: str = "document"
+    visibility: str = Visibility.PRIVATE
+    content_hash: str = ""
+    embedding_version: str = ""
+    chunker_version: str = "v1"
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _require_non_empty("project_id", self.project_id)
         _require_non_empty("user_id", self.user_id)
-        _require_non_empty("kb_id", self.kb_id)
+        object.__setattr__(self, "kb_id", _normalize_kb_id(self.kb_id))
         _require_non_empty("doc_id", self.doc_id)
         _require_non_empty("chunk_id", self.chunk_id)
         _require_non_empty("text", self.text)
+        _require_non_empty("data_type", self.data_type)
+        _validate_visibility(self.visibility)
+        _require_non_empty("chunker_version", self.chunker_version)
         if self.chunk_index < 0:
             raise ValueError("chunk_index must be non-negative")
 
@@ -142,6 +166,11 @@ class BaseChunkPayload:
     chunk_id: str
     chunk_index: int
     text: str
+    data_type: str = "document"
+    visibility: str = Visibility.PRIVATE
+    content_hash: str = ""
+    embedding_version: str = ""
+    chunker_version: str = "v1"
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -154,16 +183,24 @@ class BaseChunkPayload:
             chunk_id=chunk.chunk_id,
             chunk_index=chunk.chunk_index,
             text=chunk.text,
+            data_type=chunk.data_type,
+            visibility=chunk.visibility,
+            content_hash=chunk.content_hash,
+            embedding_version=chunk.embedding_version,
+            chunker_version=chunk.chunker_version,
             metadata=dict(chunk.metadata),
         )
 
     def __post_init__(self) -> None:
         _require_non_empty("project_id", self.project_id)
         _require_non_empty("user_id", self.user_id)
-        _require_non_empty("kb_id", self.kb_id)
+        object.__setattr__(self, "kb_id", _normalize_kb_id(self.kb_id))
         _require_non_empty("doc_id", self.doc_id)
         _require_non_empty("chunk_id", self.chunk_id)
         _require_non_empty("text", self.text)
+        _require_non_empty("data_type", self.data_type)
+        _validate_visibility(self.visibility)
+        _require_non_empty("chunker_version", self.chunker_version)
         if self.chunk_index < 0:
             raise ValueError("chunk_index must be non-negative")
 
@@ -176,6 +213,11 @@ class BaseChunkPayload:
             "chunk_id": self.chunk_id,
             "chunk_index": self.chunk_index,
             "text": self.text,
+            "data_type": self.data_type,
+            "visibility": str(self.visibility),
+            "content_hash": self.content_hash,
+            "embedding_version": self.embedding_version,
+            "chunker_version": self.chunker_version,
             "metadata": dict(self.metadata),
         }
 
@@ -213,3 +255,19 @@ class BaseCacheScope:
 def _require_non_empty(field_name: str, value: str) -> None:
     if not value or not value.strip():
         raise ValueError(f"{field_name} is required")
+
+
+def _normalize_kb_id(value: str | None) -> str:
+    if value is None or not str(value).strip():
+        return DEFAULT_KB_ID
+    return str(value).strip()
+
+
+def _normalize_kb_ids(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(str(value).strip() for value in values if str(value).strip())
+
+
+def _validate_visibility(value: str) -> None:
+    allowed = {item.value for item in Visibility}
+    if str(value) not in allowed:
+        raise ValueError(f"visibility must be one of {sorted(allowed)}")

@@ -8,7 +8,12 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from rag_server.adapters.base import ProjectAdapter, ProjectAdapterResolver
-from rag_server.core.models import BaseProjectConfig, BaseQueryScope, BaseRetrievalFilter
+from rag_server.core.models import (
+    BaseProjectConfig,
+    BaseQueryScope,
+    BaseRetrievalFilter,
+    DEFAULT_KB_ID,
+)
 
 
 FORBIDDEN_FILTER_KEYS = frozenset(
@@ -87,7 +92,7 @@ class IngestRequest:
         return cls(
             project_id=_required_str(data, "project_id"),
             user_id=_required_str(data, "user_id"),
-            kb_id=_required_str(data, "kb_id"),
+            kb_id=_optional_str(data, "kb_id", DEFAULT_KB_ID),
             doc_id=_required_str(data, "doc_id"),
             source_uri=_required_str(data, "source_uri"),
             content_type=_required_str(data, "content_type"),
@@ -97,7 +102,11 @@ class IngestRequest:
     def __post_init__(self) -> None:
         _validate_non_empty("project_id", self.project_id)
         _validate_non_empty("user_id", self.user_id)
-        _validate_non_empty("kb_id", self.kb_id)
+        object.__setattr__(
+            self,
+            "kb_id",
+            _normalize_optional_str(self.kb_id, DEFAULT_KB_ID, field_name="kb_id"),
+        )
         _validate_non_empty("doc_id", self.doc_id)
         _validate_non_empty("source_uri", self.source_uri)
         _validate_non_empty("content_type", self.content_type)
@@ -258,6 +267,19 @@ def _required_str(data: dict[str, Any], key: str) -> str:
         raise InvalidRequestError(f"{key} is required")
     _validate_non_empty(key, value)
     return value
+
+
+def _optional_str(data: dict[str, Any], key: str, default: str) -> str:
+    value = data.get(key, default)
+    return _normalize_optional_str(value, default, field_name=key)
+
+
+def _normalize_optional_str(value: Any, default: str, *, field_name: str) -> str:
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise InvalidRequestError(f"{field_name} must be a string")
+    return value.strip() or default
 
 
 def _validate_non_empty(field_name: str, value: str) -> None:

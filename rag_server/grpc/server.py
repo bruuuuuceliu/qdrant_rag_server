@@ -8,7 +8,11 @@ from typing import Any
 import grpc
 from grpc import aio
 
-from rag_server.engine.engine import RagEngine, SearchResult, GenerateResult
+from rag_server.engine.engine import (
+    GenerationUnavailableError,
+    RagEngine,
+    SearchResult,
+)
 from rag_server.gateway.handler import (
     GatewayError,
     IngestRequest,
@@ -150,6 +154,8 @@ class RagServiceServicer(rag_service_pb2_grpc.RagServiceServicer):
                 openrouter_key=request.openrouter_api_key,
                 model=request.model or None,
             )
+        except GenerationUnavailableError as exc:
+            await context.abort(grpc.StatusCode.UNAVAILABLE, str(exc))
         except OpenRouterClientError as exc:
             await context.abort(grpc.StatusCode.UNAUTHENTICATED, str(exc))
         except Exception:
@@ -206,10 +212,15 @@ async def serve_grpc(
     *,
     gateway: RagGateway,
     engine: RagEngine,
+    health_checker: HealthChecker | None = None,
     port: int = 50051,
 ) -> aio.Server:
     server = aio.server()
-    servicer = RagServiceServicer(gateway=gateway, engine=engine)
+    servicer = RagServiceServicer(
+        gateway=gateway,
+        engine=engine,
+        health_checker=health_checker,
+    )
     rag_service_pb2_grpc.add_RagServiceServicer_to_server(servicer, server)
     server.add_insecure_port(f"[::]:{port}")
     logger.info("gRPC server starting on port %s", port)

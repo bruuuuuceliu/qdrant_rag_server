@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import tempfile
+import types
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from rag_server.adapters import (
@@ -236,6 +240,137 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
         snap = metrics.snapshot()
         self.assertEqual(snap.search_requests_total, 1)
         self.assertGreater(snap.avg_search_latency_ms, 0)
+
+    async def test_create_app_wires_embedding_provider_object(self) -> None:
+        from rag_server.app import AppSettings, create_app
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            settings = AppSettings(
+                config_db_path=Path(tempdir) / "config.db",
+                response_cache_db_path=Path(tempdir) / "response_cache.db",
+                grpc_port=0,
+                qdrant_url=None,
+                qdrant_host="localhost",
+                qdrant_port=6333,
+                max_per_project=10,
+                max_per_user=5,
+                ingest_worker_count=1,
+                embedding_provider="local",
+                embedding_model="test-model",
+                embedding_device="cpu",
+                embedding_api_key="",
+                embedding_base_url="https://example.test/embeddings",
+                embedding_dimension=768,
+                generation_enabled=False,
+            )
+
+            embedding_service = MagicMock()
+            embedding_service.initialize = AsyncMock()
+            embedding_service.shutdown = AsyncMock()
+
+            qdrant_store = MagicMock()
+            qdrant_store.close = AsyncMock()
+
+            server = MagicMock()
+            server.stop = AsyncMock()
+            grpc_pkg = types.ModuleType("rag_server.grpc")
+            grpc_pkg.__path__ = []
+            grpc_server_module = types.ModuleType("rag_server.grpc.server")
+            grpc_server_module.serve_grpc = AsyncMock(return_value=server)
+
+            with (
+                patch.dict(
+                    sys.modules,
+                    {
+                        "rag_server.grpc": grpc_pkg,
+                        "rag_server.grpc.server": grpc_server_module,
+                    },
+                ),
+                patch(
+                    "rag_server.services.embedding.EmbeddingService",
+                    return_value=embedding_service,
+                ),
+                patch(
+                    "rag_server.services.vector_store.QdrantStore",
+                    return_value=qdrant_store,
+                ),
+            ):
+                app = await create_app(settings)
+
+            self.assertIs(app.engine._embedding_provider, embedding_service)
+            self.assertIsNone(app.openrouter_client)
+            self.assertIsNotNone(app.health_checker)
+
+            await app.shutdown()
+
+    async def test_create_app_can_wire_remote_embedding_provider(self) -> None:
+        from rag_server.app import AppSettings, create_app
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            settings = AppSettings(
+                config_db_path=Path(tempdir) / "config.db",
+                response_cache_db_path=Path(tempdir) / "response_cache.db",
+                grpc_port=0,
+                qdrant_url=None,
+                qdrant_host="localhost",
+                qdrant_port=6333,
+                max_per_project=10,
+                max_per_user=5,
+                ingest_worker_count=1,
+                embedding_provider="openrouter",
+                embedding_model="remote-embedding-model",
+                embedding_device="cpu",
+                embedding_api_key="sk-or-test",
+                embedding_base_url="https://example.test/embeddings",
+                embedding_dimension=1536,
+                generation_enabled=False,
+            )
+
+            remote_provider = MagicMock()
+            remote_provider.initialize = AsyncMock()
+            remote_provider.shutdown = AsyncMock()
+
+            qdrant_store = MagicMock()
+            qdrant_store.close = AsyncMock()
+
+            server = MagicMock()
+            server.stop = AsyncMock()
+            grpc_pkg = types.ModuleType("rag_server.grpc")
+            grpc_pkg.__path__ = []
+            grpc_server_module = types.ModuleType("rag_server.grpc.server")
+            grpc_server_module.serve_grpc = AsyncMock(return_value=server)
+
+            with (
+                patch.dict(
+                    sys.modules,
+                    {
+                        "rag_server.grpc": grpc_pkg,
+                        "rag_server.grpc.server": grpc_server_module,
+                    },
+                ),
+                patch("rag_server.services.embedding.EmbeddingService") as local_cls,
+                patch(
+                    "rag_server.services.embedding.RemoteEmbeddingService",
+                    return_value=remote_provider,
+                ) as remote_cls,
+                patch(
+                    "rag_server.services.vector_store.QdrantStore",
+                    return_value=qdrant_store,
+                ) as qdrant_cls,
+            ):
+                app = await create_app(settings)
+
+            local_cls.assert_not_called()
+            remote_cls.assert_called_once_with(
+                api_key="sk-or-test",
+                model_name="remote-embedding-model",
+                base_url="https://example.test/embeddings",
+            )
+            qdrant_cls.assert_called_once()
+            self.assertEqual(qdrant_cls.call_args.kwargs["default_vector_size"], 1536)
+            self.assertIs(app.engine._embedding_provider, remote_provider)
+
+            await app.shutdown()
 
 
 if __name__ == "__main__":

@@ -7,6 +7,17 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from rag_server.engine import RagEngine, SearchResult, _build_qdrant_filter
+from rag_server.services.vector_store import (
+    VECTOR_SIZE,
+    _validate_upsert_input,
+    make_qdrant_point_id,
+)
+from rag_server.services.embedding import (
+    RemoteEmbeddingError,
+    RemoteEmbeddingService,
+    _parse_embedding_response,
+    _redact_key,
+)
 from rag_server.gateway import IngestPlan, IngestRequest, SearchPlan
 from rag_server.core.models import (
     BaseChunkPayload,
@@ -19,6 +30,60 @@ from rag_server.core.models import (
     SHARED_USER_ID,
 )
 from rag_server.adapters import ProjectAdapter
+
+
+class RemoteEmbeddingServiceTest(unittest.TestCase):
+    def test_parse_embedding_response(self) -> None:
+        vectors = _parse_embedding_response(
+            {
+                "data": [
+                    {"embedding": [0.1, 0.2]},
+                    {"embedding": [0.3, 0.4]},
+                ]
+            },
+            expected_count=2,
+        )
+
+        self.assertEqual(vectors, [[0.1, 0.2], [0.3, 0.4]])
+
+    def test_parse_embedding_response_rejects_count_mismatch(self) -> None:
+        with self.assertRaises(RemoteEmbeddingError):
+            _parse_embedding_response({"data": []}, expected_count=1)
+
+    def test_redacts_remote_embedding_keys(self) -> None:
+        redacted = _redact_key("bad key sk-or-secret123 and sk-secret456")
+
+        self.assertNotIn("secret123", redacted)
+        self.assertNotIn("secret456", redacted)
+
+
+class RemoteEmbeddingServiceAsyncTest(unittest.IsolatedAsyncioTestCase):
+    async def test_encode_batch_posts_openai_compatible_request(self) -> None:
+        service = RemoteEmbeddingService(
+            api_key="sk-or-test",
+            model_name="embedding-model",
+            base_url="https://example.test/embeddings",
+        )
+        client = MagicMock()
+        response = MagicMock()
+        response.is_success = True
+        response.json.return_value = {
+            "data": [
+                {"embedding": [0.1, 0.2]},
+                {"embedding": [0.3, 0.4]},
+            ]
+        }
+        client.post = AsyncMock(return_value=response)
+        service._client = client
+
+        vectors = await service.encode_batch(["a", "b"])
+
+        self.assertEqual(vectors, [[0.1, 0.2], [0.3, 0.4]])
+        client.post.assert_called_once()
+        call = client.post.call_args
+        self.assertEqual(call.args[0], "https://example.test/embeddings")
+        self.assertEqual(call.kwargs["json"]["model"], "embedding-model")
+        self.assertEqual(call.kwargs["json"]["input"], ["a", "b"])
 
 
 class BuildQdrantFilterTest(unittest.TestCase):
@@ -90,6 +155,76 @@ class BuildQdrantFilterTest(unittest.TestCase):
         self.assertCountEqual(doc_cond.match.any, ["d1", "d2"])
 
 
+class QdrantPointSafetyTest(unittest.TestCase):
+    def test_point_id_is_stable_for_same_payload_identity(self) -> None:
+        payload = BaseChunkPayload(
+            project_id="p1",
+            user_id="u1",
+            kb_id="kb_a",
+            doc_id="d1",
+            chunk_id="anything",
+            chunk_index=0,
+            text="hello",
+            data_type="document",
+            chunker_version="v1",
+        )
+
+        self.assertEqual(make_qdrant_point_id(payload), make_qdrant_point_id(payload))
+
+    def test_point_id_includes_user_scope(self) -> None:
+        payload_a = BaseChunkPayload(
+            project_id="p1",
+            user_id="user_a",
+            kb_id="kb_a",
+            doc_id="shared_doc_id",
+            chunk_id="shared_doc_id:0",
+            chunk_index=0,
+            text="hello",
+        )
+        payload_b = BaseChunkPayload(
+            project_id="p1",
+            user_id="user_b",
+            kb_id="kb_a",
+            doc_id="shared_doc_id",
+            chunk_id="shared_doc_id:0",
+            chunk_index=0,
+            text="hello",
+        )
+
+        self.assertNotEqual(
+            make_qdrant_point_id(payload_a),
+            make_qdrant_point_id(payload_b),
+        )
+
+    def test_upsert_validation_rejects_vector_payload_count_mismatch(self) -> None:
+        payload = BaseChunkPayload(
+            project_id="p1",
+            user_id="u1",
+            kb_id="kb_a",
+            doc_id="d1",
+            chunk_id="d1:0",
+            chunk_index=0,
+            text="hello",
+        )
+
+        with self.assertRaisesRegex(ValueError, "vector count must match"):
+            _validate_upsert_input([[0.1] * VECTOR_SIZE, [0.2] * VECTOR_SIZE], [payload], VECTOR_SIZE)
+
+    def test_upsert_validation_rejects_wrong_vector_dimension(self) -> None:
+        payload = BaseChunkPayload(
+            project_id="p1",
+            user_id="u1",
+            kb_id="kb_a",
+            doc_id="d1",
+            chunk_id="d1:0",
+            chunk_index=0,
+            text="hello",
+        )
+
+        with self.assertRaisesRegex(ValueError, "expected 768"):
+            _validate_upsert_input([[0.1] * 3], [payload], VECTOR_SIZE)
+
+
 class RagEngineTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.embed_fn = AsyncMock()
@@ -142,6 +277,33 @@ class RagEngineTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(result.chunks), 0)
         self.assertFalse(result.cache_hit)
+
+    async def test_search_sets_elapsed_ms(self) -> None:
+        self.embed_fn.return_value = [0.1] * 768
+        self.qdrant_store.search.return_value = []
+
+        engine = RagEngine(
+            embed_fn=self.embed_fn,
+            qdrant_store=self.qdrant_store,
+        )
+        result = await engine.search(self._make_search_plan())
+
+        self.assertGreaterEqual(result.elapsed_ms, 1)
+
+    async def test_search_cache_hit_reports_elapsed_ms(self) -> None:
+        tier1_cache = MagicMock()
+        tier1_cache.get = AsyncMock(return_value={"chunks": [], "elapsed_ms": 0})
+
+        engine = RagEngine(
+            embed_fn=self.embed_fn,
+            qdrant_store=self.qdrant_store,
+            tier1_cache=tier1_cache,
+        )
+        result = await engine.search(self._make_search_plan())
+
+        self.assertTrue(result.cache_hit)
+        self.assertGreaterEqual(result.elapsed_ms, 1)
+        self.qdrant_store.search.assert_not_called()
 
     async def test_search_returns_chunks_with_scores(self) -> None:
         self.embed_fn.return_value = [0.1] * 768
@@ -312,6 +474,47 @@ class RagEngineTest(unittest.IsolatedAsyncioTestCase):
         final = await engine.get_ingest_status(result.job_id)
         self.assertEqual(final.status, IngestJobStatus.COMPLETED)
         self.qdrant_store.upsert.assert_called_once()
+
+        await engine.shutdown()
+
+    async def test_failed_ingest_records_doc_id_and_error(self) -> None:
+        self.adapter.parse_document = AsyncMock(side_effect=RuntimeError("bad input"))
+
+        embed_fn = MagicMock()
+        embed_fn.encode_batch = AsyncMock(return_value=[])
+
+        engine = RagEngine(
+            embed_fn=embed_fn,
+            qdrant_store=self.qdrant_store,
+            ingest_worker_count=1,
+        )
+
+        plan = IngestPlan(
+            request=IngestRequest(
+                project_id="p1",
+                user_id="u1",
+                kb_id="kb_a",
+                doc_id="d1",
+                source_uri="s3://bucket/doc.txt",
+                content_type="text/plain",
+            ),
+            adapter=self.adapter,
+            config=BaseProjectConfig(
+                project_id="p1",
+                project_type="test",
+                active_embedding_version="v1",
+                embedding_model="bge-base",
+                reranker_model="bge-reranker-base",
+            ),
+        )
+
+        result = await engine.schedule_ingest(plan)
+        await asyncio.wait_for(engine._ingest_queue.join(), timeout=1)
+
+        final = await engine.get_ingest_status(result.job_id)
+        self.assertEqual(final.status, IngestJobStatus.FAILED)
+        self.assertEqual(final.doc_id, "d1")
+        self.assertIn("bad input", final.error)
 
         await engine.shutdown()
 

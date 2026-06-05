@@ -1,25 +1,12 @@
-from rag_server.services.embedding import (
-    EmbeddingFn,
-    EmbeddingService,
-)
+"""Service package.
 
-from rag_server.services.vector_store import (
-    QdrantStore,
-    VECTOR_SIZE,
-)
+Import heavy services from their leaf modules:
 
-from rag_server.services.reranker import (
-    RerankFn,
-    RerankerService,
-)
+- ``rag_server.services.vector_store`` for Qdrant
+- ``rag_server.services.embedding`` for sentence-transformer embeddings
+- ``rag_server.services.reranker`` for cross-encoder reranking
 
-from rag_server.services.cache import (
-    Tier1MemoryCache,
-    Tier2ResponseCache,
-)
+This module intentionally stays lightweight.
+"""
 
-from rag_server.services.generation import (
-    OpenRouterClient,
-    OpenRouterClientError,
-    OPENROUTER_API_URL,
-)
+__all__: list[str] = []

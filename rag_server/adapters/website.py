@@ -32,6 +32,7 @@ class WebsiteProjectConfig(BaseProjectConfig):
     default_locale: str = "en"
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         object.__setattr__(self, "domains", tuple(self.domains))
         object.__setattr__(self, "crawl_rules", tuple(self.crawl_rules))
         object.__setattr__(self, "sitemap_urls", tuple(self.sitemap_urls))
@@ -103,6 +104,7 @@ class WebsiteProjectAdapter(ProjectAdapter):
 
     async def parse_document(self, input_data: Any) -> WebsiteDocument:
         url = getattr(input_data, "source_uri", "")
+        metadata = dict(getattr(input_data, "metadata", {}))
         return WebsiteDocument(
             project_id=input_data.project_id,
             user_id=input_data.user_id,
@@ -110,7 +112,12 @@ class WebsiteProjectAdapter(ProjectAdapter):
             doc_id=input_data.doc_id,
             source_uri=input_data.source_uri,
             content_type=getattr(input_data, "content_type", "text/html"),
-            metadata=dict(getattr(input_data, "metadata", {})),
+            data_type=str(metadata.get("data_type", "document")),
+            visibility=str(metadata.get("visibility", "private")),
+            content_hash=str(metadata.get("content_hash", "")),
+            embedding_version=str(metadata.get("embedding_version", "")),
+            chunker_version=str(metadata.get("chunker_version", "v1")),
+            metadata=metadata,
             url=url,
             canonical_url=url,
             page_title=url,
@@ -136,6 +143,11 @@ class WebsiteProjectAdapter(ProjectAdapter):
                     chunk_id=f"{document.doc_id}:{idx}",
                     chunk_index=idx,
                     text=cleaned,
+                    data_type=document.data_type,
+                    visibility=document.visibility,
+                    content_hash=document.content_hash,
+                    embedding_version=document.embedding_version,
+                    chunker_version=document.chunker_version,
                     metadata={"section": str(idx)},
                 )
             )
@@ -149,6 +161,11 @@ class WebsiteProjectAdapter(ProjectAdapter):
                     chunk_id=f"{document.doc_id}:0",
                     chunk_index=0,
                     text=text,
+                    data_type=document.data_type,
+                    visibility=document.visibility,
+                    content_hash=document.content_hash,
+                    embedding_version=document.embedding_version,
+                    chunker_version=document.chunker_version,
                 )
             )
         return chunks
@@ -165,6 +182,11 @@ class WebsiteProjectAdapter(ProjectAdapter):
             chunk_id=chunk.chunk_id,
             chunk_index=chunk.chunk_index,
             text=chunk.text,
+            data_type=chunk.data_type,
+            visibility=chunk.visibility,
+            content_hash=chunk.content_hash,
+            embedding_version=chunk.embedding_version,
+            chunker_version=chunk.chunker_version,
             metadata=dict(chunk.metadata),
             url=url,
             canonical_url=url,

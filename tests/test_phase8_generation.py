@@ -5,7 +5,12 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from rag_server.engine import RagEngine, GenerateResult, _make_response_cache_key
+from rag_server.engine import (
+    GenerationUnavailableError,
+    RagEngine,
+    GenerateResult,
+    _make_response_cache_key,
+)
 from rag_server.services.generation import (
     OpenRouterClient,
     OpenRouterClientError,
@@ -88,6 +93,21 @@ class OpenRouterClientTest(unittest.IsolatedAsyncioTestCase):
 
 
 class EngineGenerateTest(unittest.IsolatedAsyncioTestCase):
+    async def test_generate_raises_when_generation_disabled(self) -> None:
+        engine = RagEngine(
+            embed_fn=AsyncMock(),
+            qdrant_store=AsyncMock(),
+        )
+
+        with self.assertRaises(GenerationUnavailableError):
+            await engine.generate(
+                project_id="p1",
+                user_id="u1",
+                query="Hello",
+                chunks=[],
+                openrouter_key="sk-or-v1-key",
+            )
+
     async def test_generate_cache_hit(self) -> None:
         tier2_cache = MagicMock()
         tier2_cache.get = AsyncMock(return_value="Cached response")

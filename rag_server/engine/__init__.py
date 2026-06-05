@@ -1,5 +1,6 @@
 from rag_server.engine.engine import (
     IngestResult,
+    GenerationUnavailableError,
     GenerateResult,
     RagEngine,
     SearchResult,

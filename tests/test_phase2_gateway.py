@@ -25,6 +25,7 @@ from rag_server.core.models import (
     BaseProjectConfig,
     BaseQueryScope,
     BaseRetrievalFilter,
+    DEFAULT_KB_ID,
 )
 
 
@@ -79,6 +80,33 @@ class RagGatewayTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(plan, IngestPlan)
         self.assertIs(plan.adapter, self.adapter)
         self.assertEqual(plan.config.collection_name, "rag_project_a_v1")
+
+    async def test_prepare_ingest_defaults_missing_kb_id(self) -> None:
+        plan = await self.gateway.prepare_ingest(
+            {
+                "project_id": "project_a",
+                "user_id": "user_a",
+                "doc_id": "doc_a",
+                "source_uri": "s3://bucket/doc.txt",
+                "content_type": "text/plain",
+            }
+        )
+
+        self.assertEqual(plan.request.kb_id, DEFAULT_KB_ID)
+
+    async def test_prepare_ingest_defaults_blank_kb_id(self) -> None:
+        plan = await self.gateway.prepare_ingest(
+            {
+                "project_id": "project_a",
+                "user_id": "user_a",
+                "kb_id": " ",
+                "doc_id": "doc_a",
+                "source_uri": "s3://bucket/doc.txt",
+                "content_type": "text/plain",
+            }
+        )
+
+        self.assertEqual(plan.request.kb_id, DEFAULT_KB_ID)
 
     async def test_search_rejects_client_supplied_raw_filters(self) -> None:
         with self.assertRaisesRegex(
@@ -260,4 +288,3 @@ class ScopeChangingAdapter(GatewayDummyAdapter):
 
 if __name__ == "__main__":
     unittest.main()
-
