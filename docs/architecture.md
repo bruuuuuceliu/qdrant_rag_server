@@ -17,7 +17,7 @@ client / worker
 ## Layers
 
 ```text
-configs/            application and environment config loading
+configs/            application/env config and project config repository
 server/             app entrypoint, gRPC transport, generated stubs, proto
 retrieval_service/gateway/ request validation, defaults, scope, concurrency limits
 retrieval_service/adapters project and data parsing/chunking/payload behavior
@@ -25,7 +25,6 @@ retrieval_service/core/    shared model objects
 retrieval_service/engine/  orchestration for search, ingest, delete, generation
 retrieval_service/services embeddings, vector store, reranker, cache, generation
 retrieval_service/storage/ raw source object storage abstractions
-retrieval_service/config/  project configuration repository
 retrieval_service/health/  health checks and metrics
 retrieval_service/versioning/ embedding collection version metadata
 ```

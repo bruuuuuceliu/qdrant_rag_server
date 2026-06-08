@@ -78,6 +78,9 @@ qdrant_retrieval_service/
       filesystem_config.py
       s3_config.py
       s3.env.example
+    project/
+      __init__.py
+      repository.py
 
   retrieval_service/
     __init__.py
@@ -107,9 +110,6 @@ qdrant_retrieval_service/
       memory.py
       filesystem.py
       s3.py
-    config/
-      __init__.py
-      repository.py
     health/
       __init__.py
       health.py
@@ -173,7 +173,7 @@ qdrant_retrieval_service/
 
 ### `configs/`
 
-Owns application settings and environment loading.
+Owns application settings, environment loading, and project configuration persistence.
 
 Responsibilities:
 
@@ -182,6 +182,7 @@ Responsibilities:
 - validate required fields
 - expose typed settings dataclasses
 - keep secrets out of runtime code
+- persist project configuration records under `configs/project/`
 
 Example public API:
 
@@ -203,6 +204,12 @@ configs/qdrant/local.env
 configs/qdrant/cloud.env
 configs/generation/openrouter.env
 configs/storage/s3.env
+```
+
+Project configuration repository path:
+
+```text
+configs/project/repository.py
 ```
 
 ### `retrieval_service/core/`
@@ -256,17 +263,6 @@ Raw object storage implementations:
 - S3-compatible
 
 Keep this as its own folder because raw content backup is a distinct concept from vector retrieval services.
-
-### `retrieval_service/config/`
-
-Project configuration persistence.
-
-Important distinction:
-
-- `configs/` is application/environment configuration
-- `retrieval_service/config/` is runtime project configuration storage, such as SQLite project records
-
-This distinction should be documented clearly to avoid future confusion.
 
 ### `retrieval_service/health/`
 
@@ -342,7 +338,7 @@ rag_server/gateway/                  -> retrieval_service/gateway/
 rag_server/engine/                   -> retrieval_service/engine/
 rag_server/services/                 -> retrieval_service/services/
 rag_server/storage/                  -> retrieval_service/storage/
-rag_server/config/                   -> retrieval_service/config/
+rag_server/config/                   -> configs/project/
 rag_server/health/                   -> retrieval_service/health/
 rag_server/versioning/               -> retrieval_service/versioning/
 

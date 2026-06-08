@@ -136,7 +136,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from retrieval_service.config import SQLiteProjectConfigRepository
+from configs import SQLiteProjectConfigRepository
 from retrieval_service.core import BaseProjectConfig
 
 

@@ -76,10 +76,9 @@ Query-time retrieval reads chunk text from Qdrant payloads. Remote object storag
 ## Project Layout
 
 ```text
-configs/                    application and environment config loading
+configs/                    application/env config and project config repository
 retrieval_service/core/            base models
 retrieval_service/adapters/        project adapter contract and website adapter
-retrieval_service/config/          SQLite project config repository
 retrieval_service/gateway/         request validation and scope enforcement
 retrieval_service/engine/          search, generation, and ingestion orchestration
 retrieval_service/services/        Qdrant, embedding, reranker, cache, generation

@@ -12,7 +12,7 @@ from retrieval_service.adapters import (
     ProjectAdapterRegistry,
     ProjectAdapterResolver,
 )
-from retrieval_service.config import (
+from configs import (
     ProjectConfigNotFoundError,
     SQLiteProjectConfigRepository,
 )
