@@ -1,4 +1,11 @@
-"""Minimal embedding generation showcase."""
+"""Minimal embedding generation showcase.
+
+Setup:
+1. Install dependencies: ``python -m pip install -e .``
+2. Set ``RAG_EMBEDDING_API_KEY`` in ``examples/unites/.env``.
+   ``RAG_GENERATION_API_KEY`` is used as a fallback.
+3. Run: ``python -m examples.unites.embedding_generation``
+"""
 
 from __future__ import annotations
 

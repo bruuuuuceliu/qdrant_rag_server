@@ -117,13 +117,23 @@ class QdrantStore:
         limit: int = 5,
         with_payload: bool = True,
     ) -> list[models.ScoredPoint]:
-        return await self._client.search(
+        if hasattr(self._client, "search"):
+            return await self._client.search(
+                collection_name=collection_name,
+                query_vector=query_vector,
+                query_filter=query_filter,
+                limit=limit,
+                with_payload=with_payload,
+            )
+
+        response = await self._client.query_points(
             collection_name=collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             query_filter=query_filter,
             limit=limit,
             with_payload=with_payload,
         )
+        return response.points if hasattr(response, "points") else response
 
     async def delete_document(
         self,

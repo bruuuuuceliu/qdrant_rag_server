@@ -1,4 +1,10 @@
-"""Minimal LLM generation showcase."""
+"""Minimal LLM generation showcase.
+
+Setup:
+1. Install dependencies: ``python -m pip install -e .``
+2. Set ``RAG_GENERATION_API_KEY`` in ``examples/unites/.env``.
+3. Run: ``python -m examples.unites.llm_generation``
+"""
 
 from __future__ import annotations
 
