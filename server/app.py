@@ -24,6 +24,8 @@ class AppContext:
     async def shutdown(self) -> None:
         await self.server.stop(grace=5)
         await self.engine.shutdown()
+        if self.openrouter_client is not None:
+            await self.openrouter_client.shutdown()
         await self.embedding_provider.shutdown()
         await self.qdrant_store.close()
 
@@ -41,8 +43,8 @@ async def create_app(settings: AppSettings | None = None) -> AppContext:
     from retrieval_service.gateway import AsyncConcurrencyLimiter, RagGateway
     from retrieval_service.health import HealthChecker, MetricsCollector
     from retrieval_service.services.cache import Tier1MemoryCache, Tier2ResponseCache
-    from retrieval_service.services.embedding import EmbeddingService, RemoteEmbeddingService
-    from retrieval_service.services.generation import OpenRouterClient
+    from retrieval_service.services.embedding import EmbeddingProviderFactory
+    from retrieval_service.services.generation import LLMProviderFactory
     from retrieval_service.services.vector_store import QdrantStore
     from server.grpc.server import serve_grpc
 
@@ -64,8 +66,7 @@ async def create_app(settings: AppSettings | None = None) -> AppContext:
 
     embedding_provider = _build_embedding_provider(
         settings,
-        local_cls=EmbeddingService,
-        remote_cls=RemoteEmbeddingService,
+        factory=EmbeddingProviderFactory,
     )
     await embedding_provider.initialize()
 
@@ -79,7 +80,9 @@ async def create_app(settings: AppSettings | None = None) -> AppContext:
     await tier2_cache.initialize()
     tier1_cache = Tier1MemoryCache()
     metrics = MetricsCollector()
-    openrouter_client = OpenRouterClient() if settings.generation_enabled else None
+    openrouter_client = _build_llm_provider(settings, factory=LLMProviderFactory)
+    if openrouter_client is not None:
+        await openrouter_client.initialize()
 
     engine = RagEngine(
         embedding_provider=embedding_provider,
@@ -133,22 +136,28 @@ def main() -> None:
 def _build_embedding_provider(
     settings: AppSettings,
     *,
-    local_cls: type,
-    remote_cls: type,
+    factory: type,
 ) -> object:
-    provider = settings.embedding_provider.strip().lower()
-    if provider == "local":
-        return local_cls(
-            model_name=settings.embedding_model,
-            device=settings.embedding_device,
-        )
-    if provider in {"openrouter", "remote"}:
-        return remote_cls(
-            api_key=settings.embedding_api_key,
-            model_name=settings.embedding_model,
-            base_url=settings.embedding_base_url,
-        )
-    raise ValueError("RAG_EMBEDDING_PROVIDER must be one of: local, openrouter, remote")
+    return factory.create(
+        settings.embedding_provider,
+        model_name=settings.embedding_model,
+        device=settings.embedding_device,
+        api_key=settings.embedding_api_key,
+        base_url=settings.embedding_base_url,
+    )
+
+
+def _build_llm_provider(settings: AppSettings, *, factory: type) -> object | None:
+    if not settings.generation_enabled:
+        return None
+    return factory.create(
+        settings.generation_provider,
+        base_url=settings.generation_base_url,
+        api_key=settings.generation_api_key,
+        default_model=settings.generation_model,
+        default_max_tokens=settings.generation_max_tokens,
+        default_temperature=settings.generation_temperature,
+    )
 
 
 if __name__ == "__main__":

@@ -5,7 +5,23 @@ The app reads environment variables through `configs/config.py`.
 Example file:
 
 ```text
-configs/envs/local.env.example
+configs/local.env.example
+```
+
+Config files and env files live together by functionality group:
+
+```text
+configs/config.py
+configs/local.env.example
+configs/embeddings/config.py
+configs/embeddings/local.env.example
+configs/qdrant/config.py
+configs/qdrant/local.env.example
+configs/generation/config.py
+configs/generation/openrouter.env.example
+configs/storage/config.py
+configs/storage/s3.env.example
+configs/project/repository.py
 ```
 
 ## Environment Variables

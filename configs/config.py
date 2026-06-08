@@ -17,7 +17,6 @@ from pathlib import Path
 
 
 CONFIG_ROOT = Path(__file__).resolve().parent
-DEFAULT_EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1/embeddings"
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +37,12 @@ class AppSettings:
     embedding_base_url: str
     embedding_dimension: int
     generation_enabled: bool
+    generation_provider: str = "openrouter"
+    generation_model: str = "openai/gpt-4o-mini"
+    generation_api_key: str = ""
+    generation_base_url: str = "https://openrouter.ai/api/v1/chat/completions"
+    generation_max_tokens: int = 1024
+    generation_temperature: float = 0.7
 
     @classmethod
     def from_env(
@@ -68,34 +73,44 @@ def load_settings(
 
     values.update(os.environ)
 
+    from configs.embeddings.config import load_embedding_settings
+    from configs.generation.config import load_generation_settings
+    from configs.qdrant.config import load_qdrant_settings
+
+    embedding_settings = load_embedding_settings(values)
+    generation_settings = load_generation_settings(values)
+    qdrant_settings = load_qdrant_settings(values)
+
     return AppSettings(
-        config_db_path=Path(_get(values, "RAG_CONFIG_DB_PATH", "/var/lib/rag/config.db")),
+        config_db_path=Path(get_value(values, "RAG_CONFIG_DB_PATH", "/var/lib/rag/config.db")),
         response_cache_db_path=Path(
-            _get(values, "RAG_RESPONSE_CACHE_DB_PATH", "/var/lib/rag/response_cache.db")
+            get_value(values, "RAG_RESPONSE_CACHE_DB_PATH", "/var/lib/rag/response_cache.db")
         ),
-        grpc_port=_get_int(values, "RAG_GRPC_PORT", 50051),
-        qdrant_url=_optional(values, "RAG_QDRANT_URL"),
-        qdrant_host=_get(values, "RAG_QDRANT_HOST", "localhost"),
-        qdrant_port=_get_int(values, "RAG_QDRANT_PORT", 6333),
-        max_per_project=_get_int(values, "RAG_MAX_PER_PROJECT", 20),
-        max_per_user=_get_int(values, "RAG_MAX_PER_USER", 5),
-        ingest_worker_count=_get_int(values, "RAG_INGEST_WORKERS", 4),
-        embedding_provider=_get(values, "RAG_EMBEDDING_PROVIDER", "local"),
-        embedding_model=_get(values, "RAG_EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5"),
-        embedding_device=_get(values, "RAG_EMBEDDING_DEVICE", "cpu"),
-        embedding_api_key=_get(values, "RAG_EMBEDDING_API_KEY", ""),
-        embedding_base_url=_get(
-            values,
-            "RAG_EMBEDDING_BASE_URL",
-            DEFAULT_EMBEDDING_BASE_URL,
-        ),
-        embedding_dimension=_get_int(values, "RAG_EMBEDDING_DIMENSION", 768),
-        generation_enabled=_get_bool(values, "RAG_GENERATION_ENABLED", False),
+        grpc_port=get_int_value(values, "RAG_GRPC_PORT", 50051),
+        qdrant_url=qdrant_settings.url,
+        qdrant_host=qdrant_settings.host,
+        qdrant_port=qdrant_settings.port,
+        max_per_project=get_int_value(values, "RAG_MAX_PER_PROJECT", 20),
+        max_per_user=get_int_value(values, "RAG_MAX_PER_USER", 5),
+        ingest_worker_count=get_int_value(values, "RAG_INGEST_WORKERS", 4),
+        embedding_provider=embedding_settings.provider,
+        embedding_model=embedding_settings.model,
+        embedding_device=embedding_settings.device,
+        embedding_api_key=embedding_settings.api_key,
+        embedding_base_url=embedding_settings.base_url,
+        embedding_dimension=embedding_settings.dimension,
+        generation_enabled=generation_settings.enabled,
+        generation_provider=generation_settings.provider,
+        generation_model=generation_settings.model,
+        generation_api_key=generation_settings.api_key,
+        generation_base_url=generation_settings.base_url,
+        generation_max_tokens=generation_settings.max_tokens,
+        generation_temperature=generation_settings.temperature,
     )
 
 
 def _profile_env(profile: str) -> Path:
-    return CONFIG_ROOT / "envs" / f"{profile}.env"
+    return CONFIG_ROOT / f"{profile}.env"
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -115,18 +130,18 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def _get(values: dict[str, str], name: str, default: str) -> str:
+def get_value(values: dict[str, str], name: str, default: str) -> str:
     return values.get(name, default)
 
 
-def _optional(values: dict[str, str], name: str) -> str | None:
+def get_optional_value(values: dict[str, str], name: str) -> str | None:
     value = values.get(name)
     if value is None or not value.strip():
         return None
     return value
 
 
-def _get_int(values: dict[str, str], name: str, default: int) -> int:
+def get_int_value(values: dict[str, str], name: str, default: int) -> int:
     value = values.get(name)
     if value is None:
         return default
@@ -136,7 +151,7 @@ def _get_int(values: dict[str, str], name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from exc
 
 
-def _get_bool(values: dict[str, str], name: str, default: bool) -> bool:
+def get_bool_value(values: dict[str, str], name: str, default: bool) -> bool:
     value = values.get(name)
     if value is None:
         return default

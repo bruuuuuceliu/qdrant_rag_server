@@ -12,6 +12,7 @@ from retrieval_service.engine import (
     _make_response_cache_key,
 )
 from retrieval_service.services.generation import (
+    LLMProviderFactory,
     OpenRouterClient,
     OpenRouterClientError,
     _redact_key,
@@ -33,6 +34,15 @@ class RedactKeyTest(unittest.TestCase):
 
 
 class OpenRouterClientTest(unittest.IsolatedAsyncioTestCase):
+    async def test_factory_creates_openrouter_provider(self) -> None:
+        provider = LLMProviderFactory.create(
+            "openrouter",
+            base_url="https://example.test/chat/completions",
+            default_model="provider-default-model",
+        )
+
+        self.assertIsInstance(provider, OpenRouterClient)
+
     async def test_rejects_empty_key(self) -> None:
         client = OpenRouterClient()
         with self.assertRaises(OpenRouterClientError):
@@ -49,26 +59,31 @@ class OpenRouterClientTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("sk-or-v1-deadbeef", redacted)
 
     async def test_successful_call_returns_content(self) -> None:
-        client = OpenRouterClient()
+        client = OpenRouterClient(default_model="provider-default-model")
+        http_client = MagicMock()
+        http_client.aclose = AsyncMock()
         mock_response = MagicMock()
         mock_response.is_success = True
         mock_response.json.return_value = {
             "choices": [{"message": {"content": "Hello from LLM"}}]
         }
+        http_client.post = AsyncMock(return_value=mock_response)
 
         with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.return_value = http_client
             result = await client.generate(
                 prompt="What is AI?",
                 api_key="sk-or-v1-testkey123",
             )
 
         self.assertEqual(result, "Hello from LLM")
+        posted_payload = http_client.post.call_args.kwargs["json"]
+        self.assertEqual(posted_payload["model"], "provider-default-model")
 
     async def test_retries_on_429(self) -> None:
         client = OpenRouterClient(max_retries=2)
+        http_client = MagicMock()
+        http_client.aclose = AsyncMock()
         fail_response = MagicMock()
         fail_response.is_success = False
         fail_response.status_code = 429
@@ -81,9 +96,10 @@ class OpenRouterClientTest(unittest.IsolatedAsyncioTestCase):
         }
 
         mock_post = AsyncMock(side_effect=[fail_response, success_response])
+        http_client.post = mock_post
 
         with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = mock_post
+            mock_client.return_value = http_client
             result = await client.generate(
                 prompt="test", api_key="sk-or-v1-testkey123"
             )
@@ -135,7 +151,9 @@ class EngineGenerateTest(unittest.IsolatedAsyncioTestCase):
         tier2_cache.get = AsyncMock(return_value=None)
         tier2_cache.set = AsyncMock()
         openrouter = MagicMock()
-        openrouter.generate = AsyncMock(return_value="Generated response")
+        openrouter.provider_name = "openrouter"
+        openrouter.default_model = "test-model"
+        openrouter.generate_response = AsyncMock(return_value="Generated response")
 
         engine = RagEngine(
             embed_fn=AsyncMock(),
@@ -154,6 +172,7 @@ class EngineGenerateTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result.cache_hit)
         self.assertEqual(result.response, "Generated response")
+        openrouter.generate_response.assert_awaited_once()
         tier2_cache.set.assert_called_once()
 
 

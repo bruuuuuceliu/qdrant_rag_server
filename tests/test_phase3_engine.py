@@ -13,6 +13,8 @@ from retrieval_service.services.vector_store import (
     make_qdrant_point_id,
 )
 from retrieval_service.services.embedding import (
+    EmbeddingProviderFactory,
+    EmbeddingService,
     RemoteEmbeddingError,
     RemoteEmbeddingService,
     _parse_embedding_response,
@@ -33,6 +35,25 @@ from retrieval_service.adapters import ProjectAdapter
 
 
 class RemoteEmbeddingServiceTest(unittest.TestCase):
+    def test_embedding_factory_creates_local_provider(self) -> None:
+        provider = EmbeddingProviderFactory.create(
+            "local",
+            model_name="test-model",
+            device="cpu",
+        )
+
+        self.assertIsInstance(provider, EmbeddingService)
+
+    def test_embedding_factory_creates_remote_provider(self) -> None:
+        provider = EmbeddingProviderFactory.create(
+            "openai_compatible",
+            model_name="remote-model",
+            api_key="sk-test",
+            base_url="https://example.test/embeddings",
+        )
+
+        self.assertIsInstance(provider, RemoteEmbeddingService)
+
     def test_parse_embedding_response(self) -> None:
         vectors = _parse_embedding_response(
             {

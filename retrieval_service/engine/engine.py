@@ -72,12 +72,18 @@ def _make_search_cache_key(plan: SearchPlan) -> str:
 
 
 def _make_response_cache_key(
-    project_id: str, user_id: str, query: str, chunks: list[dict[str, Any]]
+    project_id: str,
+    user_id: str,
+    query: str,
+    chunks: list[dict[str, Any]],
+    *,
+    provider: str = "",
+    model: str = "",
 ) -> str:
     chunk_sig = "|".join(
         sorted(c.get("chunk_id", "") for c in chunks)
     )
-    raw = f"{project_id}|{user_id}|{query}|{chunk_sig}"
+    raw = f"{project_id}|{user_id}|{query}|{chunk_sig}|{provider}|{model}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -210,7 +216,12 @@ class RagEngine:
             raise GenerationUnavailableError("generation is disabled for this deployment")
 
         cache_key = _make_response_cache_key(
-            project_id, user_id, query, chunks
+            project_id,
+            user_id,
+            query,
+            chunks,
+            provider=_safe_str_attr(self._openrouter, "provider_name"),
+            model=model or _safe_str_attr(self._openrouter, "default_model"),
         )
 
         if self._tier2_cache is not None:
@@ -233,10 +244,10 @@ class RagEngine:
             "Answer:"
         )
 
-        result = await self._openrouter.generate(
-            prompt=prompt,
+        result = await self._openrouter.generate_response(
+            messages=[{"role": "user", "content": prompt}],
             api_key=openrouter_key,
-            model=model or "openai/gpt-4o-mini",
+            model=model,
         )
 
         if self._tier2_cache is not None:
@@ -471,9 +482,14 @@ def _elapsed_ms(start_ns: int) -> int:
     return int((time.monotonic_ns() - start_ns) / 1e6)
 
 
+def _safe_str_attr(obj: Any, name: str) -> str:
+    value = getattr(obj, name, "")
+    return value if isinstance(value, str) else ""
+
+
 async def _encode_query(embedding_provider: Any, text: str) -> list[float]:
     if hasattr(embedding_provider, "encode"):
-        return await embedding_provider.encode(text)
+        return await embedding_provider.encode(text, task="search")
     if callable(embedding_provider):
         return await embedding_provider(text)
     raise TypeError("embedding_provider must expose encode()")
@@ -481,5 +497,5 @@ async def _encode_query(embedding_provider: Any, text: str) -> list[float]:
 
 async def _encode_batch(embedding_provider: Any, texts: list[str]) -> list[list[float]]:
     if hasattr(embedding_provider, "encode_batch"):
-        return await embedding_provider.encode_batch(texts)
+        return await embedding_provider.encode_batch(texts, task="ingest")
     raise TypeError("embedding_provider must expose encode_batch()")

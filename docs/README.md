@@ -12,6 +12,7 @@ This project is a minimal, extensible information retrieval service. It can supp
 - [Configuration](configuration.md): environment variables and runtime defaults.
 - [Extension Guide](extension-guide.md): how to add adapters, data types, retrievers, storage, generation, and status backends.
 - [Development](development.md): setup, tests, current limitations, and next implementation order.
+- [LLM and embedding design](design/llm_embedding_design.md): provider boundaries for embeddings, generation, extraction, and reranking.
 - [Examples](../examples/README.md): local startup and first ingest/search calls.
 
 ## Design Position

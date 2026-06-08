@@ -11,7 +11,7 @@ import asyncio
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
 import numpy as np
@@ -22,12 +22,58 @@ OPENROUTER_EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings"
 _BEARER_KEY_RE = re.compile(r"(sk-or-|sk-)[A-Za-z0-9._-]+")
 
 
+EmbeddingTask = Literal["ingest", "search", "update"]
+
+
 class EmbeddingProvider(Protocol):
     """Protocol for async embedding providers."""
 
-    async def encode(self, text: str) -> list[float]: ...
+    async def initialize(self) -> "EmbeddingProvider":
+        """Open provider resources and return self."""
 
-    async def encode_batch(self, texts: list[str]) -> list[list[float]]: ...
+    async def encode(
+        self,
+        text: str,
+        *,
+        task: EmbeddingTask = "search",
+    ) -> list[float]: ...
+
+    async def encode_batch(
+        self,
+        texts: list[str],
+        *,
+        task: EmbeddingTask = "ingest",
+    ) -> list[list[float]]: ...
+
+    async def shutdown(self) -> None:
+        """Close provider resources."""
+
+
+class EmbeddingProviderFactory:
+    """Creates configured embedding providers by stable provider name."""
+
+    @staticmethod
+    def create(
+        provider: str,
+        *,
+        model_name: str,
+        device: str = "cpu",
+        api_key: str = "",
+        base_url: str = OPENROUTER_EMBEDDINGS_URL,
+    ) -> EmbeddingProvider:
+        normalized = provider.strip().lower()
+        if normalized in {"local", "sentence_transformer", "sentence-transformer"}:
+            return EmbeddingService(model_name=model_name, device=device)
+        if normalized in {"openrouter", "openai", "remote", "openai_compatible"}:
+            return RemoteEmbeddingService(
+                api_key=api_key,
+                model_name=model_name,
+                base_url=base_url,
+            )
+        raise ValueError(
+            "RAG_EMBEDDING_PROVIDER must be one of: "
+            "local, sentence_transformer, openrouter, openai, remote, openai_compatible"
+        )
 
 
 class EmbeddingService:
@@ -59,14 +105,30 @@ class EmbeddingService:
         )
         return self
 
-    async def encode(self, text: str) -> list[float]:
+    async def encode(
+        self,
+        text: str,
+        *,
+        task: EmbeddingTask = "search",
+    ) -> list[float]:
+        if self._executor is None or self._model is None:
+            await self.initialize()
         loop = asyncio.get_running_loop()
         vector = await loop.run_in_executor(
             self._executor, _encode_text, self._model, text
         )
         return vector
 
-    async def encode_batch(self, texts: list[str]) -> list[list[float]]:
+    async def encode_batch(
+        self,
+        texts: list[str],
+        *,
+        task: EmbeddingTask = "ingest",
+    ) -> list[list[float]]:
+        if not texts:
+            return []
+        if self._executor is None or self._model is None:
+            await self.initialize()
         loop = asyncio.get_running_loop()
         vectors = await loop.run_in_executor(
             self._executor, _encode_texts, self._model, texts
@@ -113,11 +175,21 @@ class RemoteEmbeddingService:
         )
         return self
 
-    async def encode(self, text: str) -> list[float]:
-        vectors = await self.encode_batch([text])
+    async def encode(
+        self,
+        text: str,
+        *,
+        task: EmbeddingTask = "search",
+    ) -> list[float]:
+        vectors = await self.encode_batch([text], task=task)
         return vectors[0]
 
-    async def encode_batch(self, texts: list[str]) -> list[list[float]]:
+    async def encode_batch(
+        self,
+        texts: list[str],
+        *,
+        task: EmbeddingTask = "ingest",
+    ) -> list[list[float]]:
         if self._client is None:
             await self.initialize()
         if not texts:

@@ -51,32 +51,25 @@ Real `.env` files should not be committed. Commit `*.env.example` templates only
 qdrant_retrieval_service/
   configs/
     config.py
-    base_config.py
-    local_config.py
-    testing_config.py
-    production_config.py
-    envs/
-      local.env.example
-      testing.env.example
-      production.env.example
+    local.env.example
+    testing.env.example
+    production.env.example
     embeddings/
-      local_config.py
+      config.py
       local.env.example
-      openrouter_config.py
       openrouter.env.example
     qdrant/
-      local_config.py
+      config.py
       local.env.example
-      cloud_config.py
       cloud.env.example
     generation/
-      disabled_config.py
-      openrouter_config.py
+      config.py
+      disabled.env.example
       openrouter.env.example
     storage/
-      memory_config.py
-      filesystem_config.py
-      s3_config.py
+      config.py
+      memory.env.example
+      filesystem.env.example
       s3.env.example
     project/
       __init__.py
@@ -195,15 +188,15 @@ settings = load_settings(profile="local")
 Supported variants:
 
 ```text
-configs/envs/local.env
-configs/envs/testing.env
-configs/envs/production.env
-configs/embeddings/local.env
-configs/embeddings/openrouter.env
-configs/qdrant/local.env
-configs/qdrant/cloud.env
-configs/generation/openrouter.env
-configs/storage/s3.env
+configs/local.env and configs/config.py
+configs/testing.env and configs/config.py
+configs/production.env and configs/config.py
+configs/embeddings/local.env and configs/embeddings/config.py
+configs/embeddings/openrouter.env and configs/embeddings/config.py
+configs/qdrant/local.env and configs/qdrant/config.py
+configs/qdrant/cloud.env and configs/qdrant/config.py
+configs/generation/openrouter.env and configs/generation/config.py
+configs/storage/s3.env and configs/storage/config.py
 ```
 
 Project configuration repository path:
@@ -322,7 +315,7 @@ Root planning notes should eventually move under `docs/design/` or be removed af
 ## 5. Existing File Mapping
 
 ```text
-.env.example                         -> configs/envs/local.env.example
+.env.example                         -> configs/local.env.example
 
 rag_server/                          -> retrieval_service/
 
@@ -379,16 +372,16 @@ Example flows:
 
 ```text
 local dev:
-  configs/envs/local.env
+  configs/local.env
   configs/embeddings/local.env
   configs/qdrant/local.env
 
 remote embeddings:
-  configs/envs/local.env
+  configs/local.env
   configs/embeddings/openrouter.env
 
 production:
-  configs/envs/production.env
+  configs/production.env
   configs/qdrant/cloud.env
   configs/storage/s3.env
 ```
@@ -441,7 +434,7 @@ The core model layer should stay dependency-light.
 Tasks:
 
 - create `configs/`
-- move `.env.example` to `configs/envs/local.env.example`
+- move `.env.example` to `configs/local.env.example`
 - add `configs/config.py`
 - add typed settings dataclasses
 - update current app startup to load settings through `configs/config.py`
@@ -520,7 +513,7 @@ First concrete step:
 
 ```text
 create configs/config.py
-create configs/envs/local.env.example
+create configs/local.env.example
 update current app startup to use load_settings()
 ```
 

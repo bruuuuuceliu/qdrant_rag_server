@@ -287,7 +287,7 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
                     },
                 ),
                 patch(
-                    "retrieval_service.services.embedding.EmbeddingService",
+                    "retrieval_service.services.embedding.EmbeddingProviderFactory.create",
                     return_value=embedding_service,
                 ),
                 patch(
@@ -348,11 +348,10 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
                         "server.grpc.server": grpc_server_module,
                     },
                 ),
-                patch("retrieval_service.services.embedding.EmbeddingService") as local_cls,
                 patch(
-                    "retrieval_service.services.embedding.RemoteEmbeddingService",
+                    "retrieval_service.services.embedding.EmbeddingProviderFactory.create",
                     return_value=remote_provider,
-                ) as remote_cls,
+                ) as embedding_factory,
                 patch(
                     "retrieval_service.services.vector_store.QdrantStore",
                     return_value=qdrant_store,
@@ -360,17 +359,103 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
             ):
                 app = await create_app(settings)
 
-            local_cls.assert_not_called()
-            remote_cls.assert_called_once_with(
+            embedding_factory.assert_called_once_with(
+                "openrouter",
+                device="cpu",
                 api_key="sk-or-test",
-                model_name="remote-embedding-model",
                 base_url="https://example.test/embeddings",
+                model_name="remote-embedding-model",
             )
             qdrant_cls.assert_called_once()
             self.assertEqual(qdrant_cls.call_args.kwargs["default_vector_size"], 1536)
             self.assertIs(app.engine._embedding_provider, remote_provider)
 
             await app.shutdown()
+
+    async def test_create_app_initializes_and_closes_llm_provider_when_enabled(self) -> None:
+        from server.app import AppSettings, create_app
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            settings = AppSettings(
+                config_db_path=Path(tempdir) / "config.db",
+                response_cache_db_path=Path(tempdir) / "response_cache.db",
+                grpc_port=0,
+                qdrant_url=None,
+                qdrant_host="localhost",
+                qdrant_port=6333,
+                max_per_project=10,
+                max_per_user=5,
+                ingest_worker_count=1,
+                embedding_provider="local",
+                embedding_model="test-model",
+                embedding_device="cpu",
+                embedding_api_key="",
+                embedding_base_url="https://example.test/embeddings",
+                embedding_dimension=768,
+                generation_enabled=True,
+                generation_provider="openrouter",
+                generation_model="openai/test-model",
+                generation_api_key="",
+                generation_base_url="https://example.test/chat/completions",
+                generation_max_tokens=512,
+                generation_temperature=0.2,
+            )
+
+            embedding_service = MagicMock()
+            embedding_service.initialize = AsyncMock()
+            embedding_service.shutdown = AsyncMock()
+
+            llm_provider = MagicMock()
+            llm_provider.initialize = AsyncMock()
+            llm_provider.shutdown = AsyncMock()
+
+            qdrant_store = MagicMock()
+            qdrant_store.close = AsyncMock()
+
+            server = MagicMock()
+            server.stop = AsyncMock()
+            grpc_pkg = types.ModuleType("server.grpc")
+            grpc_pkg.__path__ = []
+            grpc_server_module = types.ModuleType("server.grpc.server")
+            grpc_server_module.serve_grpc = AsyncMock(return_value=server)
+
+            with (
+                patch.dict(
+                    sys.modules,
+                    {
+                        "server.grpc": grpc_pkg,
+                        "server.grpc.server": grpc_server_module,
+                    },
+                ),
+                patch(
+                    "retrieval_service.services.embedding.EmbeddingProviderFactory.create",
+                    return_value=embedding_service,
+                ),
+                patch(
+                    "retrieval_service.services.generation.LLMProviderFactory.create",
+                    return_value=llm_provider,
+                ) as llm_factory,
+                patch(
+                    "retrieval_service.services.vector_store.QdrantStore",
+                    return_value=qdrant_store,
+                ),
+            ):
+                app = await create_app(settings)
+
+            llm_factory.assert_called_once_with(
+                "openrouter",
+                base_url="https://example.test/chat/completions",
+                api_key="",
+                default_model="openai/test-model",
+                default_max_tokens=512,
+                default_temperature=0.2,
+            )
+            llm_provider.initialize.assert_awaited_once()
+            self.assertIs(app.openrouter_client, llm_provider)
+
+            await app.shutdown()
+
+            llm_provider.shutdown.assert_awaited_once()
 
 
 if __name__ == "__main__":
