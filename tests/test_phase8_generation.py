@@ -5,16 +5,18 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from retrieval_service.engine import (
+from retrieval_service.rag import (
     GenerationUnavailableError,
     RagEngine,
     GenerateResult,
     _make_response_cache_key,
 )
-from retrieval_service.services.generation import (
+from retrieval_service.llm import (
     LLMProviderFactory,
+    OpenAICompatibleLLM,
     OpenRouterClient,
     OpenRouterClientError,
+    OpenRouterLLM,
     _redact_key,
 )
 
@@ -42,6 +44,18 @@ class OpenRouterClientTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIsInstance(provider, OpenRouterClient)
+        self.assertIsInstance(provider, OpenRouterLLM)
+
+    async def test_factory_creates_openai_compatible_provider(self) -> None:
+        provider = LLMProviderFactory.create(
+            "openai_compatible",
+            base_url="https://example.test/chat/completions",
+            api_key="sk-test",
+            default_model="provider-default-model",
+        )
+
+        self.assertIsInstance(provider, OpenAICompatibleLLM)
+        self.assertNotIsInstance(provider, OpenRouterLLM)
 
     async def test_rejects_empty_key(self) -> None:
         client = OpenRouterClient()

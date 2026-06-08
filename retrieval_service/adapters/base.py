@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from typing import Any, Protocol
 
-from retrieval_service.core.models import (
+from retrieval_service.core.schemas import (
     BaseChunk,
     BaseChunkPayload,
     BaseDocument,

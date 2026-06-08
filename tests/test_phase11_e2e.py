@@ -14,7 +14,7 @@ from retrieval_service.adapters import (
     ProjectAdapterRegistry,
     ProjectAdapterResolver,
 )
-from retrieval_service.engine import RagEngine
+from retrieval_service.rag import RagEngine
 from retrieval_service.gateway import (
     AsyncConcurrencyLimiter,
     IngestRequest,
@@ -287,7 +287,7 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
                     },
                 ),
                 patch(
-                    "retrieval_service.services.embedding.EmbeddingProviderFactory.create",
+                    "retrieval_service.embedding.EmbeddingProviderFactory.create",
                     return_value=embedding_service,
                 ),
                 patch(
@@ -349,7 +349,7 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
                     },
                 ),
                 patch(
-                    "retrieval_service.services.embedding.EmbeddingProviderFactory.create",
+                    "retrieval_service.embedding.EmbeddingProviderFactory.create",
                     return_value=remote_provider,
                 ) as embedding_factory,
                 patch(
@@ -428,11 +428,11 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
                     },
                 ),
                 patch(
-                    "retrieval_service.services.embedding.EmbeddingProviderFactory.create",
+                    "retrieval_service.embedding.EmbeddingProviderFactory.create",
                     return_value=embedding_service,
                 ),
                 patch(
-                    "retrieval_service.services.generation.LLMProviderFactory.create",
+                    "retrieval_service.llm.LLMProviderFactory.create",
                     return_value=llm_provider,
                 ) as llm_factory,
                 patch(

@@ -39,12 +39,12 @@ async def create_app(settings: AppSettings | None = None) -> AppContext:
         WebsiteProjectAdapter,
     )
     from configs import SQLiteProjectConfigRepository
-    from retrieval_service.engine.engine import RagEngine
+    from retrieval_service.rag.engine import RagEngine
     from retrieval_service.gateway import AsyncConcurrencyLimiter, RagGateway
     from retrieval_service.health import HealthChecker, MetricsCollector
     from retrieval_service.services.cache import Tier1MemoryCache, Tier2ResponseCache
-    from retrieval_service.services.embedding import EmbeddingProviderFactory
-    from retrieval_service.services.generation import LLMProviderFactory
+    from retrieval_service.embedding import EmbeddingProviderFactory
+    from retrieval_service.llm import LLMProviderFactory
     from retrieval_service.services.vector_store import QdrantStore
     from server.grpc.server import serve_grpc
 

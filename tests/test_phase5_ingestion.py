@@ -14,9 +14,9 @@ from retrieval_service.storage import (
     ObjectStorageError,
     make_storage_key,
 )
-from retrieval_service.engine import RagEngine
-from retrieval_service.core.models import BaseDocument, BaseChunk
-from retrieval_service.core.models import BaseProjectConfig
+from retrieval_service.rag import RagEngine
+from retrieval_service.schema import BaseDocument, BaseChunk
+from retrieval_service.schema import BaseProjectConfig
 from retrieval_service.adapters import ProjectAdapter
 
 
@@ -109,7 +109,7 @@ class EngineIngestWithStorageTest(unittest.IsolatedAsyncioTestCase):
         )
 
         from retrieval_service.gateway import IngestRequest, IngestPlan
-        from retrieval_service.core.models import BaseProjectConfig
+        from retrieval_service.schema import BaseProjectConfig
 
         plan = IngestPlan(
             request=IngestRequest(
@@ -229,7 +229,7 @@ class EngineIngestWithStorageTest(unittest.IsolatedAsyncioTestCase):
         )
 
         from retrieval_service.gateway import IngestRequest, IngestPlan
-        from retrieval_service.core.models import BaseProjectConfig
+        from retrieval_service.schema import BaseProjectConfig
 
         plan = IngestPlan(
             request=IngestRequest(

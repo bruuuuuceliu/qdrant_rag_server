@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from retrieval_service.adapters.base import ProjectAdapter
-from retrieval_service.core.models import (
+from retrieval_service.core.schemas import (
     BaseChunk,
     BaseChunkPayload,
     BaseDocument,

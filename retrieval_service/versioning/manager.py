@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from configs.project.repository import SQLiteProjectConfigRepository
-from retrieval_service.core.models import BaseProjectConfig
+from retrieval_service.core.schemas import BaseProjectConfig
 
 DEFAULT_GRACE_PERIOD_SECONDS = 7 * 24 * 3600  # 7 days
 

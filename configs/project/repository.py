@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from retrieval_service.core.models import BaseProjectConfig
+from retrieval_service.core.schemas import BaseProjectConfig
 
 
 DEFAULT_CONFIG_DB_PATH = Path("/var/lib/rag/config.db")

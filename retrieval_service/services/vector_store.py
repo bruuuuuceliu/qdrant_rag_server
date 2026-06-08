@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from retrieval_service.core.models import BaseChunkPayload
+from retrieval_service.core.schemas import BaseChunkPayload
 
 try:
     from qdrant_client import AsyncQdrantClient, models

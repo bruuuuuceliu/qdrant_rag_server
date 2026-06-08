@@ -6,22 +6,23 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from retrieval_service.engine import RagEngine, SearchResult, _build_qdrant_filter
+from retrieval_service.rag import RagEngine, SearchResult, _build_qdrant_filter
 from retrieval_service.services.vector_store import (
     VECTOR_SIZE,
     _validate_upsert_input,
     make_qdrant_point_id,
 )
-from retrieval_service.services.embedding import (
+from retrieval_service.embedding import (
     EmbeddingProviderFactory,
     EmbeddingService,
+    OpenRouterEmbedding,
     RemoteEmbeddingError,
     RemoteEmbeddingService,
     _parse_embedding_response,
     _redact_key,
 )
 from retrieval_service.gateway import IngestPlan, IngestRequest, SearchPlan
-from retrieval_service.core.models import (
+from retrieval_service.schema import (
     BaseChunkPayload,
     BaseProjectConfig,
     BaseQueryScope,
@@ -53,6 +54,25 @@ class RemoteEmbeddingServiceTest(unittest.TestCase):
         )
 
         self.assertIsInstance(provider, RemoteEmbeddingService)
+
+    def test_embedding_factory_creates_openrouter_provider(self) -> None:
+        provider = EmbeddingProviderFactory.create(
+            "openrouter",
+            model_name="remote-model",
+            api_key="sk-or-test",
+            base_url="https://example.test/embeddings",
+        )
+
+        self.assertIsInstance(provider, OpenRouterEmbedding)
+
+    def test_openrouter_embedding_rejects_non_openrouter_key(self) -> None:
+        with self.assertRaises(ValueError):
+            EmbeddingProviderFactory.create(
+                "openrouter",
+                model_name="remote-model",
+                api_key="sk-test",
+                base_url="https://example.test/embeddings",
+            )
 
     def test_parse_embedding_response(self) -> None:
         vectors = _parse_embedding_response(

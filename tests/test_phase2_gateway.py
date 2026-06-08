@@ -18,7 +18,7 @@ from retrieval_service.gateway import (
     RagGateway,
     SearchPlan,
 )
-from retrieval_service.core.models import (
+from retrieval_service.schema import (
     BaseChunk,
     BaseChunkPayload,
     BaseDocument,

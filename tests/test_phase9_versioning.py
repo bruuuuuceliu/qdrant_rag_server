@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from configs import SQLiteProjectConfigRepository
-from retrieval_service.core.models import BaseProjectConfig
+from retrieval_service.schema import BaseProjectConfig
 from retrieval_service.versioning import VersionManager, VersionNotFoundError
 
 

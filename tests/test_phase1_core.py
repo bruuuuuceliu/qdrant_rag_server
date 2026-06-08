@@ -16,7 +16,7 @@ from configs import (
     ProjectConfigNotFoundError,
     SQLiteProjectConfigRepository,
 )
-from retrieval_service.core.models import (
+from retrieval_service.schema import (
     BaseChunk,
     BaseChunkPayload,
     BaseDocument,

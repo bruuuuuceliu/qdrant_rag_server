@@ -8,18 +8,15 @@ from typing import Any
 import grpc
 from grpc import aio
 
-from retrieval_service.engine.engine import (
+from retrieval_service.rag.engine import (
     GenerationUnavailableError,
     RagEngine,
     SearchResult,
 )
-from retrieval_service.gateway.handler import (
-    GatewayError,
-    IngestRequest,
-    RagGateway,
-    SearchRequest,
-)
-from retrieval_service.services.generation import OpenRouterClientError
+from retrieval_service.gateway.errors import GatewayError
+from retrieval_service.gateway.requests import IngestRequest, SearchRequest
+from retrieval_service.gateway.gateway import RagGateway
+from retrieval_service.llm import OpenRouterClientError
 from retrieval_service.health.health import HealthChecker
 from server.grpc.generated import retrieval_service_pb2
 from server.grpc.generated import retrieval_service_pb2_grpc
