@@ -8,16 +8,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from rag_server.storage import (
+from retrieval_service.storage import (
     FilesystemObjectStorage,
     MemoryObjectStorage,
     ObjectStorageError,
     make_storage_key,
 )
-from rag_server.engine import RagEngine
-from rag_server.core.models import BaseDocument, BaseChunk
-from rag_server.core.models import BaseProjectConfig
-from rag_server.adapters import ProjectAdapter
+from retrieval_service.engine import RagEngine
+from retrieval_service.core.models import BaseDocument, BaseChunk
+from retrieval_service.core.models import BaseProjectConfig
+from retrieval_service.adapters import ProjectAdapter
 
 
 class MemoryObjectStorageTest(unittest.IsolatedAsyncioTestCase):
@@ -108,8 +108,8 @@ class EngineIngestWithStorageTest(unittest.IsolatedAsyncioTestCase):
             ingest_worker_count=1,
         )
 
-        from rag_server.gateway import IngestRequest, IngestPlan
-        from rag_server.core.models import BaseProjectConfig
+        from retrieval_service.gateway import IngestRequest, IngestPlan
+        from retrieval_service.core.models import BaseProjectConfig
 
         plan = IngestPlan(
             request=IngestRequest(
@@ -228,8 +228,8 @@ class EngineIngestWithStorageTest(unittest.IsolatedAsyncioTestCase):
             ingest_worker_count=1,
         )
 
-        from rag_server.gateway import IngestRequest, IngestPlan
-        from rag_server.core.models import BaseProjectConfig
+        from retrieval_service.gateway import IngestRequest, IngestPlan
+        from retrieval_service.core.models import BaseProjectConfig
 
         plan = IngestPlan(
             request=IngestRequest(

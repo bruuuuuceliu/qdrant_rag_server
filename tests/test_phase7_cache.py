@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from rag_server.services.cache import (
+from retrieval_service.services.cache import (
     Tier1MemoryCache,
     Tier2ResponseCache,
     _hash_key,

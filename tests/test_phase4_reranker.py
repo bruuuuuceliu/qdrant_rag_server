@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from rag_server.services.reranker import RerankerService, _rerank_texts
+from retrieval_service.services.reranker import RerankerService, _rerank_texts
 
 
 class RerankTextsTest(unittest.TestCase):

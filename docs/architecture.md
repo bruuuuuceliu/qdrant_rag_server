@@ -17,25 +17,25 @@ client / worker
 ## Layers
 
 ```text
-proto/              gRPC protobuf definition
-rag_server/grpc/    async gRPC transport
-rag_server/gateway/ request validation, defaults, scope, concurrency limits
-rag_server/adapters project and data parsing/chunking/payload behavior
-rag_server/core/    shared model objects
-rag_server/engine/  orchestration for search, ingest, delete, generation
-rag_server/services embeddings, vector store, reranker, cache, generation
-rag_server/storage/ raw source object storage abstractions
-rag_server/config/  project configuration repository
-rag_server/health/  health checks and metrics
-rag_server/versioning/ embedding collection version metadata
+configs/            application and environment config loading
+server/             app entrypoint, gRPC transport, generated stubs, proto
+retrieval_service/gateway/ request validation, defaults, scope, concurrency limits
+retrieval_service/adapters project and data parsing/chunking/payload behavior
+retrieval_service/core/    shared model objects
+retrieval_service/engine/  orchestration for search, ingest, delete, generation
+retrieval_service/services embeddings, vector store, reranker, cache, generation
+retrieval_service/storage/ raw source object storage abstractions
+retrieval_service/config/  project configuration repository
+retrieval_service/health/  health checks and metrics
+retrieval_service/versioning/ embedding collection version metadata
 ```
 
 Future packages likely needed:
 
 ```text
-rag_server/retrieval/ vector, BM25, hybrid, metadata retrievers
-rag_server/jobs/      durable ingest job repositories
-rag_server/datatypes/ data-type registry and schemas
+retrieval_service/retrieval/ vector, BM25, hybrid, metadata retrievers
+retrieval_service/jobs/      durable ingest job repositories
+retrieval_service/datatypes/ data-type registry and schemas
 ```
 
 ## Component Responsibilities

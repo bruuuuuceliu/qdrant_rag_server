@@ -1,4 +1,4 @@
-# qdrant_rag_server
+# qdrant_retrieval_service
 
 Async project-scoped information retrieval service built around Qdrant, project/data adapters, gRPC, optional reranking, object storage backup, and simple caching.
 
@@ -33,7 +33,6 @@ Main known gaps:
 - Ingest queue is unbounded.
 - Raw content is hidden in `metadata["raw_text"]` instead of being a first-class input.
 - Website adapter config is hard-coded.
-- `rag_server/__init__.py` imports heavy optional dependencies eagerly.
 - Retrieval is still vector-first; BM25/hybrid retrievers need a shared retriever framework.
 - Data types need a registry so each type can own schema, parsing, filters, and retrieval defaults.
 - Generation is experimental and should not define the core RAG path.
@@ -77,17 +76,19 @@ Query-time retrieval reads chunk text from Qdrant payloads. Remote object storag
 ## Project Layout
 
 ```text
-proto/                      gRPC protobuf definition
-rag_server/core/            base models
-rag_server/adapters/        project adapter contract and website adapter
-rag_server/config/          SQLite project config repository
-rag_server/gateway/         request validation and scope enforcement
-rag_server/engine/          search, generation, and ingestion orchestration
-rag_server/services/        Qdrant, embedding, reranker, cache, generation
-rag_server/storage/         object storage abstractions
-rag_server/grpc/            async gRPC server and generated stubs
-rag_server/health/          health checks and metrics
-rag_server/versioning/      embedding collection version manager
+configs/                    application and environment config loading
+retrieval_service/core/            base models
+retrieval_service/adapters/        project adapter contract and website adapter
+retrieval_service/config/          SQLite project config repository
+retrieval_service/gateway/         request validation and scope enforcement
+retrieval_service/engine/          search, generation, and ingestion orchestration
+retrieval_service/services/        Qdrant, embedding, reranker, cache, generation
+retrieval_service/storage/         object storage abstractions
+retrieval_service/health/          health checks and metrics
+retrieval_service/versioning/      embedding collection version manager
+server/                     app entrypoint, gRPC server, generated stubs, proto
+deployment/                 startup and deployment scripts
+examples/                   runnable usage examples
 tests/                      phase-based unit tests
 ```
 
@@ -112,7 +113,7 @@ Run tests:
 python -m pytest -q
 ```
 
-If tests fail at collection with `ModuleNotFoundError: qdrant_client`, install the project dependencies first. Also note that current eager imports in `rag_server/__init__.py` can make unrelated tests require Qdrant-dependent modules.
+If tests fail at collection with `ModuleNotFoundError: qdrant_client`, install the project dependencies first.
 
 ## Documentation
 

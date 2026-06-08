@@ -58,6 +58,8 @@ ENV/
 .env
 .env.*
 !.env.example
+configs/**/*.env
+!configs/**/*.env.example
 .venv
 
 # IDE files

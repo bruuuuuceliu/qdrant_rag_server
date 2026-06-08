@@ -6,20 +6,20 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from rag_server.engine import RagEngine, SearchResult, _build_qdrant_filter
-from rag_server.services.vector_store import (
+from retrieval_service.engine import RagEngine, SearchResult, _build_qdrant_filter
+from retrieval_service.services.vector_store import (
     VECTOR_SIZE,
     _validate_upsert_input,
     make_qdrant_point_id,
 )
-from rag_server.services.embedding import (
+from retrieval_service.services.embedding import (
     RemoteEmbeddingError,
     RemoteEmbeddingService,
     _parse_embedding_response,
     _redact_key,
 )
-from rag_server.gateway import IngestPlan, IngestRequest, SearchPlan
-from rag_server.core.models import (
+from retrieval_service.gateway import IngestPlan, IngestRequest, SearchPlan
+from retrieval_service.core.models import (
     BaseChunkPayload,
     BaseProjectConfig,
     BaseQueryScope,
@@ -29,7 +29,7 @@ from rag_server.core.models import (
     IngestJobStatus,
     SHARED_USER_ID,
 )
-from rag_server.adapters import ProjectAdapter
+from retrieval_service.adapters import ProjectAdapter
 
 
 class RemoteEmbeddingServiceTest(unittest.TestCase):
@@ -242,7 +242,7 @@ class RagEngineTest(unittest.IsolatedAsyncioTestCase):
             reranker_model="bge-reranker-base",
             retrieval_config=dict(kwargs.get("retrieval_config", {})),
         )
-        from rag_server.gateway import SearchRequest
+        from retrieval_service.gateway import SearchRequest
 
         request = SearchRequest(
             project_id=config.project_id,

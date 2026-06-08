@@ -1,4 +1,4 @@
-# qdrant_rag_server Documentation
+# qdrant_retrieval_service Documentation
 
 This project is a minimal, extensible information retrieval service. It can support RAG-style generation, but retrieval is the core product: ingest data, index it, search it, filter it, delete it, and report job status.
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from rag_server.health import (
+from retrieval_service.health import (
     ComponentStatus,
     HealthChecker,
     HealthReport,

@@ -5,13 +5,13 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from rag_server.engine import (
+from retrieval_service.engine import (
     GenerationUnavailableError,
     RagEngine,
     GenerateResult,
     _make_response_cache_key,
 )
-from rag_server.services.generation import (
+from retrieval_service.services.generation import (
     OpenRouterClient,
     OpenRouterClientError,
     _redact_key,

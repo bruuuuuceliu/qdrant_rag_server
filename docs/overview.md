@@ -1,6 +1,6 @@
 # Overview
 
-`qdrant_rag_server` is an async, project-scoped information retrieval service.
+`qdrant_retrieval_service` is an async, project-scoped information retrieval service.
 
 Despite the repository name, the project should not be treated as only a RAG server. The core service is retrieval-first:
 

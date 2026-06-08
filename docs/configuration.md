@@ -1,11 +1,11 @@
 # Configuration
 
-The app reads environment variables through `AppSettings.from_env()`.
+The app reads environment variables through `configs/config.py`.
 
 Example file:
 
 ```text
-.env.example
+configs/envs/local.env.example
 ```
 
 ## Environment Variables

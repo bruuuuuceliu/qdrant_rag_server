@@ -1,0 +1,282 @@
+# Mem0 Repository Structure Report
+
+## Overview
+
+This repository is a full-stack memory platform for AI, combining:
+- A Python SDK (`mem0/`) for self-hosted memory and agent integration
+- A TypeScript SDK (`mem0-ts/`) for client apps and browser/Node usage
+- CLI tooling in `cli/` for Node and Python command-line flows
+- A plugin ecosystem in `mem0-plugin/` and `openclaw/`
+- A self-hosted platform in `openmemory/` backed by a FastAPI service and UI
+- A standalone API server in `server/`
+- Documentation in `docs/`, examples in `examples/`, and repo tooling in `scripts/`
+
+The root package is defined via `pyproject.toml` and built with Hatch.
+
+---
+
+## Top-level Structure
+
+```text
+mem0/
+├── __init__.py
+├── client/
+├── configs/
+├── embeddings/
+├── llms/
+├── memory/
+├── proxy/
+├── reranker/
+├── utils/
+└── vector_stores/
+
+mem0-ts/
+├── src/
+├── tests/
+├── package.json
+└── tsconfig.json
+
+cli/
+├── node/
+└── python/
+
+mem0-plugin/
+├── hooks/
+├── scripts/
+├── skills/
+├── tests/
+├── plugin.json
+├── hooks.json
+└── mcp_config.json
+
+openclaw/
+├── backend/
+├── cli/
+├── providers.ts
+├── skills/
+├── tests/
+├── tsconfig.json
+└── openclaw.plugin.json
+
+openmemory/
+├── api/
+├── ui/
+├── compose/
+├── docker-compose.yml
+└── run.sh
+
+server/
+├── routers/
+├── db.py
+├── main.py
+├── models.py
+└── requirements.txt
+
+vercel-ai-sdk/
+├── src/
+├── tests/
+├── package.json
+└── tsconfig.json
+
+docs/
+├── api-reference/
+├── open-source/
+├── platform/
+├── migration/
+├── llms.txt
+└── docs.json
+
+examples/
+├── mem0-demo/
+├── openai-inbuilt-tools/
+└── vercel-ai-sdk-chat-app/
+
+scripts/
+├── check-llms-txt-coverage.py
+└── oss-to-platform-migrate.sh
+
+tests/
+```
+
+---
+
+## Part Summaries
+
+### `mem0/` — Python SDK
+
+This is the core Python package for the project.
+- Implements memory storage, search, and retrieval logic
+- Supports embeddings, vector stores, LLMs, rerankers, and memory adapters
+- Uses `pydantic`, `sqlalchemy`, and providers for multiple backends
+- Built with Hatch and published as `mem0ai`
+
+Key directories:
+- `mem0/client/` — Hosted platform client support
+- `mem0/configs/` — Configuration classes for providers and memory
+- `mem0/embeddings/` — Embedding provider implementations
+- `mem0/llms/` — LLM provider implementations
+- `mem0/memory/` — Core Memory and AsyncMemory classes
+- `mem0/vector_stores/` — Vector store integrations
+
+### `mem0-ts/` — TypeScript SDK
+
+A parallel SDK for JavaScript/TypeScript.
+- Provides `mem0ai` npm package support for browser and Node apps
+- Includes tests, build config, and workspace metadata
+- Supports a self-hosted OSS memory experience in TypeScript
+
+Important files:
+- `package.json` — package metadata and dependencies
+- `tsconfig.json` — TypeScript compile settings
+- `jest.config.js` — unit and integration test setup
+
+### `cli/` — Command-line tooling
+
+CLI wrappers are split into two implementations:
+- `cli/python/` — Python-based CLI entrypoint and tooling
+- `cli/node/` — Node-based CLI entrypoint and tooling
+
+This area provides installation guides, command definitions, and CLI-specific code for working with Mem0 from the terminal.
+
+### `mem0-plugin/` — Plugin and MCP integration
+
+A plugin package for AI editor integrations.
+- Contains plugin manifest and hooks for platforms like Claude Code, Cursor, and Codex
+- Includes MCP tool configuration in `mcp_config.json`
+- Hosts hook definitions and automation scripts for plugin behavior
+
+This package is the integration layer that allows AI editors to use Mem0 functions such as memory add/search/update.
+
+### `openclaw/` — OpenClaw plugin and runtime
+
+An AI plugin runtime and SDK.
+- Implements OpenClaw skill loading, plugin manifest, and runtime glue
+- Includes provider logic, tooling, and tests for the plugin ecosystem
+- Contains both backend and CLI support
+
+Useful for creating custom recall/skill capabilities with Mem0-powered memory.
+
+### `openmemory/` — Self-hosted memory platform
+
+A deployable platform that includes:
+- `openmemory/api/` — FastAPI backend and MCP server support
+- `openmemory/ui/` — React/Next.js frontend
+- `docker-compose.yml` and `compose/` for local development
+
+This area is the hosted platform alternative for running Mem0 as a full-stack service.
+
+### `server/` — API server
+
+A standalone FastAPI service.
+- `main.py`, `db.py`, `models.py`, and route definitions
+- Designed to provide the Mem0 API in self-hosted mode
+- Contains Docker and environment scaffolding
+
+### `vercel-ai-sdk/` — Vercel AI integration provider
+
+A separate TypeScript package for the Vercel AI provider.
+- Provides a Vercel-compatible memory provider implementation
+- Contains package build and test configs
+
+### `docs/` — Documentation site
+
+The documentation source for the repository.
+- Includes guides, API reference pages, platform docs, migrations, and integrations
+- Contains `llms.txt` index and Mintlify-style docs structure
+- Serves both open source and platform users
+
+### `examples/` — Example apps and demos
+
+Example projects demonstrating Mem0 usage.
+- `mem0-demo/` — demo app for the core SDK
+- `openai-inbuilt-tools/` — examples with OpenAI built-in tools
+- `vercel-ai-sdk-chat-app/` — Vercel chat integration demo
+- Additional folders for multiagent, multimodal, and Chrome extension demos
+
+### `scripts/` — Utility tooling
+
+Repo-level scripts for maintenance and checks.
+- `check-llms-txt-coverage.py` — synchronizes docs and `llms.txt`
+- `oss-to-platform-migrate.sh` — migration helper for platform integration
+
+### `tests/` — Root test support
+
+A top-level tests folder likely used for repo-wide or Python SDK tests.
+
+### Root metadata and tooling
+
+Important root files:
+- `pyproject.toml` — Python package/project configuration
+- `Makefile` — repo task automation
+- `README.md` — overview and quickstart
+- `.pre-commit-config.yaml` — formatting and lint hooks
+- `marketplace.json` — likely editor/marketplace integration metadata
+- `LICENSE` — Apache-2.0 open source license
+
+---
+
+## Visualizations
+
+### High-level architecture
+
+```text
+[ User / App ]
+     │
+     │ uses
+     ▼
+[ mem0-ts ]   [ mem0 ]   [ CLI ]
+     │           │         │
+     ├───────────┼─────────┤
+     │           │         ▼
+     │           │      [ mem0-plugin / openclaw ]
+     │           │         │
+     │           │         ▼
+     │           │      [ openmemory / server ]
+     │           │
+     └───────────▶ [ docs / examples / scripts ]
+```
+
+### Repository topology
+
+```text
+root
+├── mem0/              # Python SDK core package
+├── mem0-ts/           # TypeScript SDK package
+├── cli/               # Node + Python CLI tooling
+├── mem0-plugin/       # AI editor plugin integration
+├── openclaw/          # OpenClaw plugin runtime + skills
+├── openmemory/        # Deployable platform service + UI
+├── server/            # Standalone FastAPI API service
+├── docs/              # Documentation and developer guides
+├── examples/          # Demo apps and integrations
+├── scripts/           # repository utilities
+├── tests/             # top-level test assets
+├── pyproject.toml     # Python packaging/build config
+└── README.md          # project overview
+```
+
+### Package relationship map
+
+```text
+mem0/        -- Python SDK implementation
+mem0-ts/     -- JavaScript/TypeScript SDK implementation
+cli/         -- CLI access layer for both SDKs
+mem0-plugin/ -- Editor/MCP plugin wrapper
+openclaw/    -- Skill/runtime plugin integration
+openmemory/  -- Full self-hosted platform stack
+server/      -- API server backend
+vercel-ai-sdk/ -- Vercel provider integration
+```
+
+---
+
+## Notes
+
+- The repository is designed as a monorepo with distinct packages for SDKs, platform, plugins, and documentation.
+- `pyproject.toml` confirms the repo is built with `hatchling` and supports Python 3.10+.
+- `docs/` is extensive and likely supports a documentation site with Mintlify or a similar static documentation generator.
+- `openmemory/` and `server/` are the two primary runtime/deployment stacks for self-hosting Mem0.
+
+---
+
+Generated by inspecting the repository root, key directories, and project metadata.

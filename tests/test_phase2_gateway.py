@@ -4,12 +4,12 @@ import asyncio
 import unittest
 from typing import Any
 
-from rag_server.adapters import (
+from retrieval_service.adapters import (
     ProjectAdapter,
     ProjectAdapterRegistry,
     ProjectAdapterResolver,
 )
-from rag_server.gateway import (
+from retrieval_service.gateway import (
     AsyncConcurrencyLimiter,
     ConcurrencyLimitExceededError,
     IngestPlan,
@@ -18,7 +18,7 @@ from rag_server.gateway import (
     RagGateway,
     SearchPlan,
 )
-from rag_server.core.models import (
+from retrieval_service.core.models import (
     BaseChunk,
     BaseChunkPayload,
     BaseDocument,

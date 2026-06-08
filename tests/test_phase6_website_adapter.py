@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import unittest
 
-from rag_server.gateway import SearchRequest, IngestRequest
-from rag_server.core.models import (
+from retrieval_service.gateway import SearchRequest, IngestRequest
+from retrieval_service.core.models import (
     BaseChunk,
     BaseDocument,
 )
-from rag_server.adapters.website import (
+from retrieval_service.adapters.website import (
     WebsiteChunkPayload,
     WebsiteDocument,
     WebsiteProjectAdapter,
@@ -126,7 +126,7 @@ class WebsiteProjectAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(scope.include_shared)
 
     async def test_build_retrieval_filter_includes_shared_by_default(self) -> None:
-        from rag_server.core.models import BaseQueryScope
+        from retrieval_service.core.models import BaseQueryScope
         scope = BaseQueryScope(project_id="p1", user_id="u1")
         rf = await self.adapter.build_retrieval_filter(scope)
         self.assertEqual(rf.allowed_user_ids, ("u1", "__shared__"))
@@ -192,7 +192,7 @@ class WebsiteProjectAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload.section_heading, "Intro")
 
     async def test_build_prompt_includes_urls_and_context(self) -> None:
-        from rag_server.core.models import BaseQueryScope, BaseChunkPayload
+        from retrieval_service.core.models import BaseQueryScope, BaseChunkPayload
         chunks = [
             WebsiteChunkPayload(
                 project_id="p1", user_id="u1", kb_id="kb_a", doc_id="d1",

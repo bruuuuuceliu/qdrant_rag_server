@@ -5,7 +5,7 @@ The current public transport is gRPC.
 Proto file:
 
 ```text
-proto/rag_service.proto
+server/proto/retrieval_service.proto
 ```
 
 Service:

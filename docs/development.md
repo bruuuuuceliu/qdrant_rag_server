@@ -32,7 +32,7 @@ In this workspace, the known-good test command is:
 The local app entrypoint is:
 
 ```bash
-python -m rag_server.app
+python -m server.app
 ```
 
 Configure it through environment variables. See [Configuration](configuration.md).

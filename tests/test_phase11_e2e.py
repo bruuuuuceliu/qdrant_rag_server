@@ -10,18 +10,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from rag_server.adapters import (
+from retrieval_service.adapters import (
     ProjectAdapterRegistry,
     ProjectAdapterResolver,
 )
-from rag_server.engine import RagEngine
-from rag_server.gateway import (
+from retrieval_service.engine import RagEngine
+from retrieval_service.gateway import (
     AsyncConcurrencyLimiter,
     IngestRequest,
     RagGateway,
     SearchRequest,
 )
-from rag_server.adapters.website import WebsiteProjectAdapter
+from retrieval_service.adapters.website import WebsiteProjectAdapter
 
 
 class InMemoryProjectTypes:
@@ -217,7 +217,7 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIsInstance(r, Exception)
 
     async def test_metrics_recording_in_search(self) -> None:
-        from rag_server.health import MetricsCollector
+        from retrieval_service.health import MetricsCollector
 
         metrics = MetricsCollector()
 
@@ -242,7 +242,7 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(snap.avg_search_latency_ms, 0)
 
     async def test_create_app_wires_embedding_provider_object(self) -> None:
-        from rag_server.app import AppSettings, create_app
+        from server.app import AppSettings, create_app
 
         with tempfile.TemporaryDirectory() as tempdir:
             settings = AppSettings(
@@ -273,25 +273,25 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
 
             server = MagicMock()
             server.stop = AsyncMock()
-            grpc_pkg = types.ModuleType("rag_server.grpc")
+            grpc_pkg = types.ModuleType("server.grpc")
             grpc_pkg.__path__ = []
-            grpc_server_module = types.ModuleType("rag_server.grpc.server")
+            grpc_server_module = types.ModuleType("server.grpc.server")
             grpc_server_module.serve_grpc = AsyncMock(return_value=server)
 
             with (
                 patch.dict(
                     sys.modules,
                     {
-                        "rag_server.grpc": grpc_pkg,
-                        "rag_server.grpc.server": grpc_server_module,
+                        "server.grpc": grpc_pkg,
+                        "server.grpc.server": grpc_server_module,
                     },
                 ),
                 patch(
-                    "rag_server.services.embedding.EmbeddingService",
+                    "retrieval_service.services.embedding.EmbeddingService",
                     return_value=embedding_service,
                 ),
                 patch(
-                    "rag_server.services.vector_store.QdrantStore",
+                    "retrieval_service.services.vector_store.QdrantStore",
                     return_value=qdrant_store,
                 ),
             ):
@@ -304,7 +304,7 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
             await app.shutdown()
 
     async def test_create_app_can_wire_remote_embedding_provider(self) -> None:
-        from rag_server.app import AppSettings, create_app
+        from server.app import AppSettings, create_app
 
         with tempfile.TemporaryDirectory() as tempdir:
             settings = AppSettings(
@@ -335,26 +335,26 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
 
             server = MagicMock()
             server.stop = AsyncMock()
-            grpc_pkg = types.ModuleType("rag_server.grpc")
+            grpc_pkg = types.ModuleType("server.grpc")
             grpc_pkg.__path__ = []
-            grpc_server_module = types.ModuleType("rag_server.grpc.server")
+            grpc_server_module = types.ModuleType("server.grpc.server")
             grpc_server_module.serve_grpc = AsyncMock(return_value=server)
 
             with (
                 patch.dict(
                     sys.modules,
                     {
-                        "rag_server.grpc": grpc_pkg,
-                        "rag_server.grpc.server": grpc_server_module,
+                        "server.grpc": grpc_pkg,
+                        "server.grpc.server": grpc_server_module,
                     },
                 ),
-                patch("rag_server.services.embedding.EmbeddingService") as local_cls,
+                patch("retrieval_service.services.embedding.EmbeddingService") as local_cls,
                 patch(
-                    "rag_server.services.embedding.RemoteEmbeddingService",
+                    "retrieval_service.services.embedding.RemoteEmbeddingService",
                     return_value=remote_provider,
                 ) as remote_cls,
                 patch(
-                    "rag_server.services.vector_store.QdrantStore",
+                    "retrieval_service.services.vector_store.QdrantStore",
                     return_value=qdrant_store,
                 ) as qdrant_cls,
             ):

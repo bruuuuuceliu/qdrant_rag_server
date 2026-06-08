@@ -5,18 +5,18 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from rag_server.adapters import (
+from retrieval_service.adapters import (
     AdapterNotFoundError,
     DuplicateAdapterError,
     ProjectAdapter,
     ProjectAdapterRegistry,
     ProjectAdapterResolver,
 )
-from rag_server.config import (
+from retrieval_service.config import (
     ProjectConfigNotFoundError,
     SQLiteProjectConfigRepository,
 )
-from rag_server.core.models import (
+from retrieval_service.core.models import (
     BaseChunk,
     BaseChunkPayload,
     BaseDocument,

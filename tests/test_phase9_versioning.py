@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from rag_server.config import SQLiteProjectConfigRepository
-from rag_server.core.models import BaseProjectConfig
-from rag_server.versioning import VersionManager, VersionNotFoundError
+from retrieval_service.config import SQLiteProjectConfigRepository
+from retrieval_service.core.models import BaseProjectConfig
+from retrieval_service.versioning import VersionManager, VersionNotFoundError
 
 
 class VersionManagerTest(unittest.IsolatedAsyncioTestCase):

@@ -1,2 +1,2 @@
-"""Test package for qdrant_rag_server."""
+"""Test package for qdrant_retrieval_service."""
 

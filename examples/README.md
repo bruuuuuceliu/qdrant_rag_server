@@ -9,7 +9,7 @@ The project is still a prototype. The app path needs real dependencies such as Q
 From the repository root:
 
 ```bash
-examples/local/start.sh --init
+deployment/local/start.sh --init
 ```
 
 This command:
@@ -18,23 +18,23 @@ This command:
 - sets local `/tmp/qdrant_rag` database paths
 - checks whether Qdrant is reachable
 - initializes a demo project config when `--init` is provided
-- starts `python -m rag_server.app`
+- starts `python -m server.app`
 
 Useful variants:
 
 ```bash
-examples/local/start.sh --init --project-id demo
-examples/local/start.sh --init --no-server
-examples/local/start.sh --init --grpc-port 50052
-examples/local/start.sh --init --embedding-provider openrouter --embedding-model your-embedding-model --embedding-dimension 1536
-examples/local/start.sh --init --generation
+deployment/local/start.sh --init --project-id demo
+deployment/local/start.sh --init --no-server
+deployment/local/start.sh --init --grpc-port 50052
+deployment/local/start.sh --init --embedding-provider openrouter --embedding-model your-embedding-model --embedding-dimension 1536
+deployment/local/start.sh --init --generation
 ```
 
 For remote/OpenRouter-compatible embeddings, provide an embedding API key:
 
 ```bash
 export RAG_EMBEDDING_API_KEY=sk-or-your-key
-examples/local/start.sh --init --embedding-provider openrouter --embedding-model your-embedding-model --embedding-dimension 1536
+deployment/local/start.sh --init --embedding-provider openrouter --embedding-model your-embedding-model --embedding-dimension 1536
 ```
 
 Remote embeddings avoid local sentence-transformer calculation. The embedding model dimension must match `--embedding-dimension`, because Qdrant collections are created with that vector size.
@@ -96,8 +96,8 @@ import asyncio
 import os
 from pathlib import Path
 
-from rag_server.config import SQLiteProjectConfigRepository
-from rag_server.core import BaseProjectConfig
+from retrieval_service.config import SQLiteProjectConfigRepository
+from retrieval_service.core import BaseProjectConfig
 
 async def main():
     repo = SQLiteProjectConfigRepository(Path(os.environ["RAG_CONFIG_DB_PATH"]))
@@ -120,7 +120,7 @@ PY
 ## 5. Start The Server
 
 ```bash
-python -m rag_server.app
+python -m server.app
 ```
 
 On first start, the embedding model may take time to download/load.
@@ -134,13 +134,13 @@ python - <<'PY'
 import asyncio
 import grpc
 
-from rag_server.grpc import rag_service_pb2, rag_service_pb2_grpc
+from server.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
 
 async def main():
     async with grpc.aio.insecure_channel("localhost:50051") as channel:
-        client = rag_service_pb2_grpc.RagServiceStub(channel)
+        client = retrieval_service_pb2_grpc.RagServiceStub(channel)
         response = await client.Ingest(
-            rag_service_pb2.IngestRequest(
+            retrieval_service_pb2.IngestRequest(
                 project_id="demo",
                 user_id="user_1",
                 # kb_id may be omitted; blank means "default".
@@ -167,15 +167,15 @@ python - <<'PY'
 import asyncio
 import grpc
 
-from rag_server.grpc import rag_service_pb2, rag_service_pb2_grpc
+from server.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
 
 JOB_ID = "replace-with-job-id"
 
 async def main():
     async with grpc.aio.insecure_channel("localhost:50051") as channel:
-        client = rag_service_pb2_grpc.RagServiceStub(channel)
+        client = retrieval_service_pb2_grpc.RagServiceStub(channel)
         response = await client.GetIngestJobStatus(
-            rag_service_pb2.GetIngestJobStatusRequest(job_id=JOB_ID)
+            retrieval_service_pb2.GetIngestJobStatusRequest(job_id=JOB_ID)
         )
         print(response)
 
@@ -196,13 +196,13 @@ python - <<'PY'
 import asyncio
 import grpc
 
-from rag_server.grpc import rag_service_pb2, rag_service_pb2_grpc
+from server.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
 
 async def main():
     async with grpc.aio.insecure_channel("localhost:50051") as channel:
-        client = rag_service_pb2_grpc.RagServiceStub(channel)
+        client = retrieval_service_pb2_grpc.RagServiceStub(channel)
         response = await client.Search(
-            rag_service_pb2.SearchRequest(
+            retrieval_service_pb2.SearchRequest(
                 project_id="demo",
                 user_id="user_1",
                 query="What does the service index?",
