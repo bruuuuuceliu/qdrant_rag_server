@@ -21,6 +21,7 @@ from retrieval_service.services.bm25 import BM25Query, QdrantSparseBM25Index
 from retrieval_service.services.hybrid import CandidateFusion, FusionConfig
 from retrieval_service.services.retriever import RetrievalHit
 from retrieval_service.services.sparse_encoder import SparseVector
+from retrieval_service.services.vector_store import QdrantStore
 
 
 class RetrievalConfigTest(unittest.TestCase):
@@ -52,6 +53,18 @@ class RetrievalConfigTest(unittest.TestCase):
     def test_candidate_count_must_cover_top_k(self) -> None:
         with self.assertRaisesRegex(ValueError, "at least top_k"):
             parse_retrieval_settings({"top_k": 5, "candidate_count": 2})
+
+    def test_dense_mode_uses_named_dense_vector_only_when_bm25_config_exists(self) -> None:
+        legacy_dense = parse_retrieval_settings({"mode": "dense"})
+        hybrid_collection_dense = parse_retrieval_settings(
+            {
+                "mode": "dense",
+                "bm25": {"dense_vector_name": "dense"},
+            }
+        )
+
+        self.assertFalse(legacy_dense.bm25.use_named_dense_vector)
+        self.assertTrue(hybrid_collection_dense.bm25.use_named_dense_vector)
 
 
 class QdrantSparseBM25IndexTest(unittest.IsolatedAsyncioTestCase):
@@ -86,6 +99,40 @@ class QdrantSparseBM25IndexTest(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class QdrantHybridCollectionSchemaTest(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_dense_only_collection_fails_clearly(self) -> None:
+        store = object.__new__(QdrantStore)
+        store._client = MagicMock()
+        store._client.get_collection = AsyncMock(
+            return_value=_CollectionInfo(
+                {
+                    "config": {
+                        "params": {
+                            "vectors": {
+                                "size": 768,
+                                "distance": "Cosine",
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        store._collection_locks = {}
+        store._default_vector_size = 768
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "not compatible with hybrid retrieval.*named dense vector 'dense'.*sparse vector 'bm25'",
+        ):
+            await store.ensure_hybrid_collection_exists(
+                "rag_existing_v1",
+                dense_vector_name="dense",
+                sparse_vector_name="bm25",
+            )
+
+        store._client.create_collection.assert_not_called()
+
+
 class CandidateFusionTest(unittest.TestCase):
     def test_rrf_deduplicates_chunk_ids(self) -> None:
         fusion = CandidateFusion()
@@ -114,6 +161,87 @@ class CandidateFusionTest(unittest.TestCase):
 
 
 class RagEngineBM25SearchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_dense_search_can_target_named_dense_vector(self) -> None:
+        embed_provider = MagicMock()
+        embed_provider.encode = AsyncMock(return_value=[0.1] * 768)
+        qdrant_store = AsyncMock()
+        qdrant_store.search.return_value = [
+            _Point(
+                payload={
+                    "project_id": "p1",
+                    "user_id": "u1",
+                    "kb_id": "default",
+                    "doc_id": "d1",
+                    "chunk_id": "dense_hit",
+                    "text": "Dense search inside a hybrid collection",
+                    "metadata": {},
+                },
+                score=0.91,
+            )
+        ]
+        engine = RagEngine(
+            embedding_provider=embed_provider,
+            qdrant_store=qdrant_store,
+            ingest_worker_count=0,
+        )
+        plan = _make_plan(
+            retrieval_config={
+                "mode": "dense",
+                "top_k": 1,
+                "candidate_count": 1,
+                "bm25": {"dense_vector_name": "dense"},
+            },
+            query="hybrid collection dense search",
+        )
+
+        result = await engine.search(plan)
+
+        self.assertEqual(result.chunks[0]["chunk_id"], "dense_hit")
+        qdrant_store.search.assert_awaited_once()
+        self.assertEqual(qdrant_store.search.await_args.kwargs["vector_name"], "dense")
+
+        await engine.shutdown()
+
+    async def test_dense_search_legacy_config_uses_unnamed_vector(self) -> None:
+        embed_provider = MagicMock()
+        embed_provider.encode = AsyncMock(return_value=[0.1] * 768)
+        qdrant_store = AsyncMock()
+        qdrant_store.search.return_value = [
+            _Point(
+                payload={
+                    "project_id": "p1",
+                    "user_id": "u1",
+                    "kb_id": "default",
+                    "doc_id": "d1",
+                    "chunk_id": "dense_hit",
+                    "text": "Dense search inside an unnamed collection",
+                    "metadata": {},
+                },
+                score=0.91,
+            )
+        ]
+        engine = RagEngine(
+            embedding_provider=embed_provider,
+            qdrant_store=qdrant_store,
+            ingest_worker_count=0,
+        )
+        plan = _make_plan(
+            retrieval_config={
+                "mode": "dense",
+                "top_k": 1,
+                "candidate_count": 1,
+            },
+            query="legacy dense collection search",
+        )
+
+        result = await engine.search(plan)
+
+        self.assertEqual(result.chunks[0]["chunk_id"], "dense_hit")
+        qdrant_store.search.assert_awaited_once()
+        self.assertIsNone(qdrant_store.search.await_args.kwargs["vector_name"])
+
+        await engine.shutdown()
+
     async def test_bm25_search_does_not_embed_query(self) -> None:
         embed_fn = AsyncMock()
         qdrant_store = AsyncMock()
@@ -352,6 +480,14 @@ def _make_plan(
 class _Point:
     payload: dict[str, object]
     score: float
+
+
+@dataclass(frozen=True, slots=True)
+class _CollectionInfo:
+    data: dict[str, object]
+
+    def dict(self) -> dict[str, object]:
+        return self.data
 
 
 class _FakeSparseEncoder:

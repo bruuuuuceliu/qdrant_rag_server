@@ -19,6 +19,7 @@ class ProjectBM25Settings:
     text_field: str = "text_lemmatized"
     lemmatize: bool = True
     index_version: str = "qdrant_bm25_v1"
+    use_named_dense_vector: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +92,10 @@ def parse_retrieval_settings(
     if bm25_weight < 0:
         raise ValueError("retrieval_config.bm25_weight must be non-negative")
 
-    bm25 = _parse_bm25_settings(raw.get("bm25"))
+    bm25 = _parse_bm25_settings(
+        raw.get("bm25"),
+        use_named_dense_vector=mode in {"bm25", "hybrid"} or "bm25" in raw,
+    )
     ner = _parse_ner_settings(raw.get("ner"))
 
     return ProjectRetrievalSettings(
@@ -106,7 +110,11 @@ def parse_retrieval_settings(
     )
 
 
-def _parse_bm25_settings(raw: Any) -> ProjectBM25Settings:
+def _parse_bm25_settings(
+    raw: Any,
+    *,
+    use_named_dense_vector: bool,
+) -> ProjectBM25Settings:
     data = dict(raw or {}) if isinstance(raw, dict) else {}
     sparse_vector_name = str(data.get("sparse_vector_name", "bm25")).strip()
     dense_vector_name = str(data.get("dense_vector_name", "dense")).strip()
@@ -131,6 +139,7 @@ def _parse_bm25_settings(raw: Any) -> ProjectBM25Settings:
         text_field=text_field,
         lemmatize=_bool(data.get("lemmatize", True)),
         index_version=str(data.get("index_version", "qdrant_bm25_v1")),
+        use_named_dense_vector=use_named_dense_vector,
     )
 
 

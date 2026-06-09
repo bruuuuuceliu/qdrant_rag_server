@@ -44,6 +44,7 @@ def _make_retrieval_settings_fingerprint(
         settings.bm25.text_field,
         str(settings.bm25.lemmatize),
         settings.bm25.index_version,
+        str(settings.bm25.use_named_dense_vector),
         str(settings.ner.enabled),
         settings.ner.provider,
         settings.ner.model,

@@ -100,8 +100,14 @@ class QdrantStore:
             collection_name, asyncio.Lock()
         )
         async with lock:
-            exists = await self._collection_exists(collection_name)
-            if exists:
+            info = await self.collection_info(collection_name)
+            if info is not None:
+                _validate_hybrid_collection_schema(
+                    collection_name=collection_name,
+                    info=info,
+                    dense_vector_name=dense_vector_name,
+                    sparse_vector_name=sparse_vector_name,
+                )
                 return
             await self._client.create_collection(
                 collection_name=collection_name,
@@ -365,6 +371,46 @@ def _sparse_vector_params() -> Any:
             return models.SparseVectorParams(modifier=models.Modifier.IDF)
         return models.SparseVectorParams()
     return _FallbackSparseVectorParams(modifier="idf")
+
+
+def _validate_hybrid_collection_schema(
+    *,
+    collection_name: str,
+    info: dict[str, Any],
+    dense_vector_name: str,
+    sparse_vector_name: str,
+) -> None:
+    missing: list[str] = []
+    if not _has_named_vector(info, dense_vector_name):
+        missing.append(f"named dense vector {dense_vector_name!r}")
+    if not _has_named_sparse_vector(info, sparse_vector_name):
+        missing.append(f"sparse vector {sparse_vector_name!r}")
+    if missing:
+        joined = " and ".join(missing)
+        raise ValueError(
+            f"collection {collection_name!r} exists but is not compatible with "
+            f"hybrid retrieval; missing {joined}. Use a collection created for "
+            "hybrid retrieval, reingest into a new collection version, or delete "
+            "the incompatible showcase collection before rerunning."
+        )
+
+
+def _has_named_vector(info: dict[str, Any], vector_name: str) -> bool:
+    vectors = _collection_params(info).get("vectors")
+    return isinstance(vectors, dict) and vector_name in vectors
+
+
+def _has_named_sparse_vector(info: dict[str, Any], vector_name: str) -> bool:
+    sparse_vectors = _collection_params(info).get("sparse_vectors")
+    return isinstance(sparse_vectors, dict) and vector_name in sparse_vectors
+
+
+def _collection_params(info: dict[str, Any]) -> dict[str, Any]:
+    config = info.get("config")
+    if not isinstance(config, dict):
+        return {}
+    params = config.get("params")
+    return params if isinstance(params, dict) else {}
 
 
 def _match_value(key: str, value: str) -> models.FieldCondition:

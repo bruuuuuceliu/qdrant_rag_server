@@ -173,7 +173,7 @@ class RagEngine:
                     "filter_fields": self._build_filter_fields(plan.retrieval_filter),
                     "dense_vector_name": (
                         settings.bm25.dense_vector_name
-                        if settings.bm25_enabled
+                        if settings.bm25.use_named_dense_vector
                         else None
                     ),
                 },

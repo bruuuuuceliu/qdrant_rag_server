@@ -3,6 +3,8 @@
 Setup:
 1. Install dependencies: ``python -m pip install -e ".[sparse]"``
 2. Start Qdrant: ``docker run --rm -p 6333:6333 -p 6334:6334 qdrant/qdrant``
+   If Docker reports that port 6333 is already allocated, Qdrant is probably
+   already running.
 3. Configure embeddings in ``examples/unites/.env`` or your shell.
    Local default:
        RAG_EMBEDDING_PROVIDER=local
@@ -14,11 +16,20 @@ Setup:
        RAG_EMBEDDING_DIMENSION=1536
        RAG_EMBEDDING_API_KEY=sk-or-...
 4. Run: ``python -m examples.unites.rag_multi_retrieval_showcase``
+
+The showcase uses ``RAG_MULTI_SHOWCASE_*`` environment variables and defaults
+to collection version ``hybrid_v1`` so it does not collide with the simpler
+``rag_insertion_retrieval`` example.
+
+
+URL docs: https://grjvnhneekilmldvxcbg.supabase.co/storage/v1/object/public/howone/test_files/rag/oldmansea.pdf
+
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 import sys
 from dataclasses import replace
@@ -64,10 +75,18 @@ are merged and deduplicated.
 
 
 async def main() -> None:
-    project_id = os.getenv("RAG_SHOWCASE_PROJECT_ID", "multi_retrieval_project")
-    user_id = os.getenv("RAG_SHOWCASE_USER_ID", "user_a")
-    kb_id = os.getenv("RAG_SHOWCASE_KB_ID", "demo")
-    doc_id = os.getenv("RAG_SHOWCASE_DOC_ID", "retrieval_methods_full_doc")
+    if importlib.util.find_spec("fastembed") is None:
+        print(
+            "fastembed is required for BM25/hybrid sparse retrieval.\n"
+            'Install it with: python -m pip install -e ".[sparse]"'
+        )
+        return
+
+    project_id = os.getenv("RAG_MULTI_SHOWCASE_PROJECT_ID", "multi_retrieval_project")
+    user_id = os.getenv("RAG_MULTI_SHOWCASE_USER_ID", "multi_user_a")
+    kb_id = os.getenv("RAG_MULTI_SHOWCASE_KB_ID", "multi_demo")
+    doc_id = os.getenv("RAG_MULTI_SHOWCASE_DOC_ID", "retrieval_methods_full_doc")
+    collection_version = os.getenv("RAG_MULTI_SHOWCASE_VERSION", "hybrid_v1")
 
     embedding_provider_name = os.getenv("RAG_EMBEDDING_PROVIDER", "local")
     embedding_model = os.getenv("RAG_EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
@@ -119,11 +138,12 @@ async def main() -> None:
     ingest_config = _make_config(
         base_config=base_config,
         embedding_model=embedding_model,
+        collection_version=collection_version,
         mode="hybrid",
     )
 
     try:
-        await engine.schedule_ingest(
+        ingest_result = await engine.schedule_ingest(
             IngestPlan(
                 IngestRequest(
                     project_id,
@@ -142,15 +162,23 @@ async def main() -> None:
             )
         )
         await engine._ingest_queue.join()
+        final_status = await engine.get_ingest_status(ingest_result.job_id)
+        if final_status is None or final_status.error:
+            error = final_status.error if final_status is not None else "unknown error"
+            raise RuntimeError(f"showcase ingest failed: {error}")
 
         query = os.getenv(
-            "RAG_SHOWCASE_QUERY",
-            "Which retrieval method is best for SKU-42 and exact error codes?",
+            "RAG_MULTI_SHOWCASE_QUERY",
+            os.getenv(
+                "RAG_SHOWCASE_QUERY",
+                "Which retrieval method is best for SKU-42 and exact error codes?",
+            ),
         )
         for mode in ("dense", "bm25", "hybrid"):
             config = _make_config(
                 base_config=base_config,
                 embedding_model=embedding_model,
+                collection_version=collection_version,
                 mode=mode,
             )
             result = await _search(
@@ -176,10 +204,12 @@ def _make_config(
     *,
     base_config: WebsiteProjectConfig,
     embedding_model: str,
+    collection_version: str,
     mode: str,
 ) -> WebsiteProjectConfig:
     return replace(
         base_config,
+        active_embedding_version=collection_version,
         embedding_model=embedding_model,
         retrieval_config={
             "mode": mode,

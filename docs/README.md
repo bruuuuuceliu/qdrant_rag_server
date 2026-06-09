@@ -12,6 +12,7 @@ This project is a minimal, extensible information retrieval service. It can supp
 - [Configuration](configuration.md): environment variables and runtime defaults.
 - [Extension Guide](extension-guide.md): how to add adapters, data types, retrievers, storage, generation, and status backends.
 - [Development](development.md): setup, tests, current limitations, and next implementation order.
+- [Implementation Documentation](implementations/README.md): implemented subsystem details and verification notes.
 - [LLM and embedding design](design/llm_embedding_design.md): provider boundaries for embeddings, generation, extraction, and reranking.
 - [Examples](../examples/README.md): local startup and first ingest/search calls.
 
@@ -21,6 +22,7 @@ The service should stay small:
 
 - Core: ingest, retrieve, delete, status, cache invalidation, and optional raw backup.
 - Optional: reranking, generation, object storage, version management.
-- Future: BM25, hybrid retrieval, data-type registries, durable jobs, and typed raw content.
+- Current retrieval additions: Qdrant sparse BM25 and hybrid retrieval.
+- Future: data-type registries, durable jobs, and typed raw content.
 
 Components should be replaceable through narrow interfaces. The engine should orchestrate, not own every implementation detail.
