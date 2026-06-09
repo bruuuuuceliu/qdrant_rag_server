@@ -1,4 +1,4 @@
-"""Project-scoped retrieval service package.
+"""Generic retrieval service package.
 
 Import concrete components from their leaf modules, for example
 ``retrieval_service.core`` or ``retrieval_service.services.cache``.  The

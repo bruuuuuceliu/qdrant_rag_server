@@ -1,5 +1,8 @@
 """Compatibility shim for query scope schemas."""
 
-from retrieval_service.core.schemas.scope import BaseQueryScope, BaseRetrievalFilter
+from project_service.schemas import (
+    ProjectQueryScope as BaseQueryScope,
+    ProjectRetrievalFilter as BaseRetrievalFilter,
+)
 
 __all__ = ["BaseQueryScope", "BaseRetrievalFilter"]

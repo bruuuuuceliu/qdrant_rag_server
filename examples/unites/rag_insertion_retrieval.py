@@ -25,10 +25,10 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from retrieval_service.adapters.website import WebsiteProjectAdapter, WebsiteProjectConfig
+from project_service.adapters.website import WebsiteProjectAdapter, WebsiteProjectConfig
+from project_service.gateway import IngestPlan, IngestRequest, SearchPlan, SearchRequest
+from project_service.rag import RagEngine
 from retrieval_service.embedding import EmbeddingProviderFactory
-from retrieval_service.gateway import IngestPlan, IngestRequest, SearchPlan, SearchRequest
-from retrieval_service.rag import RagEngine
 from retrieval_service.services.vector_store import QdrantStore
 
 load_dotenv(Path(__file__).with_name(".env"))

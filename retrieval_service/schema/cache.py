@@ -1,5 +1,5 @@
 """Compatibility shim for cache schemas."""
 
-from retrieval_service.core.schemas.cache import BaseCacheScope
+from project_service.schemas import ProjectCacheScope as BaseCacheScope
 
 __all__ = ["BaseCacheScope"]

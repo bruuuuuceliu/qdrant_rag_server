@@ -1,27 +1,15 @@
-"""Gateway error classes."""
+"""Compatibility shim for project gateway errors."""
 
-from __future__ import annotations
+from project_service.gateway.errors import (
+    ConcurrencyLimitExceededError,
+    GatewayError,
+    InvalidRequestError,
+    ProjectScopeMismatchError,
+)
 
-
-class GatewayError(Exception):
-    """Base class for structured gateway errors."""
-
-    code = "gateway_error"
-
-
-class InvalidRequestError(GatewayError):
-    """Raised when a request fails gateway validation."""
-
-    code = "invalid_request"
-
-
-class ProjectScopeMismatchError(GatewayError):
-    """Raised when an adapter tries to change the enforced request scope."""
-
-    code = "project_scope_mismatch"
-
-
-class ConcurrencyLimitExceededError(GatewayError):
-    """Raised when per-project or per-user concurrency limits are saturated."""
-
-    code = "concurrency_limit_exceeded"
+__all__ = [
+    "ConcurrencyLimitExceededError",
+    "GatewayError",
+    "InvalidRequestError",
+    "ProjectScopeMismatchError",
+]

@@ -1,11 +1,11 @@
-"""Legacy re-export shim — RAG engine has moved to ``retrieval_service.rag``.
+"""Legacy re-export shim — project RAG engine has moved to ``project_service.rag``.
 
 Prefer importing from the new package:
 
-    from retrieval_service.rag import RagEngine, SearchResult
+    from project_service.rag import RagEngine, SearchResult
 """
 
-from retrieval_service.rag import (
+from project_service.rag import (
     GenerateResult,
     GenerationUnavailableError,
     IngestResult,

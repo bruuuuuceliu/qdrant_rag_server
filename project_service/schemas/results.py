@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from retrieval_service.core.schemas import IngestJobStatus
+from retrieval_service.core.schemas import JobStatus
 
 
 @dataclass
@@ -19,7 +19,7 @@ class SearchResult:
 @dataclass
 class IngestResult:
     job_id: str
-    status: IngestJobStatus
+    status: JobStatus
     doc_id: str = ""
     error: str | None = None
     created_at: float = field(default_factory=time.time)

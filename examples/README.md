@@ -79,6 +79,12 @@ export RAG_GRPC_PORT=50051
 export RAG_QDRANT_HOST=localhost
 export RAG_QDRANT_PORT=6333
 export RAG_INGEST_WORKERS=2
+export BM25_SPARSE_VECTOR_NAME=bm25
+export BM25_DENSE_VECTOR_NAME=dense
+export BM25_ENCODER_PROVIDER=fastembed
+export BM25_ENCODER_MODEL=Qdrant/bm25
+export BM25_TEXT_FIELD=text_lemmatized
+export BM25_LEMMATIZE=true
 export RAG_EMBEDDING_PROVIDER=local
 export RAG_EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
 export RAG_EMBEDDING_DEVICE=cpu
@@ -96,14 +102,14 @@ import asyncio
 import os
 from pathlib import Path
 
-from configs import SQLiteProjectConfigRepository
-from retrieval_service.core import BaseProjectConfig
+from project_service.config import SQLiteProjectConfigRepository
+from project_service.schemas import ProjectConfig
 
 async def main():
     repo = SQLiteProjectConfigRepository(Path(os.environ["RAG_CONFIG_DB_PATH"]))
     await repo.initialize()
     await repo.upsert_project(
-        BaseProjectConfig(
+        ProjectConfig(
             project_id="demo",
             project_type="website",
             active_embedding_version="v1",
@@ -134,7 +140,7 @@ python - <<'PY'
 import asyncio
 import grpc
 
-from server.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
+from project_service.server.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
 
 async def main():
     async with grpc.aio.insecure_channel("localhost:50051") as channel:
@@ -167,7 +173,7 @@ python - <<'PY'
 import asyncio
 import grpc
 
-from server.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
+from project_service.server.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
 
 JOB_ID = "replace-with-job-id"
 
@@ -196,7 +202,7 @@ python - <<'PY'
 import asyncio
 import grpc
 
-from server.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
+from project_service.server.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
 
 async def main():
     async with grpc.aio.insecure_channel("localhost:50051") as channel:
@@ -221,6 +227,18 @@ Search retrieves chunks from Qdrant using vector similarity plus server-built fi
 project_id = demo
 user_id IN [user_1, __shared__]
 ```
+
+## Multi-Method Retrieval Showcase
+
+To ingest one full document and search it with dense, BM25, and hybrid modes:
+
+```bash
+python -m examples.unites.rag_multi_retrieval_showcase
+```
+
+The showcase indexes the document once with `mode="hybrid"` so Qdrant stores
+both dense vectors and the named sparse BM25 vector, then runs three searches by
+changing only the project `retrieval_config` mode.
 
 No KB filter is added unless `kb_ids` is provided.
 

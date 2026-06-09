@@ -136,8 +136,8 @@ import asyncio
 import os
 from pathlib import Path
 
-from configs import SQLiteProjectConfigRepository
-from retrieval_service.core import BaseProjectConfig
+from project_service.config import SQLiteProjectConfigRepository
+from project_service.schemas import ProjectConfig
 
 
 async def main() -> None:
@@ -146,7 +146,7 @@ async def main() -> None:
     repo = SQLiteProjectConfigRepository(Path(os.environ["RAG_CONFIG_DB_PATH"]))
     await repo.initialize()
     await repo.upsert_project(
-        BaseProjectConfig(
+        ProjectConfig(
             project_id=project_id,
             project_type=project_type,
             active_embedding_version="v1",

@@ -1,23 +1,28 @@
-"""Ingest job model for tracking asynchronous document ingestion."""
+"""Universal job model for asynchronous retrieval-service work."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
+from typing import Any
 
-from retrieval_service.core.schemas.common import IngestJobStatus, require_non_empty
+from retrieval_service.core.schemas.common import JobStatus, require_non_empty
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class BaseIngestJob:
-    project_id: str
-    user_id: str
-    doc_id: str
-    source_uri: str
-    status: IngestJobStatus = IngestJobStatus.PENDING
+    job_id: str
+    service_name: str = ""
+    source_id: str = ""
+    status: JobStatus = JobStatus.PENDING
+    owner_id: str = ""
+    scope_id: str = ""
     error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
 
     def __post_init__(self) -> None:
-        require_non_empty("project_id", self.project_id)
-        require_non_empty("user_id", self.user_id)
-        require_non_empty("doc_id", self.doc_id)
-        require_non_empty("source_uri", self.source_uri)
+        require_non_empty("job_id", self.job_id)
+        require_non_empty("service_name", self.service_name)
+        require_non_empty("source_id", self.source_id)

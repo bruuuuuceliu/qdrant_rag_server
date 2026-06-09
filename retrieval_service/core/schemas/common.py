@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-SHARED_USER_ID = "__shared__"
-DEFAULT_KB_ID = "default"
+DEFAULT_NAMESPACE = "default"
+SHARED_OWNER_ID = "__shared__"
+
+# Compatibility aliases for the project-RAG service. New shared code should use
+# DEFAULT_NAMESPACE and SHARED_OWNER_ID instead.
+DEFAULT_KB_ID = DEFAULT_NAMESPACE
+SHARED_USER_ID = SHARED_OWNER_ID
 
 
-class IngestJobStatus(StrEnum):
-    """Lifecycle states for asynchronous document ingestion."""
+class JobStatus(StrEnum):
+    """Lifecycle states for asynchronous retrieval-service jobs."""
 
     PENDING = "pending"
     RUNNING = "running"
@@ -17,8 +22,11 @@ class IngestJobStatus(StrEnum):
     FAILED = "failed"
 
 
+IngestJobStatus = JobStatus
+
+
 class Visibility(StrEnum):
-    """Minimal payload visibility marker."""
+    """Minimal record visibility marker."""
 
     PRIVATE = "private"
     SHARED = "shared"
@@ -31,11 +39,15 @@ def require_non_empty(field_name: str, value: str) -> None:
 
 def normalize_kb_id(value: str | None) -> str:
     if value is None or not str(value).strip():
-        return DEFAULT_KB_ID
+        return DEFAULT_NAMESPACE
     return str(value).strip()
 
 
 def normalize_kb_ids(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(str(value).strip() for value in values if str(value).strip())
+
+
+def normalize_ids(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(str(value).strip() for value in values if str(value).strip())
 
 

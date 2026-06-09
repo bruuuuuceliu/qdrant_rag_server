@@ -1,25 +1,20 @@
-"""Gateway package — request validation, concurrency control, and execution plans.
+"""Compatibility shim for the project gateway.
 
-Layered by concern:
-
-- ``gateway.errors`` — exception hierarchy
-- ``gateway.requests`` — SearchRequest, IngestRequest input schemas
-- ``gateway.plans`` — SearchPlan, IngestPlan assembled DTOs
-- ``gateway.limiter`` — AsyncConcurrencyLimiter
-- ``gateway.gateway`` — RagGateway orchestrator
-- ``gateway.helpers`` — validation/normalization utilities
+Canonical project gateway code lives in ``project_service.gateway``.
 """
 
-from retrieval_service.gateway.errors import (
+from project_service.gateway import (
+    AsyncConcurrencyLimiter,
     ConcurrencyLimitExceededError,
     GatewayError,
+    IngestPlan,
+    IngestRequest,
     InvalidRequestError,
     ProjectScopeMismatchError,
+    RagGateway,
+    SearchPlan,
+    SearchRequest,
 )
-from retrieval_service.gateway.requests import IngestRequest, SearchRequest
-from retrieval_service.gateway.plans import IngestPlan, SearchPlan
-from retrieval_service.gateway.limiter import AsyncConcurrencyLimiter
-from retrieval_service.gateway.gateway import RagGateway
 
 __all__ = [
     "AsyncConcurrencyLimiter",

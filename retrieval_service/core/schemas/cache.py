@@ -1,21 +1,23 @@
-"""Cache scope model for response cache key construction."""
+"""Universal cache scope model for retrieval-service cache keys."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from retrieval_service.core.schemas.common import require_non_empty
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class BaseCacheScope:
-    project_id: str
-    user_id: str
-    query_hash: str
-    config_version: str
+    scope_id: str = ""
+    owner_id: str = ""
+    cache_key: str = ""
+    config_version: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        require_non_empty("project_id", self.project_id)
-        require_non_empty("user_id", self.user_id)
-        require_non_empty("query_hash", self.query_hash)
+        require_non_empty("scope_id", self.scope_id)
+        require_non_empty("owner_id", self.owner_id)
+        require_non_empty("cache_key", self.cache_key)
         require_non_empty("config_version", self.config_version)

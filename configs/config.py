@@ -43,6 +43,15 @@ class AppSettings:
     generation_base_url: str = "https://openrouter.ai/api/v1/chat/completions"
     generation_max_tokens: int = 1024
     generation_temperature: float = 0.7
+    bm25_sparse_vector_name: str = "bm25"
+    bm25_dense_vector_name: str = "dense"
+    bm25_encoder_provider: str = "fastembed"
+    bm25_encoder_model: str = "Qdrant/bm25"
+    bm25_text_field: str = "text_lemmatized"
+    bm25_lemmatize: bool = True
+    bm25_index_version: str = "qdrant_bm25_v1"
+    ner_provider: str = "disabled"
+    ner_model: str = "en_core_web_sm"
 
     @classmethod
     def from_env(
@@ -76,10 +85,12 @@ def load_settings(
     from configs.embeddings.config import load_embedding_settings
     from configs.generation.config import load_generation_settings
     from configs.qdrant.config import load_qdrant_settings
+    from configs.retrieval.config import load_retrieval_component_settings
 
     embedding_settings = load_embedding_settings(values)
     generation_settings = load_generation_settings(values)
     qdrant_settings = load_qdrant_settings(values)
+    retrieval_settings = load_retrieval_component_settings(values)
 
     return AppSettings(
         config_db_path=Path(get_value(values, "RAG_CONFIG_DB_PATH", "/var/lib/rag/config.db")),
@@ -106,6 +117,15 @@ def load_settings(
         generation_base_url=generation_settings.base_url,
         generation_max_tokens=generation_settings.max_tokens,
         generation_temperature=generation_settings.temperature,
+        bm25_sparse_vector_name=retrieval_settings.bm25_sparse_vector_name,
+        bm25_dense_vector_name=retrieval_settings.bm25_dense_vector_name,
+        bm25_encoder_provider=retrieval_settings.bm25_encoder_provider,
+        bm25_encoder_model=retrieval_settings.bm25_encoder_model,
+        bm25_text_field=retrieval_settings.bm25_text_field,
+        bm25_lemmatize=retrieval_settings.bm25_lemmatize,
+        bm25_index_version=retrieval_settings.bm25_index_version,
+        ner_provider=retrieval_settings.ner_provider,
+        ner_model=retrieval_settings.ner_model,
     )
 
 

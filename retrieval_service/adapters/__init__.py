@@ -1,16 +1,32 @@
-from retrieval_service.adapters.base import (
+"""Compatibility shim for project adapters.
+
+Canonical project adapters live in ``project_service.adapters``.
+"""
+
+from project_service.adapters import (
     AdapterNotFoundError,
     DuplicateAdapterError,
     ProjectAdapter,
     ProjectAdapterRegistry,
     ProjectAdapterResolver,
     ProjectTypeRepository,
-)
-
-from retrieval_service.adapters.website import (
+    WEBSITE_PROJECT_TYPE,
     WebsiteChunkPayload,
     WebsiteDocument,
     WebsiteProjectAdapter,
     WebsiteProjectConfig,
-    WEBSITE_PROJECT_TYPE,
 )
+
+__all__ = [
+    "AdapterNotFoundError",
+    "DuplicateAdapterError",
+    "ProjectAdapter",
+    "ProjectAdapterRegistry",
+    "ProjectAdapterResolver",
+    "ProjectTypeRepository",
+    "WEBSITE_PROJECT_TYPE",
+    "WebsiteChunkPayload",
+    "WebsiteDocument",
+    "WebsiteProjectAdapter",
+    "WebsiteProjectConfig",
+]

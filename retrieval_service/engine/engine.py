@@ -1,9 +1,9 @@
-"""Compatibility shim for the RAG engine.
+"""Compatibility shim for the project RAG engine.
 
-Prefer importing from ``retrieval_service.rag``.
+Prefer importing from ``project_service.rag``.
 """
 
-from retrieval_service.rag import (
+from project_service.rag import (
     GenerateResult,
     GenerationUnavailableError,
     IngestResult,

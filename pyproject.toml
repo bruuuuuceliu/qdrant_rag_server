@@ -17,9 +17,15 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
 ]
+ner = [
+    "spacy>=3.7",
+]
+sparse = [
+    "fastembed>=0.3",
+]
 
 [tool.setuptools.packages.find]
-include = ["configs*", "retrieval_service*", "server*"]
+include = ["configs*", "project_service*", "retrieval_service*", "server*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

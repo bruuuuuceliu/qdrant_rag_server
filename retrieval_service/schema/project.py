@@ -1,5 +1,5 @@
 """Compatibility shim for project schemas."""
 
-from retrieval_service.core.schemas.project import BaseProjectConfig
+from project_service.schemas import ProjectConfig as BaseProjectConfig
 
 __all__ = ["BaseProjectConfig"]
