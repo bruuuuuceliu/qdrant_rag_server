@@ -14,7 +14,8 @@ from project_service.schemas import (
     ProjectQueryScope,
     ProjectRetrievalFilter,
 )
-from retrieval_service.ingest.source import IngestSourceContent
+from retrieval_service.core.schemas import BaseChunk, BaseDocument
+from retrieval_service.ingest.ingester import PreparedIngestData, UniversalSourceIngester
 
 WEBSITE_PROJECT_TYPE = "website"
 
@@ -104,25 +105,79 @@ class WebsiteProjectAdapter(ProjectAdapter):
         config: ProjectConfig | None = None,
     ) -> Any:
         del request, config
-        return _website_ingester()
+        return UniversalSourceIngester()
+
+    async def adapt_ingest_output(
+        self,
+        prepared: PreparedIngestData,
+        request: Any,
+        *,
+        config: ProjectConfig | None = None,
+    ) -> PreparedIngestData:
+        del config
+        document = _render_document(prepared.document, request=request)
+        chunks = tuple(
+            _render_chunk(chunk, document=document) for chunk in prepared.chunks
+        )
+        payloads = tuple(_render_payload(chunk) for chunk in chunks)
+        return PreparedIngestData(
+            document=document,
+            chunks=chunks,
+            payloads=payloads,
+            raw_content=prepared.raw_content,
+        )
 
     async def parse_document(self, input_data: Any) -> WebsiteDocument:
-        prepared = await _website_ingester().prepare(input_data)
-        return prepared.document
+        prepared = await UniversalSourceIngester().prepare(input_data)
+        return _render_document(prepared.document, request=input_data)
 
     async def build_chunks(
         self, document: ProjectDocument
     ) -> list[ProjectChunk]:
-        return await _website_ingester().build_chunks(
-            document,
-            _source_from_document(document),
-        )
+        raw_text = str(document.metadata.get("raw_text", document.source_uri))
+        chunks: list[ProjectChunk] = []
+        for idx, paragraph in enumerate(raw_text.split("\n\n")):
+            cleaned = paragraph.strip()
+            if not cleaned:
+                continue
+            chunks.append(
+                ProjectChunk(
+                    project_id=document.project_id,
+                    user_id=document.user_id,
+                    kb_id=document.kb_id,
+                    doc_id=document.doc_id,
+                    chunk_id=f"{document.doc_id}:{idx}",
+                    chunk_index=idx,
+                    text=cleaned,
+                    data_type=document.data_type,
+                    visibility=document.visibility,
+                    content_hash=document.content_hash,
+                    embedding_version=document.embedding_version,
+                    chunker_version=document.chunker_version,
+                    metadata={"section": str(idx)},
+                )
+            )
+        if not chunks:
+            chunks.append(
+                ProjectChunk(
+                    project_id=document.project_id,
+                    user_id=document.user_id,
+                    kb_id=document.kb_id,
+                    doc_id=document.doc_id,
+                    chunk_id=f"{document.doc_id}:0",
+                    chunk_index=0,
+                    text=raw_text,
+                    data_type=document.data_type,
+                    visibility=document.visibility,
+                    content_hash=document.content_hash,
+                    embedding_version=document.embedding_version,
+                    chunker_version=document.chunker_version,
+                )
+            )
+        return chunks
 
     async def build_payload(self, chunk: ProjectChunk) -> WebsiteChunkPayload:
-        return await _website_ingester().build_payload(
-            chunk,
-            _source_from_chunk(chunk),
-        )
+        return _render_payload(chunk)
 
     async def build_prompt(
         self,
@@ -151,26 +206,72 @@ class WebsiteProjectAdapter(ProjectAdapter):
         )
 
 
-def _website_ingester() -> Any:
-    from project_service.ingest.website import WebsiteIngester
-
-    return WebsiteIngester()
-
-
-def _source_from_document(document: ProjectDocument) -> IngestSourceContent:
-    raw_text = str(document.metadata.get("raw_text", document.source_uri))
-    return IngestSourceContent(
-        source_uri=document.source_uri,
-        text=raw_text,
-        raw_content=raw_text.encode("utf-8"),
-        content_type=document.content_type,
+def _render_document(document: BaseDocument, *, request: Any) -> WebsiteDocument:
+    metadata = dict(getattr(document, "metadata", {}) or {})
+    metadata.update(dict(getattr(request, "metadata", {}) or {}))
+    source_uri = getattr(request, "source_uri", document.source_uri)
+    return WebsiteDocument(
+        project_id=request.project_id,
+        user_id=request.user_id,
+        kb_id=getattr(request, "kb_id", ""),
+        doc_id=getattr(request, "doc_id", document.document_id),
+        source_uri=source_uri,
+        content_type=getattr(request, "content_type", document.content_type),
+        data_type=document.data_type,
+        visibility=str(metadata.get("visibility", "private")),
+        content_hash=document.content_hash,
+        embedding_version=str(metadata.get("embedding_version", "")),
+        chunker_version=str(metadata.get("chunker_version", "v1")),
+        metadata=metadata,
+        url=source_uri,
+        canonical_url=source_uri,
+        page_title=source_uri,
+        page_description="",
     )
 
 
-def _source_from_chunk(chunk: ProjectChunk) -> IngestSourceContent:
-    return IngestSourceContent(
-        source_uri=str(chunk.metadata.get("url", "")),
+def _render_chunk(chunk: BaseChunk, *, document: WebsiteDocument) -> ProjectChunk:
+    metadata = dict(getattr(chunk, "metadata", {}) or {})
+    metadata.setdefault("url", document.url)
+    metadata.setdefault("page_title", document.page_title)
+    return ProjectChunk(
+        project_id=document.project_id,
+        user_id=document.user_id,
+        kb_id=document.kb_id,
+        doc_id=document.doc_id,
+        chunk_id=chunk.chunk_id,
+        chunk_index=chunk.chunk_index,
         text=chunk.text,
-        raw_content=chunk.text.encode("utf-8"),
-        content_type="text/plain",
+        data_type=chunk.data_type,
+        visibility=document.visibility,
+        content_hash=chunk.content_hash,
+        embedding_version=document.embedding_version,
+        chunker_version=chunk.chunker_version,
+        metadata=metadata,
+    )
+
+
+def _render_payload(chunk: ProjectChunk) -> WebsiteChunkPayload:
+    url = chunk.metadata.get("url", "")
+    section = chunk.metadata.get("section", "")
+    title = chunk.metadata.get("page_title", "")
+    return WebsiteChunkPayload(
+        payload_id=chunk.chunk_id,
+        project_id=chunk.project_id,
+        user_id=chunk.user_id,
+        kb_id=chunk.kb_id,
+        doc_id=chunk.doc_id,
+        chunk_id=chunk.chunk_id,
+        chunk_index=chunk.chunk_index,
+        text=chunk.text,
+        data_type=chunk.data_type,
+        visibility=chunk.visibility,
+        content_hash=chunk.content_hash,
+        embedding_version=chunk.embedding_version,
+        chunker_version=chunk.chunker_version,
+        metadata=dict(chunk.metadata),
+        url=url,
+        canonical_url=url,
+        page_title=title,
+        section_heading=section,
     )

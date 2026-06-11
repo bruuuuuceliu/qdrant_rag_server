@@ -4,6 +4,7 @@ from retrieval_service.ingest.ingester import (
     AdapterBackedIngester as AdapterBackedIngester,
     Ingester as Ingester,
     PreparedIngestData as PreparedIngestData,
+    UniversalSourceIngester as UniversalSourceIngester,
 )
 from retrieval_service.ingest.source import (
     IngestSourceContent as IngestSourceContent,
@@ -15,5 +16,6 @@ __all__ = [
     "Ingester",
     "IngestSourceContent",
     "PreparedIngestData",
+    "UniversalSourceIngester",
     "load_ingest_source",
 ]

@@ -7,7 +7,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from retrieval_service.gateway import SearchRequest, IngestRequest
-from project_service.ingest import WebsiteIngester
+from retrieval_service.core.schemas import BaseDocument as NeutralDocument
+from retrieval_service.ingest import UniversalSourceIngester
 from retrieval_service.schema import (
     BaseChunk,
     BaseDocument,
@@ -149,7 +150,7 @@ class WebsiteProjectAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(doc.url, "https://example.com/doc.html")
         self.assertEqual(doc.page_title, "https://example.com/doc.html")
 
-    async def test_select_ingester_prepares_local_file(self) -> None:
+    async def test_select_ingester_uses_universal_ingester(self) -> None:
         with TemporaryDirectory() as tempdir:
             source_path = Path(tempdir) / "page.txt"
             source_path.write_text("First paragraph\n\nSecond paragraph", encoding="utf-8")
@@ -165,13 +166,17 @@ class WebsiteProjectAdapterTest(unittest.IsolatedAsyncioTestCase):
 
             ingester = await self.adapter.select_ingester(request)
             prepared = await ingester.prepare(request)
+            adapted = await self.adapter.adapt_ingest_output(prepared, request)
 
-        self.assertIsInstance(ingester, WebsiteIngester)
-        self.assertIsInstance(prepared.document, WebsiteDocument)
+        self.assertIsInstance(ingester, UniversalSourceIngester)
+        self.assertIsInstance(prepared.document, NeutralDocument)
+        self.assertEqual(prepared.payloads, ())
         self.assertEqual(len(prepared.chunks), 2)
-        self.assertEqual(len(prepared.payloads), 2)
         self.assertEqual(prepared.chunks[0].text, "First paragraph")
         self.assertEqual(prepared.raw_content, b"First paragraph\n\nSecond paragraph")
+        self.assertIsInstance(adapted.document, WebsiteDocument)
+        self.assertEqual(len(adapted.payloads), 2)
+        self.assertIsInstance(adapted.payloads[0], WebsiteChunkPayload)
 
     async def test_build_chunks_splits_paragraphs(self) -> None:
         doc = WebsiteDocument(

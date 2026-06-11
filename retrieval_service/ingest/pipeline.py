@@ -61,6 +61,12 @@ class IngestPipeline:
             ingester = AdapterBackedIngester(adapter)
 
         prepared = await ingester.prepare(request, config=config)
+        if adapter is not None and not prepared.payloads:
+            prepared = await adapter.adapt_ingest_output(
+                prepared,
+                request,
+                config=config,
+            )
         document = prepared.document
         chunks = list(prepared.chunks)
         payloads = list(prepared.payloads)

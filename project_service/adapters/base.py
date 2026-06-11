@@ -6,7 +6,12 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from typing import Any, Protocol
 
-from retrieval_service.ingest.ingester import AdapterBackedIngester, Ingester
+from retrieval_service.ingest.ingester import (
+    AdapterBackedIngester,
+    Ingester,
+    PreparedIngestData,
+    UniversalSourceIngester,
+)
 from project_service.schemas import (
     ProjectChunk,
     ProjectChunkPayload,
@@ -52,7 +57,18 @@ class ProjectAdapter(ABC):
     ) -> Ingester:
         """Select the ingester implementation for one ingest request."""
         del request, config
-        return AdapterBackedIngester(self)
+        return UniversalSourceIngester()
+
+    async def adapt_ingest_output(
+        self,
+        prepared: PreparedIngestData,
+        request: Any,
+        *,
+        config: ProjectConfig | None = None,
+    ) -> PreparedIngestData:
+        """Render neutral ingester output into project-specific upload payloads."""
+        del prepared, config
+        return await AdapterBackedIngester(self).prepare(request)
 
     async def parse_document(self, input_data: Any) -> ProjectDocument:
         """Legacy hook for adapters that still own document parsing."""
