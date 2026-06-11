@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from retrieval_service.rag import RagEngine, SearchResult, _build_qdrant_filter
+from retrieval_service.rag import RagEngine, _build_qdrant_filter
 from retrieval_service.services.vector_store import (
     VECTOR_SIZE,
     _validate_upsert_input,
@@ -125,7 +125,6 @@ class RemoteEmbeddingServiceAsyncTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call.args[0], "https://example.test/embeddings")
         self.assertEqual(call.kwargs["json"]["model"], "embedding-model")
         self.assertEqual(call.kwargs["json"]["input"], ["a", "b"])
-
 
 class BuildQdrantFilterTest(unittest.TestCase):
     def test_single_user_no_kb_ids(self) -> None:

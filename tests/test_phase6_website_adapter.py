@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from retrieval_service.gateway import SearchRequest, IngestRequest
+from project_service.ingest import WebsiteIngester
 from retrieval_service.schema import (
     BaseChunk,
     BaseDocument,
@@ -146,6 +149,30 @@ class WebsiteProjectAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(doc.url, "https://example.com/doc.html")
         self.assertEqual(doc.page_title, "https://example.com/doc.html")
 
+    async def test_select_ingester_prepares_local_file(self) -> None:
+        with TemporaryDirectory() as tempdir:
+            source_path = Path(tempdir) / "page.txt"
+            source_path.write_text("First paragraph\n\nSecond paragraph", encoding="utf-8")
+
+            request = IngestRequest(
+                project_id="p1",
+                user_id="u1",
+                kb_id="kb_a",
+                doc_id="d1",
+                source_uri=str(source_path),
+                content_type="text/plain",
+            )
+
+            ingester = await self.adapter.select_ingester(request)
+            prepared = await ingester.prepare(request)
+
+        self.assertIsInstance(ingester, WebsiteIngester)
+        self.assertIsInstance(prepared.document, WebsiteDocument)
+        self.assertEqual(len(prepared.chunks), 2)
+        self.assertEqual(len(prepared.payloads), 2)
+        self.assertEqual(prepared.chunks[0].text, "First paragraph")
+        self.assertEqual(prepared.raw_content, b"First paragraph\n\nSecond paragraph")
+
     async def test_build_chunks_splits_paragraphs(self) -> None:
         doc = WebsiteDocument(
             project_id="p1",
@@ -192,7 +219,7 @@ class WebsiteProjectAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload.section_heading, "Intro")
 
     async def test_build_prompt_includes_urls_and_context(self) -> None:
-        from retrieval_service.schema import BaseQueryScope, BaseChunkPayload
+        from retrieval_service.schema import BaseQueryScope
         chunks = [
             WebsiteChunkPayload(
                 project_id="p1", user_id="u1", kb_id="kb_a", doc_id="d1",

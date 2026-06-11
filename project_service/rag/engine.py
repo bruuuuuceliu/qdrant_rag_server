@@ -2,35 +2,36 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 import uuid
-from dataclasses import replace
 from typing import Any
 
 from retrieval_service.core.schemas import JobStatus
 from project_service.gateway.plans import IngestPlan, SearchPlan
-from project_service.rag.cache_keys import (
-    _make_response_cache_key,
-    _make_search_cache_key,
-)
-from project_service.rag.filters import _build_qdrant_filter
-from project_service.rag.entity_boost import (
-    apply_entity_boosts,
-    extract_query_entity_keys,
-)
-from project_service.rag.helpers import (
+from retrieval_service.indexing.sparse_text import _build_sparse_text
+from retrieval_service.ingest.jobs import MemoryIngestJobStatusRepository
+from retrieval_service.ingest.pipeline import IngestPipeline
+from retrieval_service.ingest.workers import AsyncIngestWorkerQueue
+from retrieval_service.pipeline.helpers import (
     _elapsed_ms,
-    _encode_batch,
     _encode_query,
     _safe_str_attr,
 )
-from project_service.rag.retrieval_config import (
+from retrieval_service.query.qdrant_filters import _build_qdrant_filter
+from retrieval_service.ranking.entity_boost import (
+    apply_entity_boosts,
+    extract_query_entity_keys,
+)
+from retrieval_service.retrieval.cache_keys import (
+    _make_response_cache_key,
+    _make_search_cache_key,
+)
+from retrieval_service.retrieval.config import (
     ProjectRetrievalSettings,
     parse_retrieval_settings,
 )
-from project_service.rag.retriever_factory import ProjectRetrieverFactory
+from retrieval_service.retrieval.factory import ProjectRetrieverFactory
 from project_service.schemas import (
     GenerateResult,
     GenerationUnavailableError,
@@ -43,7 +44,6 @@ from retrieval_service.services.entities import (
     EntityMention,
     NerExtractor,
     NoopNerExtractor,
-    entities_to_metadata,
 )
 from retrieval_service.services.retriever import QdrantVectorRetriever, RetrievalQuery
 from retrieval_service.services.retriever import RetrievalHit, Retriever
@@ -73,6 +73,8 @@ class RagEngine:
         version_manager: Any = None,
         metrics: Any = None,
         object_storage: Any = None,
+        ingest_job_repository: Any = None,
+        ingest_queue_maxsize: int = 0,
         bm25_index: BM25Index | None = None,
         sparse_encoder: SparseTextEncoder | None = None,
         ner_extractor: NerExtractor | None = None,
@@ -102,12 +104,25 @@ class RagEngine:
         self._version_manager = version_manager
         self._metrics = metrics
         self._object_storage = object_storage
-        self._ingest_queue: asyncio.Queue[tuple[str, IngestPlan]] = asyncio.Queue()
-        self._ingest_status: dict[str, IngestResult] = {}
-        self._ingest_workers = [
-            asyncio.create_task(self._ingest_loop())
-            for _ in range(ingest_worker_count)
-        ]
+        self._ingest_pipeline = IngestPipeline(
+            embedding_provider=self._embedding_provider,
+            qdrant_store=self._qdrant_store,
+            sparse_encoder=self._sparse_encoder,
+            ner_extractor=self._ner_extractor,
+            object_storage=self._object_storage,
+            default_top_k=DEFAULT_TOP_K,
+            default_candidate_count=DEFAULT_CANDIDATE_COUNT,
+        )
+        self._ingest_jobs = ingest_job_repository or MemoryIngestJobStatusRepository()
+        self._ingest_queue_runner = AsyncIngestWorkerQueue[IngestPlan](
+            worker_count=ingest_worker_count,
+            handler=self._process_ingest_job,
+            maxsize=ingest_queue_maxsize,
+            on_queue_depth=self._record_ingest_queue_depth,
+        )
+        self._ingest_queue = self._ingest_queue_runner.queue
+        self._ingest_workers = self._ingest_queue_runner.workers
+        self._ingest_status = getattr(self._ingest_jobs, "records", {})
 
     async def search(self, plan: SearchPlan) -> SearchResult:
         start_ns = time.monotonic_ns()
@@ -297,130 +312,36 @@ class RagEngine:
         )
         if self._metrics is not None:
             self._metrics.record_ingest_job()
-        self._ingest_status[job_id] = result
-        await self._ingest_queue.put((job_id, plan))
-        if self._metrics is not None:
-            self._metrics.set_queue_depth(self._ingest_queue.qsize())
+        await self._ingest_jobs.create(result)
+        await self._ingest_queue_runner.submit(job_id, plan)
         return result
 
     async def get_ingest_status(self, job_id: str) -> IngestResult | None:
-        return self._ingest_status.get(job_id)
+        return await self._ingest_jobs.get(job_id)
 
-    async def _ingest_loop(self) -> None:
-        while True:
-            try:
-                job_id, plan = await self._ingest_queue.get()
-            except asyncio.CancelledError:
-                return
-
-            result = self._ingest_status.get(job_id)
-            if result is not None:
-                result.status = JobStatus.RUNNING
-                result.updated_at = time.time()
-
-            try:
-                await self._run_ingest(job_id, plan)
-                if result is not None:
-                    result.status = JobStatus.COMPLETED
-                    result.error = None
-                    result.updated_at = time.time()
-                await self._invalidate_caches(plan)
-            except Exception as exc:
-                logger.exception("ingest job %s failed", job_id)
-                if result is not None:
-                    result.status = JobStatus.FAILED
-                    result.error = str(exc)
-                    result.updated_at = time.time()
-                if self._metrics is not None:
-                    self._metrics.record_ingest_job_failed()
-            finally:
-                self._ingest_queue.task_done()
-                if self._metrics is not None:
-                    self._metrics.set_queue_depth(self._ingest_queue.qsize())
+    async def _process_ingest_job(self, job_id: str, plan: IngestPlan) -> None:
+        await self._ingest_jobs.update_status(job_id, JobStatus.RUNNING)
+        try:
+            await self._run_ingest(job_id, plan)
+            await self._ingest_jobs.update_status(job_id, JobStatus.COMPLETED)
+            await self._invalidate_caches(plan)
+        except Exception as exc:
+            logger.exception("ingest job %s failed", job_id)
+            await self._ingest_jobs.update_status(
+                job_id,
+                JobStatus.FAILED,
+                error=str(exc),
+            )
+            if self._metrics is not None:
+                self._metrics.record_ingest_job_failed()
 
     async def _run_ingest(self, job_id: str, plan: IngestPlan) -> None:
-        adapter = plan.adapter
-        config = plan.config
-        request = plan.request
-
-        document = await adapter.parse_document(request)
-
-        if self._object_storage is not None:
-            from retrieval_service.storage.base import make_storage_key
-
-            storage_key = make_storage_key(
-                request.project_id, request.user_id, request.doc_id
-            )
-            raw_content = document.metadata.get("raw_text", "").encode("utf-8")
-            if raw_content:
-                await self._object_storage.put(
-                    storage_key, raw_content, content_type=request.content_type
-                )
-                logger.debug("stored raw document %s", storage_key)
-
-        settings = parse_retrieval_settings(
-            config.retrieval_config,
-            default_top_k=DEFAULT_TOP_K,
-            default_candidate_count=DEFAULT_CANDIDATE_COUNT,
-        )
-        chunks = await adapter.build_chunks(document)
-
-        if not chunks:
-            logger.info("ingest job %s produced no chunks", job_id)
-            return
-
-        chunks = await self._enrich_chunks_with_entities(chunks, settings=settings)
-
-        payloads = [
-            await adapter.build_payload(chunk)
-            for chunk in chunks
-        ]
-
-        texts = [chunk.text for chunk in chunks]
-        vectors = None
-        if settings.dense_enabled:
-            vectors = await _encode_batch(self._embedding_provider, texts)
-
-        if settings.bm25_enabled:
-            if self._sparse_encoder is None:
-                raise ValueError(
-                    "BM25 retrieval is enabled but no sparse encoder is configured"
-                )
-            sparse_texts = [
-                _build_sparse_text(
-                    chunk.text,
-                    getattr(chunk, "metadata", {}) or {},
-                    lemmatize=settings.bm25.lemmatize,
-                )
-                for chunk in chunks
-            ]
-            sparse_vectors = await self._sparse_encoder.encode_batch(sparse_texts)
-            payloads = _attach_sparse_text(
-                payloads,
-                sparse_texts,
-                field_name=settings.bm25.text_field,
-            )
-            await self._qdrant_store.upsert_hybrid_points(
-                collection_name=config.collection_name,
-                dense_vectors=vectors,
-                sparse_vectors=sparse_vectors,
-                payloads=payloads,
-                ids=[str(getattr(payload, "chunk_id", index)) for index, payload in enumerate(payloads)],
-                dense_vector_name=settings.bm25.dense_vector_name,
-                sparse_vector_name=settings.bm25.sparse_vector_name,
-            )
-        elif vectors is not None:
-            await self._qdrant_store.upsert(
-                collection_name=config.collection_name,
-                vectors=vectors,
-                payloads=payloads,
-            )
-
-        logger.info(
-            "ingest job %s completed doc_id=%s chunks=%d",
-            job_id,
-            request.doc_id,
-            len(chunks),
+        await self._ingest_pipeline.run(
+            job_id=job_id,
+            request=plan.request,
+            config=plan.config,
+            ingester=plan.ingester,
+            adapter=plan.adapter,
         )
 
     async def _invalidate_caches(self, plan: IngestPlan) -> None:
@@ -478,9 +399,11 @@ class RagEngine:
             return None
 
     async def shutdown(self) -> None:
-        for worker in self._ingest_workers:
-            worker.cancel()
-        await asyncio.gather(*self._ingest_workers, return_exceptions=True)
+        await self._ingest_queue_runner.shutdown()
+
+    def _record_ingest_queue_depth(self, depth: int) -> None:
+        if self._metrics is not None:
+            self._metrics.set_queue_depth(depth)
 
     async def _search_candidates(
         self,
@@ -501,27 +424,6 @@ class RagEngine:
             return []
         return await self._ner_extractor.extract(query_text)
 
-    async def _enrich_chunks_with_entities(
-        self,
-        chunks: list[Any],
-        *,
-        settings: ProjectRetrievalSettings,
-    ) -> list[Any]:
-        if not settings.ner.enabled:
-            return chunks
-        entities_by_chunk = await self._ner_extractor.extract_batch(
-            [chunk.text for chunk in chunks]
-        )
-        enriched: list[Any] = []
-        for chunk, entities in zip(chunks, entities_by_chunk):
-            if not entities:
-                enriched.append(chunk)
-                continue
-            metadata = dict(getattr(chunk, "metadata", {}) or {})
-            metadata.update(entities_to_metadata(entities))
-            enriched.append(replace(chunk, metadata=metadata))
-        return enriched
-
     def _build_filter_fields(
         self,
         retrieval_filter: Any,
@@ -535,46 +437,3 @@ class RagEngine:
         if getattr(retrieval_filter, "doc_ids", ()):
             fields["doc_id"] = tuple(retrieval_filter.doc_ids)
         return fields
-
-
-def _build_sparse_text(
-    text: str,
-    metadata: dict[str, Any],
-    *,
-    lemmatize: bool,
-) -> str:
-    del metadata
-    normalized = " ".join(text.split())
-    if lemmatize:
-        return normalized.casefold()
-    return normalized
-
-
-def _attach_sparse_text(
-    payloads: list[Any],
-    sparse_texts: list[str],
-    *,
-    field_name: str,
-) -> list[Any]:
-    return [
-        _SparsePayload(payload=payload, field_name=field_name, sparse_text=sparse_text)
-        for payload, sparse_text in zip(payloads, sparse_texts)
-    ]
-
-
-class _SparsePayload:
-    def __init__(self, *, payload: Any, field_name: str, sparse_text: str) -> None:
-        self._payload = payload
-        self._field_name = field_name
-        self._sparse_text = sparse_text
-
-    def to_qdrant_payload(self) -> dict[str, Any]:
-        rendered = dict(self._payload.to_qdrant_payload())
-        rendered[self._field_name] = self._sparse_text
-        return rendered
-
-    def point_identity(self) -> tuple[str, ...]:
-        return self._payload.point_identity()
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._payload, name)

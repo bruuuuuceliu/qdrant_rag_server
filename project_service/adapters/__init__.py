@@ -1,16 +1,15 @@
 from project_service.adapters.base import (
-    AdapterNotFoundError,
-    DuplicateAdapterError,
-    ProjectAdapter,
-    ProjectAdapterRegistry,
-    ProjectAdapterResolver,
-    ProjectTypeRepository,
+    AdapterNotFoundError as AdapterNotFoundError,
+    DuplicateAdapterError as DuplicateAdapterError,
+    ProjectAdapter as ProjectAdapter,
+    ProjectAdapterRegistry as ProjectAdapterRegistry,
+    ProjectAdapterResolver as ProjectAdapterResolver,
+    ProjectTypeRepository as ProjectTypeRepository,
 )
-
 from project_service.adapters.website import (
-    WebsiteChunkPayload,
-    WebsiteDocument,
-    WebsiteProjectAdapter,
-    WebsiteProjectConfig,
-    WEBSITE_PROJECT_TYPE,
+    WEBSITE_PROJECT_TYPE as WEBSITE_PROJECT_TYPE,
+    WebsiteChunkPayload as WebsiteChunkPayload,
+    WebsiteDocument as WebsiteDocument,
+    WebsiteProjectAdapter as WebsiteProjectAdapter,
+    WebsiteProjectConfig as WebsiteProjectConfig,
 )

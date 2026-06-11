@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from retrieval_service.llm import LLMProviderFactory
+from retrieval_service.llm import LLMProviderFactory  # noqa: E402
 
 load_dotenv(Path(__file__).with_name(".env"))
 

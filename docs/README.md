@@ -14,6 +14,7 @@ This project is a minimal, extensible information retrieval service. It can supp
 - [Development](development.md): setup, tests, current limitations, and next implementation order.
 - [Implementation Documentation](implementations/README.md): implemented subsystem details and verification notes.
 - [LLM and embedding design](design/llm_embedding_design.md): provider boundaries for embeddings, generation, extraction, and reranking.
+- [Document handling module design](design/document-handling-module.md): proposed URL/file parsing and chunking architecture.
 - [Examples](../examples/README.md): local startup and first ingest/search calls.
 
 ## Design Position

@@ -60,11 +60,16 @@ class RagGateway:
         ):
             adapter = await self._adapter_resolver.resolve(ingest_request.project_id)
             config = await adapter.get_config(ingest_request.project_id)
+            ingester = await adapter.select_ingester(
+                ingest_request,
+                config=config,
+            )
 
             return IngestPlan(
                 request=ingest_request,
                 adapter=adapter,
                 config=config,
+                ingester=ingester,
             )
 
 

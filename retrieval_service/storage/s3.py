@@ -34,7 +34,6 @@ class S3ObjectStorage(ObjectStorage):
         self._region = region
 
     async def put(self, key: str, content: bytes, content_type: str = "") -> None:
-        import hmac
         import hashlib as hl
         from datetime import datetime, timezone
 
@@ -83,7 +82,6 @@ class S3ObjectStorage(ObjectStorage):
                 )
 
     async def get(self, key: str) -> bytes:
-        import hmac
         import hashlib as hl
         from datetime import datetime, timezone
 
@@ -130,7 +128,6 @@ class S3ObjectStorage(ObjectStorage):
             return response.content
 
     async def delete(self, key: str) -> None:
-        import hmac
         import hashlib as hl
         from datetime import datetime, timezone
 

@@ -1,6 +1,6 @@
-"""Compatibility shim for project RAG helper functions."""
+"""Compatibility shim for reusable pipeline helper functions."""
 
-from project_service.rag.helpers import (
+from retrieval_service.pipeline.helpers import (
     _elapsed_ms,
     _encode_batch,
     _encode_query,

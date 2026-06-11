@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from retrieval_service.embedding import EmbeddingProviderFactory
+from retrieval_service.embedding import EmbeddingProviderFactory  # noqa: E402
 
 load_dotenv(Path(__file__).with_name(".env"))
 

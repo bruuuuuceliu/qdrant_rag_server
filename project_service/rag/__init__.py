@@ -27,15 +27,15 @@ def __getattr__(name: str):
 
         return getattr(schemas, name)
     if name == "_build_qdrant_filter":
-        from project_service.rag.filters import _build_qdrant_filter
+        from retrieval_service.query.qdrant_filters import _build_qdrant_filter
 
         return _build_qdrant_filter
     if name == "_make_response_cache_key":
-        from project_service.rag.cache_keys import _make_response_cache_key
+        from retrieval_service.retrieval.cache_keys import _make_response_cache_key
 
         return _make_response_cache_key
     if name == "_make_search_cache_key":
-        from project_service.rag.cache_keys import _make_search_cache_key
+        from retrieval_service.retrieval.cache_keys import _make_search_cache_key
 
         return _make_search_cache_key
     raise AttributeError(name)

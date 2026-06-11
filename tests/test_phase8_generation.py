@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from retrieval_service.rag import (
     GenerationUnavailableError,
     RagEngine,
-    GenerateResult,
     _make_response_cache_key,
 )
 from retrieval_service.llm import (

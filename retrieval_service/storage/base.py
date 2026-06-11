@@ -7,7 +7,6 @@ touches remote storage — text comes from Qdrant payloads.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from abc import ABC, abstractmethod
 

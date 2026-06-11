@@ -17,25 +17,25 @@ replaceable, and retrieval-first rather than expanding into a full platform.
 
 ## Current Phase Status
 
-| Area | Current status | Notes |
-|---|---|---|
-| Core models | Implemented scaffold | `project_id`, `user_id`, default `kb_id`, `doc_id`, chunks, payloads, filters, `data_type`, `visibility`, `content_hash`, `embedding_version`, and `chunker_version` exist. |
-| Project adapters | Implemented scaffold | Adapter interface is good. `WebsiteProjectAdapter` still returns hard-coded config values such as `example.com`. |
-| Config repository | Implemented scaffold | SQLite stores base config fields. It does not yet store adapter-specific config such as website domains. |
-| Gateway | Implemented scaffold | Rejects raw filters, builds server-side scope, and normalizes missing/blank ingest `kb_id` to the default KB. Current limiter covers plan preparation, not full engine work. |
-| Qdrant vector store | Implemented scaffold | Dense collection lifecycle, dense upsert/search, scoped delete, hybrid dense+sparse collection creation, hybrid upsert, and sparse search are implemented. Point IDs are deterministic and scoped. |
-| Retrieval methods | Implemented scaffold | Dense, BM25-style sparse retrieval, and hybrid retrieval are implemented behind retriever interfaces. Sparse retrieval uses Qdrant named sparse vectors, not a SQLite FTS sidecar. |
-| Search engine | Implemented scaffold | Embeds dense queries when needed, sparse-encodes BM25 queries when needed, selects dense/BM25/hybrid retrievers, optionally boosts entities, optionally reranks, caches results, and reports `elapsed_ms`. No engine-level search semaphore yet. |
-| Ingestion | Implemented scaffold | Background workers and in-memory status exist. Hybrid ingest writes dense and sparse vectors to the same Qdrant point. Jobs are not durable and the queue is unbounded. |
-| NER | Implemented scaffold | Optional local NER extractor protocol and metadata serialization exist. Entity boost can be applied after retrieval. Local spaCy dependency remains optional. |
-| Object storage | Implemented scaffold | Memory, filesystem, and S3-compatible adapters exist. Raw content is stored only if `metadata["raw_text"]` exists. |
-| Cache | Implemented scaffold | Tier-1 memory cache and Tier-2 SQLite response cache exist. Search cache keys now include retrieval mode, sparse vector name, sparse encoder settings, and NER settings. Response cache key should still include broader model/generation config. |
-| Generation | Experimental | gRPC `Generate` exists, but the core system should stay retrieval-first for now. The engine does not use adapter prompt builders in this path. App wiring is opt-in and returns a clear disabled response when generation is unavailable. |
-| Versioning | Partial | Embedding collection version manager exists. Document/corpus conflict/version control is not implemented. Sparse index version is part of retrieval settings/cache fingerprint, but full sparse index migration/version management is not implemented. |
-| Health/metrics | Implemented scaffold | Component availability and in-memory counters exist. Not a full observability layer. |
-| gRPC | Implemented scaffold | Unary `Search`, `Ingest`, `GetIngestJobStatus`, `Generate`, and `HealthCheck` exist. Proto lacks explicit raw content and `data_type`. |
-| Tests | Useful but mostly mocked | Current suite covers Qdrant point IDs, scoped delete, default KB behavior, vector validation, storage, generation, health, e2e scaffolding, dense/BM25/hybrid retrieval config, sparse Qdrant wiring, hybrid fusion, and hybrid ingest. Need live Qdrant sparse integration tests, durable ingest job tests, raw storage flow tests, queue saturation tests, and async DB behavior tests. |
-| Documentation | Improved | `docs/implementations/` now documents Qdrant sparse retrieval, runtime retrieval configuration, tests, and showcase usage. |
+| Area                | Current status           | Notes                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core models         | Implemented scaffold     | `project_id`, `user_id`, default `kb_id`, `doc_id`, chunks, payloads, filters, `data_type`, `visibility`, `content_hash`, `embedding_version`, and `chunker_version` exist.                                                                                                                                                                                             |
+| Project adapters    | Implemented scaffold     | Adapter interface is good.`WebsiteProjectAdapter` still returns hard-coded config values such as `example.com`.                                                                                                                                                                                                                                                                       |
+| Config repository   | Implemented scaffold     | SQLite stores base config fields. It does not yet store adapter-specific config such as website domains.                                                                                                                                                                                                                                                                                  |
+| Gateway             | Implemented scaffold     | Rejects raw filters, builds server-side scope, and normalizes missing/blank ingest `kb_id` to the default KB. Current limiter covers plan preparation, not full engine work.                                                                                                                                                                                                            |
+| Qdrant vector store | Implemented scaffold     | Dense collection lifecycle, dense upsert/search, scoped delete, hybrid dense+sparse collection creation, hybrid upsert, and sparse search are implemented. Point IDs are deterministic and scoped.                                                                                                                                                                                        |
+| Retrieval methods   | Implemented scaffold     | Dense, BM25-style sparse retrieval, and hybrid retrieval are implemented behind retriever interfaces. Sparse retrieval uses Qdrant named sparse vectors, not a SQLite FTS sidecar.                                                                                                                                                                                                        |
+| Search engine       | Implemented scaffold     | Embeds dense queries when needed, sparse-encodes BM25 queries when needed, selects dense/BM25/hybrid retrievers, optionally boosts entities, optionally reranks, caches results, and reports `elapsed_ms`. No engine-level search semaphore yet.                                                                                                                                        |
+| Ingestion           | Implemented scaffold     | Background workers and in-memory status exist. Hybrid ingest writes dense and sparse vectors to the same Qdrant point. Jobs are not durable and the queue is unbounded.                                                                                                                                                                                                                   |
+| NER                 | Implemented scaffold     | Optional local NER extractor protocol and metadata serialization exist. Entity boost can be applied after retrieval. Local spaCy dependency remains optional.                                                                                                                                                                                                                             |
+| Object storage      | Implemented scaffold     | Memory, filesystem, and S3-compatible adapters exist. Raw content is stored only if `metadata["raw_text"]` exists.                                                                                                                                                                                                                                                                      |
+| Cache               | Implemented scaffold     | Tier-1 memory cache and Tier-2 SQLite response cache exist. Search cache keys now include retrieval mode, sparse vector name, sparse encoder settings, and NER settings. Response cache key should still include broader model/generation config.                                                                                                                                         |
+| Generation          | Experimental             | gRPC `Generate` exists, but the core system should stay retrieval-first for now. The engine does not use adapter prompt builders in this path. App wiring is opt-in and returns a clear disabled response when generation is unavailable.                                                                                                                                               |
+| Versioning          | Partial                  | Embedding collection version manager exists. Document/corpus conflict/version control is not implemented. Sparse index version is part of retrieval settings/cache fingerprint, but full sparse index migration/version management is not implemented.                                                                                                                                    |
+| Health/metrics      | Implemented scaffold     | Component availability and in-memory counters exist. Not a full observability layer.                                                                                                                                                                                                                                                                                                      |
+| gRPC                | Implemented scaffold     | Unary `Search`, `Ingest`, `GetIngestJobStatus`, `Generate`, and `HealthCheck` exist. Proto lacks explicit raw content and `data_type`.                                                                                                                                                                                                                                        |
+| Tests               | Useful but mostly mocked | Current suite covers Qdrant point IDs, scoped delete, default KB behavior, vector validation, storage, generation, health, e2e scaffolding, dense/BM25/hybrid retrieval config, sparse Qdrant wiring, hybrid fusion, and hybrid ingest. Need live Qdrant sparse integration tests, durable ingest job tests, raw storage flow tests, queue saturation tests, and async DB behavior tests. |
+| Documentation       | Improved                 | `docs/implementations/` now documents Qdrant sparse retrieval, runtime retrieval configuration, tests, and showcase usage.                                                                                                                                                                                                                                                              |
 
 ## Recently Completed
 
@@ -92,55 +92,46 @@ against a real Qdrant instance with sparse vectors enabled.
    The sparse retrieval unit tests mock Qdrant. Add optional integration tests
    that create a hybrid collection, insert dense+sparse points, and run real
    dense, sparse, and hybrid searches.
-
 2. **Collection migration and versioning**
 
    Existing dense-only collections need a clear migration or reingest path
    before `bm25` or `hybrid` mode is enabled. Sparse vector slot validation
    should produce clear startup/search errors.
-
 3. **Complete optional app wiring**
 
    `create_app()` now wires embedding, metrics, health, generation, sparse
    encoder, Qdrant sparse BM25 index, and NER. It still needs optional wiring
    for reranker, object storage, and version manager.
-
 4. **Async-safe local persistence**
 
    SQLite config/cache/versioning and filesystem object storage still run
    blocking work inside async methods. Use `aiosqlite` or a shared
    executor-backed DB runner.
-
 5. **Durable, replaceable ingest jobs**
 
    `RagEngine` keeps `_ingest_status` in memory and uses an unbounded
    `asyncio.Queue`. Job status disappears on restart and failed errors are not
    stored in a durable record.
-
 6. **Explicit raw content**
 
    Raw object storage currently depends on `document.metadata.get("raw_text")`.
    Raw content should be a first-class ingest input and the resulting
    `raw_storage_key` should be saved with the job or document record.
-
 7. **Data-type registry**
 
    Different data types should be able to define schema, parsing, chunking,
    payload fields, retrieval filters, and default retrievers without abusing
    generic metadata.
-
 8. **Config-backed adapter behavior**
 
    `WebsiteProjectAdapter.get_config()` currently returns hard-coded domains
    and model names. Website domains and other adapter settings should come from
    project config.
-
 9. **Engine-level resource limits**
 
    Gateway concurrency limits only wrap plan preparation. Search, embedding,
    sparse encoding, Qdrant calls, reranking, and ingestion need simple
    engine-level semaphores and a bounded ingest queue.
-
 10. **Import boundaries**
 
     Lightweight imports of models/config/cache should not require optional

@@ -1,5 +1,5 @@
-"""Compatibility shim for project RAG filter translation."""
+"""Compatibility shim for reusable Qdrant filter rendering."""
 
-from project_service.rag.filters import _build_qdrant_filter
+from retrieval_service.query.qdrant_filters import _build_qdrant_filter
 
 __all__ = ["_build_qdrant_filter"]

@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from project_service.gateway.errors import InvalidRequestError
 from project_service.gateway.helpers import (
     DEFAULT_KB_ID,
     _normalize_optional_str,

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from project_service.config.repository import SQLiteProjectConfigRepository

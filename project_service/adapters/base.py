@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from typing import Any, Protocol
 
+from retrieval_service.ingest.ingester import AdapterBackedIngester, Ingester
 from project_service.schemas import (
     ProjectChunk,
     ProjectChunkPayload,
@@ -43,17 +44,27 @@ class ProjectAdapter(ABC):
     ) -> ProjectRetrievalFilter:
         """Build the retrieval filter used by Qdrant search."""
 
-    @abstractmethod
+    async def select_ingester(
+        self,
+        request: Any,
+        *,
+        config: ProjectConfig | None = None,
+    ) -> Ingester:
+        """Select the ingester implementation for one ingest request."""
+        del request, config
+        return AdapterBackedIngester(self)
+
     async def parse_document(self, input_data: Any) -> ProjectDocument:
-        """Parse project-specific input into a base document."""
+        """Legacy hook for adapters that still own document parsing."""
+        raise NotImplementedError
 
-    @abstractmethod
     async def build_chunks(self, document: ProjectDocument) -> Sequence[ProjectChunk]:
-        """Chunk a parsed document."""
+        """Legacy hook for adapters that still own chunking."""
+        raise NotImplementedError
 
-    @abstractmethod
     async def build_payload(self, chunk: ProjectChunk) -> ProjectChunkPayload:
-        """Build the Qdrant payload for a chunk."""
+        """Legacy hook for adapters that still own payload rendering."""
+        raise NotImplementedError
 
     @abstractmethod
     async def build_prompt(

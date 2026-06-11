@@ -5,11 +5,8 @@ from __future__ import annotations
 import unittest
 
 from retrieval_service.health import (
-    ComponentStatus,
     HealthChecker,
-    HealthReport,
     MetricsCollector,
-    MetricsSnapshot,
 )
 
 
