@@ -6,7 +6,7 @@ import time
 from typing import Protocol
 
 from ingestion_service.schemas import IngestionJob
-from retrieval_service.core.schemas import JobStatus
+from shared.contracts import JobStatus
 
 
 class IngestionJobRepository(Protocol):
@@ -22,6 +22,13 @@ class IngestionJobRepository(Protocol):
         status: JobStatus,
         *,
         error: str | None = None,
+    ) -> IngestionJob | None:
+        ...
+
+    async def update_metadata(
+        self,
+        job_id: str,
+        metadata: dict[str, object],
     ) -> IngestionJob | None:
         ...
 
@@ -48,5 +55,17 @@ class MemoryIngestionJobRepository:
             return None
         job.status = status
         job.error = error
+        job.updated_at = time.time()
+        return job
+
+    async def update_metadata(
+        self,
+        job_id: str,
+        metadata: dict[str, object],
+    ) -> IngestionJob | None:
+        job = self.records.get(job_id)
+        if job is None:
+            return None
+        job.metadata.update(metadata)
         job.updated_at = time.time()
         return job

@@ -12,6 +12,7 @@ from retrieval_service.adapters import (
 from retrieval_service.gateway import (
     AsyncConcurrencyLimiter,
     ConcurrencyLimitExceededError,
+    DeleteDocumentPlan,
     IngestPlan,
     InvalidRequestError,
     ProjectScopeMismatchError,
@@ -107,6 +108,21 @@ class RagGatewayTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(plan.request.kb_id, DEFAULT_KB_ID)
+
+    async def test_prepare_delete_validates_and_resolves_adapter(self) -> None:
+        plan = await self.gateway.prepare_delete(
+            {
+                "project_id": "project_a",
+                "user_id": "user_a",
+                "kb_id": "kb_a",
+                "doc_id": "doc_a",
+            }
+        )
+
+        self.assertIsInstance(plan, DeleteDocumentPlan)
+        self.assertIs(plan.adapter, self.adapter)
+        self.assertEqual(plan.config.collection_name, "rag_project_a_v1")
+        self.assertEqual(plan.request.doc_id, "doc_a")
 
     async def test_search_rejects_client_supplied_raw_filters(self) -> None:
         with self.assertRaisesRegex(

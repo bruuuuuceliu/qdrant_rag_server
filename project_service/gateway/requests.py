@@ -75,6 +75,35 @@ class IngestRequest:
         _validate_non_empty("content_type", self.content_type)
 
 
+@dataclass(frozen=True, slots=True)
+class DeleteDocumentRequest:
+    project_id: str
+    user_id: str
+    kb_id: str
+    doc_id: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> DeleteDocumentRequest:
+        return cls(
+            project_id=_required_str(data, "project_id"),
+            user_id=_required_str(data, "user_id"),
+            kb_id=_optional_str(data, "kb_id", DEFAULT_KB_ID),
+            doc_id=_required_str(data, "doc_id"),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+    def __post_init__(self) -> None:
+        _validate_non_empty("project_id", self.project_id)
+        _validate_non_empty("user_id", self.user_id)
+        object.__setattr__(
+            self,
+            "kb_id",
+            _normalize_optional_str(self.kb_id, DEFAULT_KB_ID, field_name="kb_id"),
+        )
+        _validate_non_empty("doc_id", self.doc_id)
+
+
 def _optional_str(data: dict[str, Any], key: str, default: str) -> str:
     value = data.get(key, default)
     return _normalize_optional_str(value, default, field_name=key)

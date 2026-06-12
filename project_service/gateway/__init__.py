@@ -16,14 +16,20 @@ from project_service.gateway.errors import (
     InvalidRequestError,
     ProjectScopeMismatchError,
 )
-from project_service.gateway.requests import IngestRequest, SearchRequest
-from project_service.gateway.plans import IngestPlan, SearchPlan
+from project_service.gateway.requests import (
+    DeleteDocumentRequest,
+    IngestRequest,
+    SearchRequest,
+)
+from project_service.gateway.plans import DeleteDocumentPlan, IngestPlan, SearchPlan
 from project_service.gateway.limiter import AsyncConcurrencyLimiter
 from project_service.gateway.gateway import RagGateway
 
 __all__ = [
     "AsyncConcurrencyLimiter",
     "ConcurrencyLimitExceededError",
+    "DeleteDocumentPlan",
+    "DeleteDocumentRequest",
     "GatewayError",
     "IngestPlan",
     "IngestRequest",

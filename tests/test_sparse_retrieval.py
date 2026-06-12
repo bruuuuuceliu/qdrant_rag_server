@@ -404,11 +404,13 @@ class RagEngineBM25SearchTest(unittest.IsolatedAsyncioTestCase):
         qdrant_store = AsyncMock()
         sparse_encoder = _FakeSparseEncoder()
         index = QdrantSparseBM25Index(store=qdrant_store, sparse_vector_name="bm25")
+        indexing_service = AsyncMock()
         engine = RagEngine(
             embedding_provider=embed_provider,
             qdrant_store=qdrant_store,
             bm25_index=index,
             sparse_encoder=sparse_encoder,
+            indexing_service=indexing_service,
             ingest_worker_count=0,
         )
         config = ProjectConfig(
@@ -437,13 +439,12 @@ class RagEngineBM25SearchTest(unittest.IsolatedAsyncioTestCase):
         )
 
         qdrant_store.upsert.assert_not_called()
-        qdrant_store.upsert_hybrid_points.assert_awaited_once()
-        kwargs = qdrant_store.upsert_hybrid_points.await_args.kwargs
-        self.assertEqual(kwargs["sparse_vectors"], [SparseVector(indices=[1], values=[1.0])])
-        self.assertEqual(kwargs["dense_vectors"], [[0.1] * 768])
-        rendered = kwargs["payloads"][0].to_qdrant_payload()
-        self.assertEqual(rendered["chunk_id"], "d1:0")
-        self.assertEqual(rendered["text_lemmatized"], "bm25 ingest stores lexical content")
+        qdrant_store.upsert_hybrid_points.assert_not_called()
+        indexing_service.index_chunks.assert_awaited_once()
+        index_request = indexing_service.index_chunks.await_args.args[0]
+        self.assertEqual(index_request.retrieval_config["mode"], "hybrid")
+        self.assertEqual(index_request.chunks[0].chunk_id, "d1:0")
+        self.assertEqual(index_request.payloads[0].chunk_id, "d1:0")
 
         await engine.shutdown()
 

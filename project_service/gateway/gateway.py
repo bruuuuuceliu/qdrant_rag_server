@@ -10,8 +10,12 @@ from project_service.gateway.errors import (
     ProjectScopeMismatchError,
 )
 from project_service.gateway.limiter import AsyncConcurrencyLimiter
-from project_service.gateway.plans import IngestPlan, SearchPlan
-from project_service.gateway.requests import IngestRequest, SearchRequest
+from project_service.gateway.plans import DeleteDocumentPlan, IngestPlan, SearchPlan
+from project_service.gateway.requests import (
+    DeleteDocumentRequest,
+    IngestRequest,
+    SearchRequest,
+)
 from project_service.schemas import ProjectQueryScope, ProjectRetrievalFilter
 
 
@@ -72,6 +76,23 @@ class RagGateway:
                 ingester=ingester,
             )
 
+    async def prepare_delete(
+        self, request: DeleteDocumentRequest | dict[str, Any]
+    ) -> DeleteDocumentPlan:
+        delete_request = _coerce_delete_request(request)
+        async with self._concurrency_limiter.limit(
+            delete_request.project_id,
+            delete_request.user_id,
+        ):
+            adapter = await self._adapter_resolver.resolve(delete_request.project_id)
+            config = await adapter.get_config(delete_request.project_id)
+
+            return DeleteDocumentPlan(
+                request=delete_request,
+                adapter=adapter,
+                config=config,
+            )
+
 
 def _coerce_search_request(request: SearchRequest | dict[str, Any]) -> SearchRequest:
     if isinstance(request, SearchRequest):
@@ -87,6 +108,16 @@ def _coerce_ingest_request(request: IngestRequest | dict[str, Any]) -> IngestReq
     if isinstance(request, dict):
         return IngestRequest.from_mapping(request)
     raise InvalidRequestError("ingest request must be IngestRequest or mapping")
+
+
+def _coerce_delete_request(
+    request: DeleteDocumentRequest | dict[str, Any],
+) -> DeleteDocumentRequest:
+    if isinstance(request, DeleteDocumentRequest):
+        return request
+    if isinstance(request, dict):
+        return DeleteDocumentRequest.from_mapping(request)
+    raise InvalidRequestError("delete request must be DeleteDocumentRequest or mapping")
 
 
 def _validate_scope_matches_request(

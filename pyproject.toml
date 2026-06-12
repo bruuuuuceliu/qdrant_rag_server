@@ -36,7 +36,17 @@ documents-docling = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["configs*", "ingestion_service*", "project_service*", "retrieval_service*", "server*"]
+include = [
+    "configs*",
+    "ingestion_service*",
+    "manager_service*",
+    "memory_service*",
+    "project_service*",
+    "retrieval_service*",
+    "server*",
+    "shared*",
+    "workflow_log_service*",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

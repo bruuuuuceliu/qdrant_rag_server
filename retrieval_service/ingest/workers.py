@@ -6,6 +6,8 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Generic, TypeVar
 
+from shared.queue import QueueFullError
+
 T = TypeVar("T")
 
 JobHandler = Callable[[str, T], Awaitable[None]]
@@ -32,7 +34,10 @@ class AsyncIngestWorkerQueue(Generic[T]):
         ]
 
     async def submit(self, job_id: str, item: T) -> None:
-        await self.queue.put((job_id, item))
+        try:
+            self.queue.put_nowait((job_id, item))
+        except asyncio.QueueFull as exc:
+            raise QueueFullError("ingest queue is full") from exc
         self._record_queue_depth()
 
     async def join(self) -> None:

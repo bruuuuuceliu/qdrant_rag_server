@@ -24,6 +24,7 @@ from ingestion_service.schemas import (
     SourceDescriptor,
 )
 from ingestion_service.service import IngestionResult, IngestionService
+from ingestion_service.server import IngestionAppContext
 
 __all__ = [
     "DocumentHandlingPolicy",
@@ -37,6 +38,7 @@ __all__ = [
     "IngestedDocument",
     "IngestedSection",
     "IngestionError",
+    "IngestionAppContext",
     "IngestionResult",
     "IngestionService",
     "NeedsDoclingConversion",

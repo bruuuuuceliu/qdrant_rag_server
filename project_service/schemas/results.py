@@ -21,6 +21,12 @@ class IngestResult:
     job_id: str
     status: JobStatus
     doc_id: str = ""
+    project_id: str = ""
+    user_id: str = ""
+    kb_id: str = ""
+    data_type: str = "project_document"
+    content_hash: str = ""
+    raw_storage_key: str = ""
     error: str | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)

@@ -3,35 +3,32 @@
 from __future__ import annotations
 
 import logging
-import time
 import uuid
 from typing import Any
 
+from ingestion_service.jobs import MemoryIngestionJobRepository
+from ingestion_service.jobs.sqlite import content_hash_from_metadata
+from ingestion_service.schemas import IngestionJob
 from retrieval_service.core.schemas import JobStatus
 from project_service.gateway.plans import IngestPlan, SearchPlan
-from retrieval_service.indexing.sparse_text import _build_sparse_text
-from retrieval_service.ingest.jobs import MemoryIngestJobStatusRepository
+from retrieval_service.indexing import IndexingService
 from retrieval_service.ingest.pipeline import IngestPipeline
 from retrieval_service.ingest.workers import AsyncIngestWorkerQueue
 from retrieval_service.pipeline.helpers import (
-    _elapsed_ms,
-    _encode_query,
     _safe_str_attr,
-)
-from retrieval_service.query.qdrant_filters import _build_qdrant_filter
-from retrieval_service.ranking.entity_boost import (
-    apply_entity_boosts,
-    extract_query_entity_keys,
 )
 from retrieval_service.retrieval.cache_keys import (
     _make_response_cache_key,
     _make_search_cache_key,
 )
-from retrieval_service.retrieval.config import (
-    ProjectRetrievalSettings,
-    parse_retrieval_settings,
-)
+from retrieval_service.retrieval.config import parse_retrieval_settings
 from retrieval_service.retrieval.factory import ProjectRetrieverFactory
+from retrieval_service.retrieval.service import (
+    DeleteDocumentRequest,
+    RawDocumentRequest,
+    RetrievalSearchRequest,
+    RetrievalService,
+)
 from project_service.schemas import (
     GenerateResult,
     GenerationUnavailableError,
@@ -40,20 +37,59 @@ from project_service.schemas import (
     SearchResult,
 )
 from retrieval_service.services.bm25 import BM25Index, BM25Retriever
-from retrieval_service.services.entities import (
-    EntityMention,
-    NerExtractor,
-    NoopNerExtractor,
-)
-from retrieval_service.services.retriever import QdrantVectorRetriever, RetrievalQuery
-from retrieval_service.services.retriever import RetrievalHit, Retriever
+from retrieval_service.services.entities import NerExtractor, NoopNerExtractor
+from retrieval_service.services.retriever import QdrantVectorRetriever
 from retrieval_service.services.sparse_encoder import SparseTextEncoder
 from retrieval_service.services.vector_store import QdrantStore
+from shared.queue import QueueFullError, QueueMessage, QueueProducer
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CANDIDATE_COUNT = 20
 DEFAULT_TOP_K = 5
+
+
+class IngestQueueFullError(QueueFullError):
+    """Raised when the ingest queue cannot accept more jobs."""
+
+
+def _ingestion_job_from_plan(job_id: str, plan: IngestPlan) -> IngestionJob:
+    metadata = dict(plan.request.metadata)
+    metadata.update(
+        {
+            "project_id": plan.request.project_id,
+            "user_id": plan.request.user_id,
+            "kb_id": plan.request.kb_id,
+            "doc_id": plan.request.doc_id,
+            "data_type": str(metadata.get("data_type", "project_document")),
+            "content_hash": content_hash_from_metadata(metadata),
+        }
+    )
+    return IngestionJob(
+        job_id=job_id,
+        source_uri=plan.request.source_uri,
+        document_id=plan.request.doc_id,
+        status=JobStatus.PENDING,
+        metadata=metadata,
+    )
+
+
+def _job_to_ingest_result(job: IngestionJob) -> IngestResult:
+    metadata = dict(job.metadata)
+    return IngestResult(
+        job_id=job.job_id,
+        status=job.status,
+        doc_id=str(metadata.get("doc_id", job.document_id)),
+        project_id=str(metadata.get("project_id", "")),
+        user_id=str(metadata.get("user_id", "")),
+        kb_id=str(metadata.get("kb_id", "")),
+        data_type=str(metadata.get("data_type", "project_document")),
+        content_hash=str(metadata.get("content_hash", "")),
+        raw_storage_key=str(metadata.get("raw_storage_key", "")),
+        error=job.error,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+    )
 
 
 class RagEngine:
@@ -79,6 +115,10 @@ class RagEngine:
         sparse_encoder: SparseTextEncoder | None = None,
         ner_extractor: NerExtractor | None = None,
         retriever_factory: ProjectRetrieverFactory | None = None,
+        retrieval_service: RetrievalService | None = None,
+        indexing_service: IndexingService | None = None,
+        ingest_event_publisher: QueueProducer | None = None,
+        ingest_event_topic: str = "ingestion.events",
         ingest_worker_count: int = 4,
     ) -> None:
         if embedding_provider is None and embed_fn is None:
@@ -104,6 +144,23 @@ class RagEngine:
         self._version_manager = version_manager
         self._metrics = metrics
         self._object_storage = object_storage
+        self._ingest_event_publisher = ingest_event_publisher
+        self._ingest_event_topic = ingest_event_topic
+        self._retrieval_service = retrieval_service or RetrievalService(
+            embedding_provider=self._embedding_provider,
+            qdrant_store=self._qdrant_store,
+            retriever_factory=self._retriever_factory,
+            sparse_encoder=self._sparse_encoder,
+            ner_extractor=self._ner_extractor,
+            rerank_fn=self._rerank_fn,
+            tier1_cache=self._tier1_cache,
+            tier2_cache=self._tier2_cache,
+            object_storage=self._object_storage,
+            bm25_index=self._bm25_index,
+            metrics=self._metrics,
+            default_top_k=DEFAULT_TOP_K,
+            default_candidate_count=DEFAULT_CANDIDATE_COUNT,
+        )
         self._ingest_pipeline = IngestPipeline(
             embedding_provider=self._embedding_provider,
             qdrant_store=self._qdrant_store,
@@ -112,8 +169,9 @@ class RagEngine:
             object_storage=self._object_storage,
             default_top_k=DEFAULT_TOP_K,
             default_candidate_count=DEFAULT_CANDIDATE_COUNT,
+            indexing_service=indexing_service,
         )
-        self._ingest_jobs = ingest_job_repository or MemoryIngestJobStatusRepository()
+        self._ingest_jobs = ingest_job_repository or MemoryIngestionJobRepository()
         self._ingest_queue_runner = AsyncIngestWorkerQueue[IngestPlan](
             worker_count=ingest_worker_count,
             handler=self._process_ingest_job,
@@ -125,125 +183,27 @@ class RagEngine:
         self._ingest_status = getattr(self._ingest_jobs, "records", {})
 
     async def search(self, plan: SearchPlan) -> SearchResult:
-        start_ns = time.monotonic_ns()
-
-        if self._metrics is not None:
-            self._metrics.record_search_request()
-
-        config = plan.config
         settings = parse_retrieval_settings(
-            config.retrieval_config,
+            plan.config.retrieval_config,
             default_top_k=DEFAULT_TOP_K,
             default_candidate_count=DEFAULT_CANDIDATE_COUNT,
         )
-        cache_key = _make_search_cache_key(plan, settings)
-
-        if self._tier1_cache is not None:
-            cached = await self._tier1_cache.get(
-                plan.config.project_id, cache_key
-            )
-            if cached is not None:
-                cached = dict(cached)
-                cached["cache_hit"] = True
-                if self._metrics is not None:
-                    self._metrics.record_search_cache_hit()
-                    latency_ms = (time.monotonic_ns() - start_ns) / 1e6
-                    self._metrics.record_search_latency(latency_ms)
-                cached["elapsed_ms"] = max(1, _elapsed_ms(start_ns))
-                return SearchResult(**cached)
-
-        top_k = settings.top_k
-        candidate_count = settings.candidate_count
-
-        qdrant_filter = _build_qdrant_filter(plan.retrieval_filter)
-        query_vector = None
-        if settings.dense_enabled:
-            query_vector = await _encode_query(
-                self._embedding_provider,
-                plan.request.query,
-            )
-        query_sparse_vector = None
-        if settings.bm25_enabled:
-            if self._sparse_encoder is None:
-                raise ValueError(
-                    "BM25 retrieval is enabled but no sparse encoder is configured"
-                )
-            query_sparse_vector = await self._sparse_encoder.encode(
-                _build_sparse_text(
-                    plan.request.query,
-                    {},
-                    lemmatize=settings.bm25.lemmatize,
-                )
-            )
-
-        search_results = await self._search_candidates(
-            query=RetrievalQuery(
-                collection_name=config.collection_name,
+        result = await self._retrieval_service.search(
+            RetrievalSearchRequest(
+                project_id=plan.config.project_id,
+                user_id=plan.request.user_id,
                 query_text=plan.request.query,
-                query_vector=query_vector,
-                query_sparse_vector=query_sparse_vector,
-                retrieval_filter=qdrant_filter,
-                limit=candidate_count,
-                metadata={
-                    "filter_fields": self._build_filter_fields(plan.retrieval_filter),
-                    "dense_vector_name": (
-                        settings.bm25.dense_vector_name
-                        if settings.bm25.use_named_dense_vector
-                        else None
-                    ),
-                },
-            ),
-            settings=settings,
+                collection_name=plan.config.collection_name,
+                retrieval_config=dict(plan.config.retrieval_config),
+                retrieval_filter=plan.retrieval_filter,
+                cache_key=_make_search_cache_key(plan, settings),
+            )
         )
-        if settings.ner.enabled and settings.ner.boost_entities:
-            query_entities = await self._extract_query_entities(
-                query_text=plan.request.query,
-                settings=settings,
-            )
-            search_results = apply_entity_boosts(
-                search_results,
-                query_entity_keys=extract_query_entity_keys(
-                    query_entities=query_entities
-                ),
-                boost=settings.ner.entity_boost,
-            )
-
-        if self._rerank_fn is not None and len(search_results) > 0:
-            pairs = [
-                (hit.payload, hit.score)
-                for hit in search_results
-                if hit.payload is not None
-            ]
-            reranked = await self._rerank_fn(plan.request.query, pairs)
-            final = reranked[:top_k]
-        else:
-            final = [
-                (hit.payload, hit.score)
-                for hit in search_results[:top_k]
-                if hit.payload
-            ]
-
-        chunks: list[dict[str, Any]] = []
-        for payload_data, score in final:
-            chunk = dict(payload_data) if isinstance(payload_data, dict) else {}
-            chunk["score"] = score
-            chunks.append(chunk)
-
-        elapsed_ms = max(1, _elapsed_ms(start_ns))
-        result = SearchResult(chunks=chunks, elapsed_ms=elapsed_ms, cache_hit=False)
-
-        if self._tier1_cache is not None:
-            await self._tier1_cache.set(
-                config.project_id,
-                cache_key,
-                {"chunks": chunks, "elapsed_ms": result.elapsed_ms},
-            )
-
-        if self._metrics is not None:
-            latency_ms = (time.monotonic_ns() - start_ns) / 1e6
-            self._metrics.record_search_latency(latency_ms)
-
-        return result
+        return SearchResult(
+            chunks=result.chunks,
+            elapsed_ms=result.elapsed_ms,
+            cache_hit=result.cache_hit,
+        )
 
     async def generate(
         self,
@@ -309,22 +269,57 @@ class RagEngine:
             job_id=job_id,
             status=JobStatus.PENDING,
             doc_id=plan.request.doc_id,
+            project_id=plan.request.project_id,
+            user_id=plan.request.user_id,
+            kb_id=plan.request.kb_id,
+            data_type=str(plan.request.metadata.get("data_type", "project_document")),
+            content_hash=content_hash_from_metadata(plan.request.metadata),
         )
         if self._metrics is not None:
             self._metrics.record_ingest_job()
-        await self._ingest_jobs.create(result)
-        await self._ingest_queue_runner.submit(job_id, plan)
+        await self._ingest_jobs.create(_ingestion_job_from_plan(job_id, plan))
+        await self._publish_ingest_event(
+            event="ingest_scheduled",
+            job_id=job_id,
+            plan=plan,
+            status=JobStatus.PENDING,
+        )
+        try:
+            await self._ingest_queue_runner.submit(job_id, plan)
+        except QueueFullError as exc:
+            await self._ingest_jobs.update_status(
+                job_id,
+                JobStatus.FAILED,
+                error="ingest queue is full",
+            )
+            if self._metrics is not None:
+                self._metrics.record_ingest_job_failed()
+            await self._publish_ingest_event(
+                event="ingest_failed",
+                job_id=job_id,
+                plan=plan,
+                status=JobStatus.FAILED,
+                error="ingest queue is full",
+            )
+            raise IngestQueueFullError("ingest queue is full") from exc
         return result
 
     async def get_ingest_status(self, job_id: str) -> IngestResult | None:
-        return await self._ingest_jobs.get(job_id)
+        job = await self._ingest_jobs.get(job_id)
+        if job is None:
+            return None
+        return _job_to_ingest_result(job)
 
     async def _process_ingest_job(self, job_id: str, plan: IngestPlan) -> None:
         await self._ingest_jobs.update_status(job_id, JobStatus.RUNNING)
+        await self._publish_ingest_event(
+            event="ingest_running",
+            job_id=job_id,
+            plan=plan,
+            status=JobStatus.RUNNING,
+        )
         try:
-            await self._run_ingest(job_id, plan)
-            await self._ingest_jobs.update_status(job_id, JobStatus.COMPLETED)
-            await self._invalidate_caches(plan)
+            pipeline_result = await self._run_ingest(job_id, plan)
         except Exception as exc:
             logger.exception("ingest job %s failed", job_id)
             await self._ingest_jobs.update_status(
@@ -334,15 +329,74 @@ class RagEngine:
             )
             if self._metrics is not None:
                 self._metrics.record_ingest_job_failed()
+            await self._publish_ingest_event(
+                event="ingest_failed",
+                job_id=job_id,
+                plan=plan,
+                status=JobStatus.FAILED,
+                error=str(exc),
+            )
+            return
 
-    async def _run_ingest(self, job_id: str, plan: IngestPlan) -> None:
-        await self._ingest_pipeline.run(
+        await self._complete_indexed_ingest_job(job_id, plan, pipeline_result)
+
+    async def _complete_indexed_ingest_job(
+        self,
+        job_id: str,
+        plan: IngestPlan,
+        pipeline_result: Any,
+    ) -> None:
+        try:
+            await self._update_ingest_metadata(
+                job_id,
+                content_hash=pipeline_result.content_hash,
+                raw_storage_key=pipeline_result.raw_storage_key,
+            )
+        except Exception:
+            logger.exception("failed to update ingest metadata for indexed job %s", job_id)
+        try:
+            await self._ingest_jobs.update_status(job_id, JobStatus.COMPLETED)
+        except Exception:
+            logger.exception("failed to mark indexed ingest job %s completed", job_id)
+        try:
+            await self._invalidate_caches(plan)
+        except Exception:
+            logger.exception("failed to invalidate caches for indexed ingest job %s", job_id)
+        await self._publish_ingest_event(
+            event="ingest_completed",
+            job_id=job_id,
+            plan=plan,
+            status=JobStatus.COMPLETED,
+            content_hash=pipeline_result.content_hash,
+            raw_storage_key=pipeline_result.raw_storage_key,
+        )
+
+    async def _run_ingest(self, job_id: str, plan: IngestPlan) -> Any:
+        return await self._ingest_pipeline.run(
             job_id=job_id,
             request=plan.request,
             config=plan.config,
             ingester=plan.ingester,
             adapter=plan.adapter,
         )
+
+    async def _update_ingest_metadata(
+        self,
+        job_id: str,
+        *,
+        content_hash: str = "",
+        raw_storage_key: str = "",
+    ) -> None:
+        update_metadata = getattr(self._ingest_jobs, "update_metadata", None)
+        if update_metadata is None:
+            return
+        metadata: dict[str, object] = {}
+        if content_hash:
+            metadata["content_hash"] = content_hash
+        if raw_storage_key:
+            metadata["raw_storage_key"] = raw_storage_key
+        if metadata:
+            await update_metadata(job_id, metadata)
 
     async def _invalidate_caches(self, plan: IngestPlan) -> None:
         project_id = plan.config.project_id
@@ -353,6 +407,52 @@ class RagEngine:
         if self._tier2_cache is not None:
             await self._tier2_cache.invalidate_user(project_id, user_id)
 
+    async def _publish_ingest_event(
+        self,
+        *,
+        event: str,
+        job_id: str,
+        plan: IngestPlan,
+        status: JobStatus,
+        error: str = "",
+        content_hash: str = "",
+        raw_storage_key: str = "",
+    ) -> None:
+        if self._ingest_event_publisher is None:
+            return
+        message = QueueMessage(
+            topic=self._ingest_event_topic,
+            key=job_id,
+            payload={
+                "event": event,
+                "job_id": job_id,
+                "status": status.value,
+                "project_id": plan.request.project_id,
+                "user_id": plan.request.user_id,
+                "kb_id": plan.request.kb_id,
+                "doc_id": plan.request.doc_id,
+                "data_type": str(
+                    plan.request.metadata.get("data_type", "project_document")
+                ),
+                "content_hash": content_hash,
+                "raw_storage_key": raw_storage_key,
+                "error": error,
+            },
+            headers={
+                "project_id": plan.request.project_id,
+                "user_id": plan.request.user_id,
+                "correlation_id": job_id,
+            },
+        )
+        try:
+            await self._ingest_event_publisher.publish(message)
+        except Exception:
+            logger.exception(
+                "failed to publish ingest event %s for job %s",
+                event,
+                job_id,
+            )
+
     async def delete_document(
         self,
         *,
@@ -361,24 +461,15 @@ class RagEngine:
         kb_id: str,
         doc_id: str,
     ) -> None:
-        project_id = config.project_id
-        await self._qdrant_store.delete_document(
-            collection_name=config.collection_name,
-            project_id=project_id,
-            user_id=user_id,
-            kb_id=kb_id,
-            doc_id=doc_id,
+        await self._retrieval_service.delete_document(
+            DeleteDocumentRequest(
+                project_id=config.project_id,
+                user_id=user_id,
+                kb_id=kb_id,
+                doc_id=doc_id,
+                collection_name=config.collection_name,
+            )
         )
-        if self._object_storage is not None:
-            from retrieval_service.storage.base import make_storage_key
-
-            storage_key = make_storage_key(project_id, user_id, doc_id)
-            await self._object_storage.delete(storage_key)
-
-        if self._tier1_cache is not None:
-            await self._tier1_cache.invalidate_project(project_id)
-        if self._tier2_cache is not None:
-            await self._tier2_cache.invalidate_user(project_id, user_id)
 
     async def get_raw_document(
         self,
@@ -387,16 +478,13 @@ class RagEngine:
         user_id: str,
         doc_id: str,
     ) -> bytes | None:
-        if self._object_storage is None:
-            return None
-
-        from retrieval_service.storage.base import ObjectStorageError, make_storage_key
-
-        storage_key = make_storage_key(project_id, user_id, doc_id)
-        try:
-            return await self._object_storage.get(storage_key)
-        except ObjectStorageError:
-            return None
+        return await self._retrieval_service.get_raw_document(
+            RawDocumentRequest(
+                project_id=project_id,
+                user_id=user_id,
+                doc_id=doc_id,
+            )
+        )
 
     async def shutdown(self) -> None:
         await self._ingest_queue_runner.shutdown()
@@ -404,36 +492,3 @@ class RagEngine:
     def _record_ingest_queue_depth(self, depth: int) -> None:
         if self._metrics is not None:
             self._metrics.set_queue_depth(depth)
-
-    async def _search_candidates(
-        self,
-        *,
-        query: RetrievalQuery,
-        settings: ProjectRetrievalSettings,
-    ) -> list[RetrievalHit]:
-        retriever: Retriever = self._retriever_factory.build(settings=settings)
-        return await retriever.search(query)
-
-    async def _extract_query_entities(
-        self,
-        *,
-        query_text: str,
-        settings: ProjectRetrievalSettings,
-    ) -> list[EntityMention]:
-        if not settings.ner.enabled or not settings.ner.boost_entities:
-            return []
-        return await self._ner_extractor.extract(query_text)
-
-    def _build_filter_fields(
-        self,
-        retrieval_filter: Any,
-    ) -> dict[str, str | tuple[str, ...]]:
-        fields: dict[str, str | tuple[str, ...]] = {
-            "project_id": retrieval_filter.project_id,
-            "user_id": tuple(retrieval_filter.allowed_user_ids),
-        }
-        if getattr(retrieval_filter, "kb_ids", ()):
-            fields["kb_id"] = tuple(retrieval_filter.kb_ids)
-        if getattr(retrieval_filter, "doc_ids", ()):
-            fields["doc_id"] = tuple(retrieval_filter.doc_ids)
-        return fields

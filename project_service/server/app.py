@@ -15,18 +15,22 @@ class AppContext:
     config_repo: object
     gateway: object
     engine: object
+    project_client: object
     embedding_provider: object
     qdrant_store: object
     bm25_index: object | None
     sparse_encoder: object | None
     ner_extractor: object | None
     metrics: object
+    ingest_event_broker: object
+    workflow_log_app: object
     health_checker: object
     openrouter_client: object | None
     server: object
 
     async def shutdown(self) -> None:
         await self.server.stop(grace=5)
+        await self.workflow_log_app.shutdown()
         await self.engine.shutdown()
         if self.openrouter_client is not None:
             await self.openrouter_client.shutdown()
@@ -36,7 +40,11 @@ class AppContext:
         await self.qdrant_store.close()
 
 
-async def create_app(settings: AppSettings | None = None) -> AppContext:
+async def create_app(
+    settings: AppSettings | None = None,
+    *,
+    start_server: bool = True,
+) -> AppContext:
     settings = settings or load_settings()
 
     from project_service.adapters import (
@@ -45,8 +53,10 @@ async def create_app(settings: AppSettings | None = None) -> AppContext:
         WebsiteProjectAdapter,
     )
     from project_service.config import SQLiteProjectConfigRepository
+    from project_service.client import LocalProjectServiceClient
     from project_service.rag.engine import RagEngine
     from project_service.gateway import AsyncConcurrencyLimiter, RagGateway
+    from ingestion_service.jobs import SQLiteIngestionJobRepository
     from retrieval_service.health import HealthChecker, MetricsCollector
     from retrieval_service.services.cache import Tier1MemoryCache, Tier2ResponseCache
     from retrieval_service.embedding import EmbeddingProviderFactory
@@ -55,6 +65,8 @@ async def create_app(settings: AppSettings | None = None) -> AppContext:
     from retrieval_service.services.entities import LocalNerExtractor, NoopNerExtractor
     from retrieval_service.services.sparse_encoder import FastEmbedSparseTextEncoder
     from retrieval_service.services.vector_store import QdrantStore
+    from shared.queue import LocalQueueBroker
+    from workflow_log_service.server import create_app as create_workflow_log_app
     serve_grpc = _resolve_serve_grpc()
 
     config_repo = SQLiteProjectConfigRepository(settings.config_db_path)
@@ -89,6 +101,17 @@ async def create_app(settings: AppSettings | None = None) -> AppContext:
     await tier2_cache.initialize()
     tier1_cache = Tier1MemoryCache()
     metrics = MetricsCollector()
+    ingest_event_broker = LocalQueueBroker(
+        maxsize=settings.ingest_event_queue_maxsize,
+    )
+    workflow_log_app = await create_workflow_log_app(
+        queue=ingest_event_broker,
+        enabled=settings.workflow_log_enabled,
+        topic=settings.workflow_log_topic,
+        db_path=settings.workflow_log_db_path,
+    )
+    ingest_job_repository = SQLiteIngestionJobRepository(settings.ingest_job_db_path)
+    await ingest_job_repository.initialize()
     openrouter_client = _build_llm_provider(settings, factory=LLMProviderFactory)
     if openrouter_client is not None:
         await openrouter_client.initialize()
@@ -112,9 +135,14 @@ async def create_app(settings: AppSettings | None = None) -> AppContext:
         tier2_cache=tier2_cache,
         openrouter_client=openrouter_client,
         metrics=metrics,
+        ingest_job_repository=ingest_job_repository,
+        ingest_queue_maxsize=settings.ingest_queue_maxsize,
+        ingest_event_publisher=ingest_event_broker,
+        ingest_event_topic=settings.ingest_event_topic,
         sparse_encoder=sparse_encoder,
         ingest_worker_count=settings.ingest_worker_count,
     )
+    project_client = LocalProjectServiceClient(gateway=gateway, engine=engine)
     health_checker = HealthChecker(
         qdrant_store=qdrant_store,
         embed_fn=embedding_provider,
@@ -123,23 +151,29 @@ async def create_app(settings: AppSettings | None = None) -> AppContext:
         config_repo=config_repo,
         openrouter_client=openrouter_client,
     )
-    server = await serve_grpc(
-        gateway=gateway,
-        engine=engine,
-        health_checker=health_checker,
-        port=settings.grpc_port,
-    )
+    if start_server:
+        server = await serve_grpc(
+            gateway=gateway,
+            engine=engine,
+            health_checker=health_checker,
+            port=settings.grpc_port,
+        )
+    else:
+        server = _NoopServer()
     return AppContext(
         settings=settings,
         config_repo=config_repo,
         gateway=gateway,
         engine=engine,
+        project_client=project_client,
         embedding_provider=embedding_provider,
         qdrant_store=qdrant_store,
         bm25_index=bm25_index,
         sparse_encoder=sparse_encoder,
         ner_extractor=ner_extractor,
         metrics=metrics,
+        ingest_event_broker=ingest_event_broker,
+        workflow_log_app=workflow_log_app,
         health_checker=health_checker,
         openrouter_client=openrouter_client,
         server=server,
@@ -193,6 +227,14 @@ def _resolve_serve_grpc() -> object:
     from project_service.server.grpc.server import serve_grpc
 
     return serve_grpc
+
+
+class _NoopServer:
+    async def stop(self, grace: int = 0) -> None:
+        return None
+
+    async def wait_for_termination(self) -> None:
+        return None
 
 
 if __name__ == "__main__":

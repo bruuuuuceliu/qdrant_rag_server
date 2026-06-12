@@ -6,6 +6,8 @@ Canonical project gateway code lives in ``project_service.gateway``.
 from project_service.gateway import (
     AsyncConcurrencyLimiter,
     ConcurrencyLimitExceededError,
+    DeleteDocumentPlan,
+    DeleteDocumentRequest,
     GatewayError,
     IngestPlan,
     IngestRequest,
@@ -19,6 +21,8 @@ from project_service.gateway import (
 __all__ = [
     "AsyncConcurrencyLimiter",
     "ConcurrencyLimitExceededError",
+    "DeleteDocumentPlan",
+    "DeleteDocumentRequest",
     "GatewayError",
     "IngestPlan",
     "IngestRequest",

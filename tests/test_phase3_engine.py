@@ -6,7 +6,8 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from retrieval_service.rag import RagEngine, _build_qdrant_filter
+from ingestion_service.jobs import MemoryIngestionJobRepository
+from retrieval_service.rag import IngestQueueFullError, RagEngine, _build_qdrant_filter
 from retrieval_service.services.vector_store import (
     VECTOR_SIZE,
     _validate_upsert_input,
@@ -304,6 +305,63 @@ class RagEngineTest(unittest.IsolatedAsyncioTestCase):
             retrieval_filter=rf,
         )
 
+    def _make_ingest_plan(self, *, doc_id: str = "d1") -> IngestPlan:
+        return IngestPlan(
+            request=IngestRequest(
+                project_id="p1",
+                user_id="u1",
+                kb_id="kb_a",
+                doc_id=doc_id,
+                source_uri=f"memory://{doc_id}",
+                content_type="text/plain",
+            ),
+            adapter=self.adapter,
+            config=BaseProjectConfig(
+                project_id="p1",
+                project_type="test",
+                active_embedding_version="v1",
+                embedding_model="bge-base",
+                reranker_model="bge-reranker-base",
+            ),
+        )
+
+    def _configure_successful_ingest_adapter(self) -> None:
+        self.adapter.parse_document = AsyncMock(
+            return_value=BaseDocument(
+                project_id="p1",
+                user_id="u1",
+                kb_id="kb_a",
+                doc_id="d1",
+                source_uri="s3://bucket/doc.txt",
+                content_type="text/plain",
+                content_hash="parsed-hash",
+            )
+        )
+        self.adapter.build_chunks = AsyncMock(
+            return_value=[
+                BaseChunk(
+                    project_id="p1",
+                    user_id="u1",
+                    kb_id="kb_a",
+                    doc_id="d1",
+                    chunk_id="c1",
+                    chunk_index=0,
+                    text="hello",
+                )
+            ]
+        )
+        self.adapter.build_payload = AsyncMock(
+            return_value=BaseChunkPayload(
+                project_id="p1",
+                user_id="u1",
+                kb_id="kb_a",
+                doc_id="d1",
+                chunk_id="c1",
+                chunk_index=0,
+                text="hello",
+            )
+        )
+
     async def test_search_returns_empty_on_no_results(self) -> None:
         self.embed_fn.return_value = [0.1] * 768
         self.qdrant_store.search.return_value = []
@@ -441,47 +499,18 @@ class RagEngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_kwargs["limit"], 50)
 
     async def test_ingest_job_flows_through_statuses(self) -> None:
-        self.adapter.parse_document = AsyncMock(
-            return_value=BaseDocument(
-                project_id="p1",
-                user_id="u1",
-                kb_id="kb_a",
-                doc_id="d1",
-                source_uri="s3://bucket/doc.txt",
-                content_type="text/plain",
-            )
-        )
-        self.adapter.build_chunks = AsyncMock(
-            return_value=[
-                BaseChunk(
-                    project_id="p1",
-                    user_id="u1",
-                    kb_id="kb_a",
-                    doc_id="d1",
-                    chunk_id="c1",
-                    chunk_index=0,
-                    text="hello",
-                )
-            ]
-        )
-        self.adapter.build_payload = AsyncMock(
-            return_value=BaseChunkPayload(
-                project_id="p1",
-                user_id="u1",
-                kb_id="kb_a",
-                doc_id="d1",
-                chunk_id="c1",
-                chunk_index=0,
-                text="hello",
-            )
-        )
+        self._configure_successful_ingest_adapter()
 
         embed_fn = MagicMock()
         embed_fn.encode_batch = AsyncMock(return_value=[[0.1] * 768])
+        indexing_service = AsyncMock()
+        event_publisher = AsyncMock()
 
         engine = RagEngine(
             embed_fn=embed_fn,
             qdrant_store=self.qdrant_store,
+            indexing_service=indexing_service,
+            ingest_event_publisher=event_publisher,
             ingest_worker_count=1,
         )
 
@@ -508,12 +537,79 @@ class RagEngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.job_id, result.job_id)
         self.assertEqual(result.status, IngestJobStatus.PENDING)
 
-        # Wait for ingest to complete
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(engine._ingest_queue.join(), timeout=1)
 
         final = await engine.get_ingest_status(result.job_id)
         self.assertEqual(final.status, IngestJobStatus.COMPLETED)
-        self.qdrant_store.upsert.assert_called_once()
+        self.assertEqual(final.content_hash, "parsed-hash")
+        self.qdrant_store.upsert.assert_not_called()
+        indexing_service.index_chunks.assert_awaited_once()
+        index_request = indexing_service.index_chunks.await_args.args[0]
+        self.assertEqual(index_request.collection_name, "rag_p1_v1")
+        self.assertEqual(index_request.chunks[0].chunk_id, "c1")
+        self.assertEqual(index_request.payloads[0].chunk_id, "c1")
+        published_events = [
+            call.args[0].payload["event"]
+            for call in event_publisher.publish.await_args_list
+        ]
+        self.assertEqual(
+            published_events,
+            ["ingest_scheduled", "ingest_running", "ingest_completed"],
+        )
+        completed_message = event_publisher.publish.await_args_list[-1].args[0]
+        self.assertEqual(completed_message.topic, "ingestion.events")
+        self.assertEqual(completed_message.key, result.job_id)
+        self.assertEqual(completed_message.headers["correlation_id"], result.job_id)
+        self.assertEqual(completed_message.headers["project_id"], "p1")
+        self.assertEqual(completed_message.payload["status"], "completed")
+        self.assertEqual(completed_message.payload["content_hash"], "parsed-hash")
+        self.assertEqual(completed_message.payload["error"], "")
+
+        await engine.shutdown()
+
+    async def test_post_index_cache_failure_does_not_mark_ingest_failed(self) -> None:
+        self._configure_successful_ingest_adapter()
+        indexing_service = AsyncMock()
+        tier1_cache = AsyncMock()
+        tier1_cache.invalidate_project.side_effect = RuntimeError("cache down")
+
+        engine = RagEngine(
+            embed_fn=MagicMock(),
+            qdrant_store=self.qdrant_store,
+            indexing_service=indexing_service,
+            tier1_cache=tier1_cache,
+            ingest_worker_count=1,
+        )
+
+        result = await engine.schedule_ingest(self._make_ingest_plan())
+        await asyncio.wait_for(engine._ingest_queue.join(), timeout=1)
+
+        final = await engine.get_ingest_status(result.job_id)
+        self.assertEqual(final.status, IngestJobStatus.COMPLETED)
+        indexing_service.index_chunks.assert_awaited_once()
+
+        await engine.shutdown()
+
+    async def test_post_index_metadata_failure_does_not_mark_ingest_failed(self) -> None:
+        self._configure_successful_ingest_adapter()
+        indexing_service = AsyncMock()
+        jobs = _MetadataFailingJobRepository()
+
+        engine = RagEngine(
+            embed_fn=MagicMock(),
+            qdrant_store=self.qdrant_store,
+            indexing_service=indexing_service,
+            ingest_job_repository=jobs,
+            ingest_worker_count=1,
+        )
+
+        result = await engine.schedule_ingest(self._make_ingest_plan())
+        await asyncio.wait_for(engine._ingest_queue.join(), timeout=1)
+
+        final = await engine.get_ingest_status(result.job_id)
+        self.assertEqual(final.status, IngestJobStatus.COMPLETED)
+        self.assertEqual(jobs.metadata_update_attempts, 1)
+        indexing_service.index_chunks.assert_awaited_once()
 
         await engine.shutdown()
 
@@ -522,10 +618,12 @@ class RagEngineTest(unittest.IsolatedAsyncioTestCase):
 
         embed_fn = MagicMock()
         embed_fn.encode_batch = AsyncMock(return_value=[])
+        event_publisher = AsyncMock()
 
         engine = RagEngine(
             embed_fn=embed_fn,
             qdrant_store=self.qdrant_store,
+            ingest_event_publisher=event_publisher,
             ingest_worker_count=1,
         )
 
@@ -555,8 +653,86 @@ class RagEngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final.status, IngestJobStatus.FAILED)
         self.assertEqual(final.doc_id, "d1")
         self.assertIn("bad input", final.error)
+        failed_message = event_publisher.publish.await_args_list[-1].args[0]
+        self.assertEqual(failed_message.payload["event"], "ingest_failed")
+        self.assertEqual(failed_message.payload["status"], "failed")
+        self.assertIn("bad input", failed_message.payload["error"])
 
         await engine.shutdown()
+
+    async def test_ingest_event_publish_failure_does_not_fail_job(self) -> None:
+        self._configure_successful_ingest_adapter()
+        indexing_service = AsyncMock()
+        event_publisher = AsyncMock()
+        event_publisher.publish.side_effect = RuntimeError("event queue down")
+
+        engine = RagEngine(
+            embed_fn=MagicMock(),
+            qdrant_store=self.qdrant_store,
+            indexing_service=indexing_service,
+            ingest_event_publisher=event_publisher,
+            ingest_worker_count=1,
+        )
+
+        result = await engine.schedule_ingest(self._make_ingest_plan())
+        await asyncio.wait_for(engine._ingest_queue.join(), timeout=1)
+
+        final = await engine.get_ingest_status(result.job_id)
+        self.assertEqual(final.status, IngestJobStatus.COMPLETED)
+        self.assertGreaterEqual(event_publisher.publish.await_count, 3)
+
+        await engine.shutdown()
+
+    async def test_schedule_ingest_raises_when_queue_full_and_marks_job_failed(self) -> None:
+        embed_fn = MagicMock()
+        embed_fn.encode_batch = AsyncMock(return_value=[])
+        event_publisher = AsyncMock()
+
+        engine = RagEngine(
+            embed_fn=embed_fn,
+            qdrant_store=self.qdrant_store,
+            ingest_event_publisher=event_publisher,
+            ingest_worker_count=0,
+            ingest_queue_maxsize=1,
+        )
+        first_plan = self._make_ingest_plan(doc_id="d1")
+        second_plan = self._make_ingest_plan(doc_id="d2")
+
+        first = await engine.schedule_ingest(first_plan)
+        with self.assertRaises(IngestQueueFullError) as raised:
+            await engine.schedule_ingest(second_plan)
+
+        self.assertEqual(str(raised.exception), "ingest queue is full")
+        self.assertEqual(engine._ingest_queue.qsize(), 1)
+        failed_jobs = [
+            job
+            for job in engine._ingest_status.values()
+            if job.document_id == "d2"
+        ]
+        self.assertEqual(len(failed_jobs), 1)
+        self.assertEqual(failed_jobs[0].status, IngestJobStatus.FAILED)
+        self.assertEqual(failed_jobs[0].error, "ingest queue is full")
+        self.assertEqual(first.status, IngestJobStatus.PENDING)
+        published_events = [
+            call.args[0].payload["event"]
+            for call in event_publisher.publish.await_args_list
+        ]
+        self.assertEqual(
+            published_events,
+            ["ingest_scheduled", "ingest_scheduled", "ingest_failed"],
+        )
+
+        await engine.shutdown()
+
+
+class _MetadataFailingJobRepository(MemoryIngestionJobRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.metadata_update_attempts = 0
+
+    async def update_metadata(self, job_id: str, metadata: dict[str, object]):
+        self.metadata_update_attempts += 1
+        raise RuntimeError("metadata store down")
 
 
 if __name__ == "__main__":

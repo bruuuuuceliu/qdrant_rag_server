@@ -6,6 +6,7 @@ Canonical project RAG code lives in ``project_service.rag``.
 from project_service.rag import (
     GenerateResult,
     GenerationUnavailableError,
+    IngestQueueFullError,
     IngestResult,
     RagEngine,
     SearchResult,
@@ -17,6 +18,7 @@ from project_service.rag import (
 __all__ = [
     "GenerateResult",
     "GenerationUnavailableError",
+    "IngestQueueFullError",
     "IngestResult",
     "RagEngine",
     "SearchResult",

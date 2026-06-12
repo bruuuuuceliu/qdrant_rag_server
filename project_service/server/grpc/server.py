@@ -10,6 +10,7 @@ from grpc import aio
 
 from project_service.rag.engine import (
     GenerationUnavailableError,
+    IngestQueueFullError,
     RagEngine,
     SearchResult,
 )
@@ -92,6 +93,8 @@ class RagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
 
         try:
             result = await self._engine.schedule_ingest(plan)
+        except IngestQueueFullError as exc:
+            await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, str(exc))
         except Exception:
             logger.exception("ingest scheduling failed")
             await context.abort(grpc.StatusCode.INTERNAL, "internal error")

@@ -37,6 +37,13 @@ class AppSettings:
     embedding_base_url: str
     embedding_dimension: int
     generation_enabled: bool
+    ingest_queue_maxsize: int = 100
+    ingest_job_db_path: Path = Path("/tmp/qdrant_rag/ingestion_jobs.db")
+    ingest_event_topic: str = "ingestion.events"
+    ingest_event_queue_maxsize: int = 1000
+    workflow_log_enabled: bool = True
+    workflow_log_topic: str = "ingestion.events"
+    workflow_log_db_path: Path = Path("/tmp/qdrant_rag/workflow_log.db")
     generation_provider: str = "openrouter"
     generation_model: str = "openai/gpt-4o-mini"
     generation_api_key: str = ""
@@ -86,11 +93,13 @@ def load_settings(
     from configs.generation.config import load_generation_settings
     from configs.qdrant.config import load_qdrant_settings
     from configs.retrieval.config import load_retrieval_component_settings
+    from configs.workflow_log.config import load_workflow_log_settings
 
     embedding_settings = load_embedding_settings(values)
     generation_settings = load_generation_settings(values)
     qdrant_settings = load_qdrant_settings(values)
     retrieval_settings = load_retrieval_component_settings(values)
+    workflow_log_settings = load_workflow_log_settings(values)
 
     return AppSettings(
         config_db_path=Path(get_value(values, "RAG_CONFIG_DB_PATH", "/var/lib/rag/config.db")),
@@ -103,7 +112,24 @@ def load_settings(
         qdrant_port=qdrant_settings.port,
         max_per_project=get_int_value(values, "RAG_MAX_PER_PROJECT", 20),
         max_per_user=get_int_value(values, "RAG_MAX_PER_USER", 5),
-        ingest_worker_count=get_int_value(values, "RAG_INGEST_WORKERS", 4),
+        ingest_worker_count=get_positive_int_value(values, "RAG_INGEST_WORKERS", 4),
+        ingest_queue_maxsize=get_int_value(values, "RAG_INGEST_QUEUE_MAXSIZE", 100),
+        ingest_job_db_path=Path(
+            get_value(values, "RAG_INGEST_JOB_DB_PATH", "/var/lib/rag/ingestion_jobs.db")
+        ),
+        ingest_event_topic=get_value(
+            values,
+            "RAG_INGEST_EVENT_TOPIC",
+            "ingestion.events",
+        ),
+        ingest_event_queue_maxsize=get_int_value(
+            values,
+            "RAG_INGEST_EVENT_QUEUE_MAXSIZE",
+            1000,
+        ),
+        workflow_log_enabled=workflow_log_settings.enabled,
+        workflow_log_topic=workflow_log_settings.topic,
+        workflow_log_db_path=workflow_log_settings.db_path,
         embedding_provider=embedding_settings.provider,
         embedding_model=embedding_settings.model,
         embedding_device=embedding_settings.device,
@@ -169,6 +195,13 @@ def get_int_value(values: dict[str, str], name: str, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer") from exc
+
+
+def get_positive_int_value(values: dict[str, str], name: str, default: int) -> int:
+    value = get_int_value(values, name, default)
+    if value < 1:
+        raise ValueError(f"{name} must be at least 1")
+    return value
 
 
 def get_bool_value(values: dict[str, str], name: str, default: bool) -> bool:

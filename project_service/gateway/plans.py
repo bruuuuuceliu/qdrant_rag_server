@@ -10,7 +10,11 @@ from project_service.schemas import (
     ProjectQueryScope,
     ProjectRetrievalFilter,
 )
-from project_service.gateway.requests import IngestRequest, SearchRequest
+from project_service.gateway.requests import (
+    DeleteDocumentRequest,
+    IngestRequest,
+    SearchRequest,
+)
 from retrieval_service.ingest.ingester import Ingester
 
 
@@ -29,3 +33,10 @@ class IngestPlan:
     adapter: ProjectAdapter
     config: ProjectConfig
     ingester: Ingester | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteDocumentPlan:
+    request: DeleteDocumentRequest
+    adapter: ProjectAdapter
+    config: ProjectConfig

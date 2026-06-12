@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from shared.contracts import IngestJobStatus, JobStatus
+
 DEFAULT_NAMESPACE = "default"
 SHARED_OWNER_ID = "__shared__"
 
@@ -11,18 +13,6 @@ SHARED_OWNER_ID = "__shared__"
 # DEFAULT_NAMESPACE and SHARED_OWNER_ID instead.
 DEFAULT_KB_ID = DEFAULT_NAMESPACE
 SHARED_USER_ID = SHARED_OWNER_ID
-
-
-class JobStatus(StrEnum):
-    """Lifecycle states for asynchronous retrieval-service jobs."""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-IngestJobStatus = JobStatus
 
 
 class Visibility(StrEnum):

@@ -6,6 +6,9 @@ This project is a minimal, extensible information retrieval service. It can supp
 
 - [Overview](overview.md): purpose, current status, and core concepts.
 - [Architecture](architecture.md): component boundaries and replaceable parts.
+- [Service Boundaries](service-boundaries.md): manager, project, ingestion, retrieval, and future service ownership.
+- [Contracts](contracts.md): manager routing and queue message contracts.
+- [Implementation Roadmap](implementation-roadmap.md): iteration targets and migration guardrails.
 - [Data Model](data-model.md): project/user/KB/document/chunk structure and Qdrant payloads.
 - [Workflows](workflows.md): ingest, search, delete, generation, health, and version flows.
 - [API](api.md): current gRPC service shape.

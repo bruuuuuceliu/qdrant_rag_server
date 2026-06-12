@@ -3,6 +3,7 @@
 __all__ = [
     "GenerateResult",
     "GenerationUnavailableError",
+    "IngestQueueFullError",
     "IngestResult",
     "RagEngine",
     "SearchResult",
@@ -13,10 +14,10 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name == "RagEngine":
-        from project_service.rag.engine import RagEngine
+    if name in {"IngestQueueFullError", "RagEngine"}:
+        from project_service.rag import engine
 
-        return RagEngine
+        return getattr(engine, name)
     if name in {
         "GenerateResult",
         "GenerationUnavailableError",
