@@ -23,9 +23,20 @@ ner = [
 sparse = [
     "fastembed>=0.3",
 ]
+documents-lite = [
+    "PyMuPDF>=1.24",
+    "pypdf>=4",
+    "python-docx>=1.1",
+    "python-pptx>=0.6",
+    "openpyxl>=3.1",
+    "trafilatura>=1.8",
+]
+documents-docling = [
+    "docling>=2",
+]
 
 [tool.setuptools.packages.find]
-include = ["configs*", "project_service*", "retrieval_service*", "server*"]
+include = ["configs*", "ingestion_service*", "project_service*", "retrieval_service*", "server*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from ingestion_service import IngestionService
 from retrieval_service.core.schemas import BaseChunk, BaseDocument
-from retrieval_service.ingest.source import load_ingest_source
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +36,7 @@ class Ingester(Protocol):
 
 
 class UniversalSourceIngester:
-    """Universal text ingester for raw text, local files, file URLs, and HTTP URLs."""
+    """Compatibility wrapper around the standalone ingestion service."""
 
     async def prepare(
         self,
@@ -46,32 +45,35 @@ class UniversalSourceIngester:
         config: Any | None = None,
     ) -> PreparedIngestData:
         del config
-        source = await load_ingest_source(request)
-        metadata = dict(getattr(request, "metadata", {}) or {})
-        metadata.setdefault("raw_text", source.text)
-        content_hash = str(
-            metadata.get("content_hash") or _content_hash(source.raw_content)
-        )
-        chunker_version = str(metadata.get("chunker_version", "v1"))
+        result = await IngestionService().process(request)
+        metadata = dict(result.document.metadata)
+        metadata.setdefault("raw_text", result.source.text())
+        content_hash = str(metadata.get("content_hash") or result.document.content_hash)
         document = BaseDocument(
-            document_id=str(getattr(request, "doc_id", "")),
-            source_uri=source.source_uri,
-            content_type=source.content_type,
-            data_type=str(metadata.get("data_type", "document")),
+            document_id=result.document.document_id,
+            source_uri=result.document.source_uri,
+            content_type=result.document.content_type,
+            data_type=result.document.data_type,
             content_hash=content_hash,
             metadata=metadata,
         )
         chunks = tuple(
-            _chunk_document(
-                document=document,
-                text=source.text or source.source_uri,
-                chunker_version=chunker_version,
+            BaseChunk(
+                document_id=document.document_id,
+                chunk_id=chunk.chunk_id,
+                chunk_index=chunk.chunk_index,
+                text=chunk.text,
+                data_type=chunk.data_type,
+                content_hash=chunk.content_hash,
+                chunker_version=chunk.chunker_version,
+                metadata=dict(chunk.metadata),
             )
+            for chunk in result.chunks
         )
         return PreparedIngestData(
             document=document,
             chunks=chunks,
-            raw_content=source.raw_content,
+            raw_content=result.raw_content,
         )
 
 
@@ -108,45 +110,3 @@ def _raw_content_from_document(document: Any) -> bytes | None:
     if not raw_text:
         return None
     return str(raw_text).encode("utf-8")
-
-
-def _chunk_document(
-    *,
-    document: BaseDocument,
-    text: str,
-    chunker_version: str,
-) -> list[BaseChunk]:
-    chunks: list[BaseChunk] = []
-    for index, paragraph in enumerate(text.split("\n\n")):
-        cleaned = paragraph.strip()
-        if not cleaned:
-            continue
-        chunks.append(
-            BaseChunk(
-                document_id=document.document_id,
-                chunk_id=f"{document.document_id}:{index}",
-                chunk_index=index,
-                text=cleaned,
-                data_type=document.data_type,
-                content_hash=document.content_hash,
-                chunker_version=chunker_version,
-                metadata={"section": str(index)},
-            )
-        )
-    if not chunks:
-        chunks.append(
-            BaseChunk(
-                document_id=document.document_id,
-                chunk_id=f"{document.document_id}:0",
-                chunk_index=0,
-                text=text,
-                data_type=document.data_type,
-                content_hash=document.content_hash,
-                chunker_version=chunker_version,
-            )
-        )
-    return chunks
-
-
-def _content_hash(raw_content: bytes) -> str:
-    return hashlib.sha256(raw_content).hexdigest()

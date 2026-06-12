@@ -171,11 +171,11 @@ class WebsiteProjectAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(ingester, UniversalSourceIngester)
         self.assertIsInstance(prepared.document, NeutralDocument)
         self.assertEqual(prepared.payloads, ())
-        self.assertEqual(len(prepared.chunks), 2)
-        self.assertEqual(prepared.chunks[0].text, "First paragraph")
+        self.assertEqual(len(prepared.chunks), 1)
+        self.assertEqual(prepared.chunks[0].text, "First paragraph\n\nSecond paragraph")
         self.assertEqual(prepared.raw_content, b"First paragraph\n\nSecond paragraph")
         self.assertIsInstance(adapted.document, WebsiteDocument)
-        self.assertEqual(len(adapted.payloads), 2)
+        self.assertEqual(len(adapted.payloads), 1)
         self.assertIsInstance(adapted.payloads[0], WebsiteChunkPayload)
 
     async def test_build_chunks_splits_paragraphs(self) -> None:
