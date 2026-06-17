@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from ingestion_service.jobs import MemoryIngestionJobRepository
@@ -497,6 +498,76 @@ class RagEngineTest(unittest.IsolatedAsyncioTestCase):
         self.qdrant_store.search.assert_called_once()
         call_kwargs = self.qdrant_store.search.call_args.kwargs
         self.assertEqual(call_kwargs["limit"], 50)
+
+    async def test_search_concurrency_limit_serializes_engine_searches(self) -> None:
+        active = 0
+        max_seen = 0
+
+        async def _search(request):
+            nonlocal active, max_seen
+            active += 1
+            max_seen = max(max_seen, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return SimpleNamespace(chunks=[], elapsed_ms=1, cache_hit=False)
+
+        retrieval_service = MagicMock()
+        retrieval_service.search = AsyncMock(side_effect=_search)
+        engine = RagEngine(
+            embed_fn=self.embed_fn,
+            qdrant_store=self.qdrant_store,
+            retrieval_service=retrieval_service,
+            max_concurrent_searches=1,
+        )
+
+        await asyncio.gather(
+            engine.search(self._make_search_plan()),
+            engine.search(self._make_search_plan()),
+        )
+
+        self.assertEqual(max_seen, 1)
+        self.assertEqual(retrieval_service.search.await_count, 2)
+
+    async def test_ingest_schedule_limit_serializes_queue_submission(self) -> None:
+        active = 0
+        max_seen = 0
+
+        async def _submit(job_id, plan):
+            nonlocal active, max_seen
+            active += 1
+            max_seen = max(max_seen, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+
+        engine = RagEngine(
+            embed_fn=self.embed_fn,
+            qdrant_store=self.qdrant_store,
+            max_concurrent_ingest_schedules=1,
+        )
+        await engine._ingest_queue_runner.shutdown()
+        engine._ingest_queue_runner.submit = AsyncMock(side_effect=_submit)
+
+        await asyncio.gather(
+            engine.schedule_ingest(self._make_ingest_plan(doc_id="d1")),
+            engine.schedule_ingest(self._make_ingest_plan(doc_id="d2")),
+        )
+
+        self.assertEqual(max_seen, 1)
+        self.assertEqual(engine._ingest_queue_runner.submit.await_count, 2)
+
+    def test_engine_rejects_invalid_resource_limits(self) -> None:
+        with self.assertRaisesRegex(ValueError, "max_concurrent_searches"):
+            RagEngine(
+                embed_fn=self.embed_fn,
+                qdrant_store=self.qdrant_store,
+                max_concurrent_searches=0,
+            )
+        with self.assertRaisesRegex(ValueError, "max_concurrent_ingest_schedules"):
+            RagEngine(
+                embed_fn=self.embed_fn,
+                qdrant_store=self.qdrant_store,
+                max_concurrent_ingest_schedules=0,
+            )
 
     async def test_ingest_job_flows_through_statuses(self) -> None:
         self._configure_successful_ingest_adapter()

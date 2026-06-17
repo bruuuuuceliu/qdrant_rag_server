@@ -6,18 +6,14 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from shared.contracts import DataType, data_type_spec, normalize_data_type
+
 
 class Operation(StrEnum):
     INGEST = "ingest"
     SEARCH = "search"
     DELETE = "delete"
     STATUS = "status"
-
-
-class DataType(StrEnum):
-    PROJECT_DOCUMENT = "project_document"
-    AGENT_MEMORY = "agent_memory"
-    WORKFLOW_LOG = "workflow_log"
 
 
 class ServiceTarget(StrEnum):
@@ -45,10 +41,7 @@ class RouteRequest:
             raise ValueError(f"unsupported manager operation: {self.operation!r}") from exc
 
     def normalized_data_type(self) -> DataType:
-        try:
-            return DataType(self.data_type)
-        except ValueError as exc:
-            raise ValueError(f"unsupported data_type: {self.data_type!r}") from exc
+        return normalize_data_type(self.data_type)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,15 +77,17 @@ class ManagerRouter:
         if data_type == DataType.PROJECT_DOCUMENT:
             return self._route_project_document(operation)
         if data_type == DataType.AGENT_MEMORY:
+            spec = data_type_spec(data_type)
             return RouteDecision(
                 operation=operation,
                 data_type=data_type,
                 target_service=ServiceTarget.MEMORY,
                 executable=False,
                 async_required=operation == Operation.INGEST,
-                reason="agent memory service is reserved for a future iteration",
+                reason=spec.reserved_reason,
             )
         if data_type == DataType.WORKFLOW_LOG:
+            spec = data_type_spec(data_type)
             return RouteDecision(
                 operation=operation,
                 data_type=data_type,
@@ -100,7 +95,7 @@ class ManagerRouter:
                 executable=False,
                 async_required=True,
                 queue_topic=self._workflow_topic,
-                reason="workflow log service is reserved for a future iteration",
+                reason=spec.reserved_reason,
             )
         raise ValueError(f"unsupported data_type: {data_type!r}")
 

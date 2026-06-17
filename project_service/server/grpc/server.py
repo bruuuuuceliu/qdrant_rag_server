@@ -82,6 +82,8 @@ class RagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
                     doc_id=request.doc_id,
                     source_uri=request.source_uri,
                     content_type=request.content_type,
+                    raw_text=request.metadata.get("raw_text") or None,
+                    raw_content=request.metadata.get("raw_content") or None,
                     metadata=dict(request.metadata),
                 )
             )

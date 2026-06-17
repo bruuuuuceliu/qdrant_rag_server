@@ -11,6 +11,35 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 
 class ProjectServiceAppTest(unittest.IsolatedAsyncioTestCase):
+    async def test_shutdown_handles_reranker_without_generation_client(self) -> None:
+        from project_service.server.app import AppContext
+
+        app = AppContext(
+            settings=MagicMock(),
+            config_repo=MagicMock(),
+            gateway=MagicMock(),
+            engine=_AsyncShutdownMock(),
+            project_client=MagicMock(),
+            embedding_provider=_AsyncShutdownMock(),
+            qdrant_store=_AsyncCloseMock(),
+            bm25_index=None,
+            sparse_encoder=None,
+            ner_extractor=None,
+            metrics=MagicMock(),
+            ingest_event_broker=MagicMock(),
+            reranker=_AsyncShutdownMock(),
+            object_storage=MagicMock(),
+            version_manager=MagicMock(),
+            workflow_log_app=_AsyncShutdownMock(),
+            health_checker=MagicMock(),
+            openrouter_client=None,
+            server=_AsyncStopMock(),
+        )
+
+        await app.shutdown()
+
+        app.reranker.shutdown.assert_awaited_once()
+
     async def test_create_app_wires_workflow_log_app(self) -> None:
         from project_service.server.app import AppSettings, create_app
 
@@ -84,6 +113,24 @@ class ProjectServiceAppTest(unittest.IsolatedAsyncioTestCase):
             await app.shutdown()
 
             workflow_log_app.shutdown.assert_awaited_once()
+
+
+class _AsyncShutdownMock(MagicMock):
+    def __init__(self) -> None:
+        super().__init__()
+        self.shutdown = AsyncMock()
+
+
+class _AsyncCloseMock(MagicMock):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close = AsyncMock()
+
+
+class _AsyncStopMock(MagicMock):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stop = AsyncMock()
 
 
 if __name__ == "__main__":

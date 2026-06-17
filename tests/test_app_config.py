@@ -7,6 +7,7 @@ from pathlib import Path
 
 from configs.config import get_positive_int_value, load_settings
 from configs.ingestion import load_ingestion_settings
+from configs.manager import load_manager_settings
 from configs.workflow_log import load_workflow_log_settings
 
 
@@ -20,6 +21,17 @@ class AppConfigTest(unittest.TestCase):
             get_positive_int_value({"RAG_INGEST_WORKERS": "2"}, "RAG_INGEST_WORKERS", 4),
             2,
         )
+
+    def test_positive_int_rejects_zero_resource_limit(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "RAG_MAX_CONCURRENT_SEARCHES must be at least 1",
+        ):
+            get_positive_int_value(
+                {"RAG_MAX_CONCURRENT_SEARCHES": "0"},
+                "RAG_MAX_CONCURRENT_SEARCHES",
+                32,
+            )
 
     def test_loads_workflow_log_settings(self) -> None:
         settings = load_workflow_log_settings(
@@ -64,6 +76,23 @@ class AppConfigTest(unittest.TestCase):
         self.assertEqual(settings.worker_count, 3)
         self.assertEqual(settings.queue_maxsize, 50)
         self.assertEqual(settings.job_db_path, Path("/tmp/jobs.db"))
+
+    def test_loads_manager_retrieval_queue_settings(self) -> None:
+        settings = load_manager_settings(
+            {
+                "MANAGER_RETRIEVAL_CLIENT_MODE": "queue",
+                "MANAGER_RETRIEVAL_TOPIC": "retrieval.custom",
+                "MANAGER_RETRIEVAL_RESPONSE_TIMEOUT": "2.5",
+                "MANAGER_RETRIEVAL_HTTP_BASE_URL": "http://retrieval:8081",
+                "MANAGER_RETRIEVAL_HTTP_TIMEOUT": "3.5",
+            }
+        )
+
+        self.assertEqual(settings.retrieval_client_mode, "queue")
+        self.assertEqual(settings.retrieval_topic, "retrieval.custom")
+        self.assertEqual(settings.retrieval_response_timeout, 2.5)
+        self.assertEqual(settings.retrieval_http_base_url, "http://retrieval:8081")
+        self.assertEqual(settings.retrieval_http_timeout, 3.5)
 
 
 if __name__ == "__main__":

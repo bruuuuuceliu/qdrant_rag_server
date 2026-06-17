@@ -6,10 +6,16 @@ import asyncio
 import uuid
 from typing import Any
 
-from manager_service.clients import ProjectDocumentClient
+from manager_service.clients import (
+    IngestionClient,
+    ProjectDocumentClient,
+    ProjectDocumentIngestionClient,
+    ProjectDocumentRetrievalClient,
+    RetrievalClient,
+)
 from manager_service.errors import ManagerIngestFailedError, ManagerIngestTimeoutError
 from manager_service.routing import DataType, ManagerRouter, Operation, RouteRequest
-from shared.queue import QueueMessage
+from shared.queue import QueueBroker, QueueMessage
 
 
 class ManagerService:
@@ -18,13 +24,24 @@ class ManagerService:
     def __init__(
         self,
         *,
-        project_documents: ProjectDocumentClient,
-        ingest_queue: Any | None = None,
+        project_documents: ProjectDocumentClient | None = None,
+        ingestion: IngestionClient | None = None,
+        retrieval: RetrievalClient | None = None,
+        ingest_queue: QueueBroker | None = None,
         ingest_topic: str = "ingestion.requests",
         ingest_response_timeout: float = 30.0,
         router: ManagerRouter | None = None,
     ) -> None:
+        if project_documents is not None:
+            ingestion = ingestion or ProjectDocumentIngestionClient(project_documents)
+            retrieval = retrieval or ProjectDocumentRetrievalClient(project_documents)
+        if ingestion is None:
+            raise ValueError("ManagerService requires an ingestion client")
+        if retrieval is None:
+            raise ValueError("ManagerService requires a retrieval client")
         self._project_documents = project_documents
+        self._ingestion = ingestion
+        self._retrieval = retrieval
         self._ingest_queue = ingest_queue
         self._ingest_topic = ingest_topic
         self._ingest_response_timeout = ingest_response_timeout
@@ -43,7 +60,7 @@ class ManagerService:
         if not route.executable:
             raise ValueError(route.reason)
         if self._ingest_queue is None:
-            return await self._project_documents.ingest(request)
+            return await self._ingestion.ingest(request)
         return await self._queue_ingest(request)
 
     async def search(self, request: Any) -> Any:
@@ -57,7 +74,7 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
-        return await self._project_documents.search(request)
+        return await self._retrieval.search(request)
 
     async def ingest_status(
         self,
@@ -73,7 +90,7 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
-        return await self._project_documents.ingest_status(job_id)
+        return await self._ingestion.ingest_status(job_id)
 
     async def delete(self, request: Any) -> Any:
         route = self._router.route(
@@ -87,7 +104,7 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
-        return await self._project_documents.delete_document(request)
+        return await self._retrieval.delete_document(request)
 
     async def _queue_ingest(self, request: Any) -> Any:
         request_id = str(uuid.uuid4())
@@ -120,7 +137,7 @@ class ManagerService:
         if response.payload.get("ok"):
             return _ingest_result_from_payload(response.payload.get("result"))
         raise ManagerIngestFailedError(
-            str(response.payload.get("error", "ingest failed")),
+            str(_error_message(response.payload.get("error"))),
             request_id=request_id,
         )
 
@@ -144,7 +161,9 @@ def _request_str(request: Any, field: str) -> str:
 def _ingest_request_payload(request: Any) -> dict[str, Any]:
     if isinstance(request, dict):
         return dict(request)
-    return {
+    raw_text = getattr(request, "raw_text", None)
+    raw_content = getattr(request, "raw_content", None)
+    payload = {
         "project_id": str(getattr(request, "project_id", "")),
         "user_id": str(getattr(request, "user_id", "")),
         "kb_id": str(getattr(request, "kb_id", "")),
@@ -153,15 +172,39 @@ def _ingest_request_payload(request: Any) -> dict[str, Any]:
         "content_type": str(getattr(request, "content_type", "")),
         "metadata": dict(getattr(request, "metadata", {}) or {}),
     }
+    if raw_text is not None:
+        payload["raw_text"] = raw_text
+    if raw_content is not None:
+        payload["raw_content"] = raw_content
+    return payload
 
 
 def _ingest_result_from_payload(payload: Any) -> Any:
+    """Build a transport-neutral result from a queue response payload.
+
+    Uses only shared-contract types so that the manager never imports
+    project_service or retrieval_service domain schemas.
+    """
     if not isinstance(payload, dict):
         return payload
-    from project_service.schemas import IngestResult
-    from retrieval_service.core.schemas import JobStatus
+    from shared.contracts import IngestJobResult, JobStatus
 
-    data = dict(payload)
-    if "status" in data:
-        data["status"] = JobStatus(data["status"])
-    return IngestResult(**data)
+    raw_status = str(payload.get("status", "pending"))
+    try:
+        status = JobStatus(raw_status)
+    except ValueError:
+        status = JobStatus.PENDING
+
+    return IngestJobResult(
+        job_id=str(payload.get("job_id") or payload.get("request_id", "")),
+        status=status,
+        doc_id=str(payload.get("doc_id", "")),
+        project_id=str(payload.get("project_id", "")),
+        error=str(payload.get("error", "")),
+    )
+
+
+def _error_message(error_payload: Any) -> str:
+    if isinstance(error_payload, dict):
+        return str(error_payload.get("message", error_payload.get("error", "ingest failed")))
+    return str(error_payload or "ingest failed")

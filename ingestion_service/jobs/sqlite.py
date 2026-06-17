@@ -1,4 +1,9 @@
-"""Durable SQLite ingestion job storage."""
+"""Durable SQLite ingestion job storage.
+
+When an AsyncExecutor is injected, blocking SQLite calls run on its thread
+pool. Without one (e.g. in tests), calls run synchronously on the event
+loop thread — acceptable for lightweight test databases.
+"""
 
 from __future__ import annotations
 
@@ -10,26 +15,36 @@ from typing import Any
 
 from ingestion_service.schemas import IngestionJob
 from shared.contracts import JobStatus
+from shared.executor import AsyncExecutor
 
 
 class SQLiteIngestionJobRepository:
-    """SQLite-backed ingestion job repository.
+    """SQLite-backed ingestion job repository."""
 
-    The repository keeps the async protocol used by services. Calls are
-    synchronous internally for now to avoid adding a dependency before the
-    service boundary is split.
-    """
-
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        executor: AsyncExecutor | None = None,
+    ) -> None:
         self.db_path = Path(db_path)
+        self._executor = executor
 
     async def initialize(self) -> None:
-        self._initialize_sync()
+        if self._executor is not None:
+            await self._executor.run(self._initialize_sync)
+        else:
+            self._initialize_sync()
 
     async def create(self, job: IngestionJob) -> None:
-        self._create_sync(job)
+        if self._executor is not None:
+            await self._executor.run(self._create_sync, job)
+        else:
+            self._create_sync(job)
 
     async def get(self, job_id: str) -> IngestionJob | None:
+        if self._executor is not None:
+            return await self._executor.run(self._get_sync, job_id)
         return self._get_sync(job_id)
 
     async def update_status(
@@ -39,6 +54,10 @@ class SQLiteIngestionJobRepository:
         *,
         error: str | None = None,
     ) -> IngestionJob | None:
+        if self._executor is not None:
+            return await self._executor.run(
+                self._update_status_sync, job_id, status, error
+            )
         return self._update_status_sync(job_id, status, error)
 
     async def update_metadata(
@@ -46,6 +65,10 @@ class SQLiteIngestionJobRepository:
         job_id: str,
         metadata: dict[str, object],
     ) -> IngestionJob | None:
+        if self._executor is not None:
+            return await self._executor.run(
+                self._update_metadata_sync, job_id, metadata
+            )
         return self._update_metadata_sync(job_id, metadata)
 
     def _connect(self) -> sqlite3.Connection:

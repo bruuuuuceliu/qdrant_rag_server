@@ -1,14 +1,21 @@
-"""In-process bounded queue backend for local development and tests."""
+"""In-process bounded queue backend for local development and tests.
+
+Implements the shared.queue.QueueBroker protocol so that future
+Kafka/NATS/Redis adapters can be swapped in transparently.
+"""
 
 from __future__ import annotations
 
 import asyncio
 
-from shared.queue.protocols import QueueFullError, QueueMessage
+from shared.queue.protocols import QueueBroker, QueueFullError, QueueMessage
 
 
 class LocalQueueBroker:
-    """A small topic queue with publish/consume semantics."""
+    """A small topic queue with publish/consume semantics.
+
+    Satisfies the QueueBroker protocol.
+    """
 
     def __init__(self, *, maxsize: int = 0) -> None:
         self._maxsize = maxsize

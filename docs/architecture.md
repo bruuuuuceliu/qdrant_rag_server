@@ -41,21 +41,41 @@ clients during migration:
 - manager -> ingestion: ingest status
 - local project app -> workflow log service: consume lifecycle events
 
-Current manager dispatch uses the `ProjectDocumentClient` protocol from
-`manager_service.clients`. The in-process implementation is
-`project_service.client.LocalProjectServiceClient`, which wraps gateway planning
-and engine execution during migration and is the replacement point for future
-gRPC clients.
+Current manager dispatch uses service-specific `IngestionClient` and
+`RetrievalClient` protocols from `manager_service.clients`. Local manager
+composition uses project planning plus retrieval API server-context execution
+for search/delete, while ingest/status still keep compatibility execution during
+the migration. Remote project/RAG mode continues to adapt
+`ProjectDocumentClient` until independent ingestion and retrieval network APIs
+are extracted.
+
+Retrieval search, delete, and raw-document calls now have transport-neutral
+command and response contracts under `retrieval_service.retrieval.contracts`.
+They are not a physical server yet; they define the payload shape future gRPC,
+HTTP, or queue adapters should expose around the retrieval facade.
+`RetrievalApiHandler` provides the matching transport-neutral dispatch layer:
+payload mappings in, retrieval app calls, response-envelope mappings out.
+`retrieval_service.server` now provides the retrieval-owned server context that
+future network transports can wrap without depending on the compatibility
+`RagService` API.
+For local split-service development, retrieval API calls can also cross
+`retrieval.api.requests` through the shared queue request/response transport.
+Manager local mode selects direct in-process or queue-backed retrieval API
+execution with `MANAGER_RETRIEVAL_CLIENT_MODE`.
 
 For ingest, the local manager app publishes to `ingestion.requests` and waits on
 a per-request response topic. The local ingestion service app consumes the
-request and delegates through the project-document client.
+request, creates an ingestion-owned job record when configured, and delegates
+through the project-document client during migration. When configured with a
+retrieval queue and collection name, ingestion also publishes prepared chunks to
+`retrieval.index.requests`.
 
 Asynchronous work should use queue messages:
 
 - `ingestion.requests`
 - `ingestion.events`
-- future `retrieval.index`
+- `retrieval.api.requests`
+- `retrieval.index.requests`
 
 The current local queue backend is in-process and bounded. It intentionally uses
 topic/key/headers/payload message shape so Kafka-compatible brokers can replace

@@ -4,19 +4,13 @@ This project is a minimal, extensible information retrieval service. It can supp
 
 ## Read First
 
-- [Overview](overview.md): purpose, current status, and core concepts.
 - [Architecture](architecture.md): component boundaries and replaceable parts.
 - [Service Boundaries](service-boundaries.md): manager, project, ingestion, retrieval, and future service ownership.
+- [Ideal System Boundary](boundary.md): target multi-service architecture, inputs, outputs, queues, and ownership stakes.
 - [Contracts](contracts.md): manager routing and queue message contracts.
 - [Implementation Roadmap](implementation-roadmap.md): iteration targets and migration guardrails.
-- [Data Model](data-model.md): project/user/KB/document/chunk structure and Qdrant payloads.
-- [Workflows](workflows.md): ingest, search, delete, generation, health, and version flows.
-- [API](api.md): current gRPC service shape.
-- [Configuration](configuration.md): environment variables and runtime defaults.
-- [Extension Guide](extension-guide.md): how to add adapters, data types, retrievers, storage, generation, and status backends.
-- [Development](development.md): setup, tests, current limitations, and next implementation order.
 - [Implementation Documentation](implementations/README.md): implemented subsystem details and verification notes.
-- [LLM and embedding design](design/llm_embedding_design.md): provider boundaries for embeddings, generation, extraction, and reranking.
+- [Section Design Index](design/section-design-index.md): accepted development loop sections and status docs.
 - [Document handling module design](design/document-handling-module.md): proposed URL/file parsing and chunking architecture.
 - [Examples](../examples/README.md): local startup and first ingest/search calls.
 

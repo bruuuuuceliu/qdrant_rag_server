@@ -83,14 +83,154 @@ Status: implemented.
 
 ## Iteration 7: Ingestion Request Queue Consumer
 
-Status: implemented locally.
+Status: implemented locally with multi-process local worker support.
 
 - Add `ingestion_service.server` with an `ingestion.requests` queue consumer.
 - Wire the local manager app to publish ingest requests through the queue and
   wait for a per-request response topic.
+- Add standalone ingestion worker server mode backed by a local SQLite queue for
+  multi-process development while keeping the broker contract replaceable.
 - Add typed ingestion service settings under `configs/ingestion`.
 - Keep the consumer local and in-process for now while preserving the
   Kafka-compatible message shape in `shared.queue`.
+
+## Iteration 8: Shared Data-Type Routing Registry
+
+Status: implemented for route labels and reserved-state metadata.
+
+- Add `shared.contracts.data_types` as the canonical source for public
+  `data_type` route labels.
+- Keep only transport-neutral route metadata in shared code.
+- Continue to keep parser selection, payload schema, retrieval filters, and
+  indexing behavior inside service-owned packages.
+- Wire manager routing through the shared data-type normalizer while preserving
+  the existing manager-facing import surface.
+
+## Iteration 9: Remote Project/RAG Service Boundary
+
+Status: implemented for search, ingest, and status; delete is pending proto
+support.
+
+- Add `project_service.client.RemoteProjectServiceClient` over the existing
+  gRPC transport.
+- Add manager configuration for `MANAGER_PROJECT_CLIENT_MODE=local|grpc` and
+  `MANAGER_PROJECT_GRPC_TARGET`.
+- Add ingestion worker configuration for `INGESTION_PROJECT_CLIENT_MODE=local|grpc`
+  and `INGESTION_PROJECT_GRPC_TARGET`.
+- Allow local scripts to run manager, project/RAG service, ingestion worker,
+  and Qdrant as separate local services with `--split-services`.
+- Keep the gRPC contract intentionally narrow and call out delete as unsupported
+  remotely until the transport contract is extended.
+
+## Iteration 10: Manager Split Clients And Local Adapters
+
+Status: implemented locally.
+
+- Add manager-facing `IngestionClient` and `RetrievalClient` protocols.
+- Keep `ProjectDocumentClient` as a compatibility adapter during extraction.
+- Wire manager bootstrap through explicit ingestion and retrieval clients.
+- Add local ingestion and retrieval adapters for split-client composition.
+- Add an import-boundary guard so manager core does not import service
+  implementation internals.
+
+## Iteration 11: Ingestion-Owned Preparation And Index Publication
+
+Status: implemented locally with compatibility execution still active.
+
+- Parse queued ingest messages into a shared `QueuedIngestCommand`.
+- Create ingestion-owned job records before delegated compatibility execution.
+- Run `IngestionService.process(...)` in the worker to record preparation
+  metadata.
+- Optionally publish prepared chunks to `retrieval.index.requests` when a
+  retrieval queue and collection name are configured.
+- Validate indexing publication inputs before enqueueing retrieval work.
+
+## Iteration 12: Retrieval Index Queue Worker
+
+Status: implemented locally.
+
+- Add `RetrievalIndexCommand` as the queue DTO for prepared chunk indexing.
+- Add `RetrievalIndexConsumer` to call `IndexingService.index_chunks(...)`.
+- Add a retrieval indexing app context for injected queue/indexing-service
+  composition.
+- Validate retrieval index commands at the retrieval queue boundary.
+
+## Iteration 13: Retrieval App Context And Boundary Guards
+
+Status: implemented locally.
+
+- Add a retrieval service app context for injected search, delete, and raw
+  document operations.
+- Add local manager ingestion and retrieval adapters for split-client
+  composition.
+- Add import-boundary guards for manager core, ingestion server queue modules,
+  and retrieval indexing queue modules.
+- Keep compatibility composition roots explicitly allowed while physical service
+  APIs are pending.
+
+## Iteration 14: Retrieval Transport Contracts
+
+Status: implemented for transport-neutral DTOs; physical transport remains
+pending.
+
+- Add retrieval-owned command contracts for search, document delete, and raw
+  document lookup.
+- Add a retrieval-owned filter spec for search payload filters.
+- Add a shared retrieval response envelope with structured error payloads.
+- Add a transport-neutral retrieval API handler that dispatches payloads through
+  the retrieval app context.
+- Add an import-boundary guard for the retrieval API contract and handler
+  modules.
+- Add a retrieval API server context that future gRPC, HTTP, or queue transports
+  can wrap.
+- Extend the retrieval API import-boundary guard to cover the server context.
+- Wire local manager retrieval composition through a project-planned retrieval
+  API client backed by the server context.
+- Add a local queue request/response transport for retrieval API calls on
+  `retrieval.api.requests`.
+- Add a retrieval API queue app context that starts/stops the queue consumer.
+- Add manager retrieval client mode settings for direct local or queue-backed
+  retrieval API execution.
+- Extend retrieval API import-boundary coverage to the queue transport.
+- Convert retrieval commands into existing retrieval facade request dataclasses.
+- Keep the contracts free of manager/project internals and generated transport
+  files.
+- Serialize raw-document bytes as base64 metadata for future JSON, queue, or
+  protobuf adapters.
+
+## Iteration 15: Retrieval HTTP API Transport
+
+Status: implemented for retrieval search, delete, raw lookup, and health.
+
+- Add a minimal JSON HTTP adapter over the retrieval API server context.
+- Expose `POST /search`, `POST /documents/delete`, `POST /documents/raw`, and
+  `GET /health`.
+- Return existing retrieval response envelopes with deterministic HTTP status
+  mapping.
+- Load physical retrieval HTTP settings from `configs/retrieval` and env
+  examples.
+- Keep the HTTP transport free of manager, project, ingestion, generated
+  transport, and gRPC imports.
+
+## Next Iteration: Physical Ingestion Service APIs And Retrieval Worker Startup
+
+Status: pending.
+
+- Add manager-facing remote retrieval HTTP client composition when manager and
+  retrieval run in separate processes.
+- Add transport startup for the retrieval indexing worker.
+- Add independent ingestion-service transport for job status and worker control.
+- Move manager production composition away from project/RAG compatibility
+  clients once physical service APIs exist.
+
+## Later Iteration: Durable Production Broker Adapter
+
+Status: pending.
+
+- Add a real broker adapter such as Redis Streams, NATS, or Kafka behind
+  `shared.queue.QueueBroker`.
+- Add claim timeout/retry/dead-letter semantics for failed ingestion workers.
+- Keep SQLite queue as a local-development adapter only.
 
 ## Guardrails
 

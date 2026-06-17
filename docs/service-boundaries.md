@@ -6,9 +6,10 @@ Owns public request routing. It decides which service should handle an operation
 based on operation and `data_type`.
 
 The manager depends on typed service clients from `manager_service.clients`,
-not on concrete gateway or engine internals. The current clients are local
-in-process adapters; network-backed clients should preserve the same narrow
-methods.
+not on concrete gateway or engine internals. In local mode, search/delete use
+project planning with retrieval-facade execution. In remote project/RAG mode,
+project-document operations still use `RemoteProjectServiceClient`, a gRPC
+compatibility client.
 
 Current project-document operations routed through the client boundary:
 `ingest`, `search`, `delete`, and `status`.
@@ -39,15 +40,30 @@ document parsing long term. During the compatibility phase it may construct and
 inject retrieval-service facades, but engine behavior should stay at
 orchestration and DTO mapping.
 
+The project service can now run as its own gRPC process with the manager and
+ingestion worker configured to call it through `MANAGER_PROJECT_CLIENT_MODE=grpc`
+and `INGESTION_PROJECT_CLIENT_MODE=grpc`. Delete remains local-only until the
+compatibility proto grows an explicit `DeleteDocument` RPC.
+
 ## Ingestion Service
 
 Owns source fetch, MIME/extension routing, parsing, text cleanup, section/page
 metadata, chunking, and ingest job state. Workers should produce neutral chunks
 and either call retrieval indexing or publish an indexing request.
 
-The ingestion service also owns the local `ingestion.requests` queue consumer
-used during migration. It delegates queued project-document requests through the
-project-document client boundary rather than importing manager internals.
+The ingestion service also owns the `ingestion.requests` queue consumer used
+during migration. It can run embedded inside the local manager composition or as
+a standalone worker process via `python -m ingestion_service.server.worker`.
+Standalone workers connect to the same queue contract and delegate queued
+project-document requests through the project-document client boundary rather
+than importing manager internals. Worker project-client mode is selected with
+`INGESTION_PROJECT_CLIENT_MODE=local|grpc`.
+
+Current queued ingestion can create ingestion-owned job records, run
+`IngestionService.process(...)` for preparation metadata, and publish prepared
+chunks to `retrieval.index.requests` when a retrieval queue and collection name
+are configured. Compatibility project-document execution remains active while
+index completion is not yet the authoritative ingest completion path.
 
 Runtime config must provide at least one ingest worker. A successful indexing
 operation is treated as the durable document-write point: metadata, completion
@@ -73,6 +89,8 @@ Current internal facades:
   cleanup, raw-document reads, and optional lexical-index deletes.
 - `retrieval_service.indexing.IndexingService` owns embedding, sparse-vector,
   entity-enrichment, and Qdrant upsert for prepared chunks.
+- `retrieval_service.indexing.RetrievalIndexConsumer` consumes local
+  `retrieval.index.requests` messages and delegates to `IndexingService`.
 
 ## Shared Code
 

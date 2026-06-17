@@ -1,4 +1,7 @@
-"""SQLite-backed project configuration repository."""
+"""SQLite-backed project configuration repository.
+
+All blocking SQLite calls run through the shared thread-pool executor.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from project_service.schemas import ProjectConfig
+from shared.executor import AsyncExecutor
 
 
 DEFAULT_CONFIG_DB_PATH = Path("/var/lib/rag/config.db")
@@ -62,18 +66,33 @@ class ProjectConfigRecord:
 class SQLiteProjectConfigRepository:
     """Async project config repository backed by SQLite."""
 
-    def __init__(self, db_path: str | Path = DEFAULT_CONFIG_DB_PATH) -> None:
+    def __init__(
+        self,
+        db_path: str | Path = DEFAULT_CONFIG_DB_PATH,
+        *,
+        executor: AsyncExecutor | None = None,
+    ) -> None:
         self.db_path = Path(db_path)
+        self._executor = executor
 
     async def initialize(self) -> None:
-        self._initialize_sync()
+        if self._executor is not None:
+            await self._executor.run(self._initialize_sync)
+        else:
+            self._initialize_sync()
 
     async def upsert_project(self, config: ProjectConfig) -> None:
         record = ProjectConfigRecord.from_base_config(config)
-        self._upsert_project_sync(record)
+        if self._executor is not None:
+            await self._executor.run(self._upsert_project_sync, record)
+        else:
+            self._upsert_project_sync(record)
 
     async def get_project_config(self, project_id: str) -> ProjectConfig:
-        record = self._get_project_record_sync(project_id)
+        if self._executor is not None:
+            record = await self._executor.run(self._get_project_record_sync, project_id)
+        else:
+            record = self._get_project_record_sync(project_id)
         return record.to_base_config()
 
     async def get_project_type(self, project_id: str) -> str:
@@ -85,7 +104,12 @@ class SQLiteProjectConfigRepository:
     ) -> None:
         if not active_embedding_version or not active_embedding_version.strip():
             raise ValueError("active_embedding_version is required")
-        self._set_active_embedding_version_sync(project_id, active_embedding_version)
+        if self._executor is not None:
+            await self._executor.run(
+                self._set_active_embedding_version_sync, project_id, active_embedding_version
+            )
+        else:
+            self._set_active_embedding_version_sync(project_id, active_embedding_version)
 
     @contextlib.contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

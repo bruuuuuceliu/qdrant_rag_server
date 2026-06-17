@@ -249,6 +249,10 @@ class QdrantStore:
         limit: int = 5,
         with_payload: bool = True,
     ) -> list[models.ScoredPoint]:
+        await self.ensure_sparse_vector_exists(
+            collection_name=collection_name,
+            sparse_vector_name=sparse_vector_name,
+        )
         response = await self._client.query_points(
             collection_name=collection_name,
             query=_to_qdrant_sparse_vector(query_sparse_vector),
@@ -258,6 +262,26 @@ class QdrantStore:
             with_payload=with_payload,
         )
         return response.points if hasattr(response, "points") else response
+
+    async def ensure_sparse_vector_exists(
+        self,
+        *,
+        collection_name: str,
+        sparse_vector_name: str,
+    ) -> None:
+        info = await self.collection_info(collection_name)
+        if info is None:
+            raise ValueError(
+                f"collection {collection_name!r} does not exist; reingest before "
+                "running sparse retrieval"
+            )
+        if not _has_named_sparse_vector(info, sparse_vector_name):
+            raise ValueError(
+                f"collection {collection_name!r} exists but is not compatible with "
+                f"sparse retrieval; missing sparse vector {sparse_vector_name!r}. "
+                "Use a collection created for hybrid retrieval or reingest into "
+                "a new collection version."
+            )
 
     async def delete_document(
         self,

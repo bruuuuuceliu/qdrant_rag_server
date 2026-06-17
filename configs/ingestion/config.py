@@ -16,6 +16,8 @@ class IngestionSettings:
     worker_count: int = 4
     queue_maxsize: int = 100
     job_db_path: Path = Path("/var/lib/rag/ingestion_jobs.db")
+    project_client_mode: str = "local"
+    project_grpc_target: str = "localhost:50052"
 
 
 def load_ingestion_settings(values: dict[str, str]) -> IngestionSettings:
@@ -27,5 +29,11 @@ def load_ingestion_settings(values: dict[str, str]) -> IngestionSettings:
         queue_maxsize=get_int_value(values, "INGESTION_QUEUE_MAXSIZE", 100),
         job_db_path=Path(
             get_value(values, "INGESTION_JOB_DB_PATH", "/var/lib/rag/ingestion_jobs.db")
+        ),
+        project_client_mode=get_value(values, "INGESTION_PROJECT_CLIENT_MODE", "local"),
+        project_grpc_target=get_value(
+            values,
+            "INGESTION_PROJECT_GRPC_TARGET",
+            "localhost:50052",
         ),
     )

@@ -106,6 +106,13 @@ class AdapterBackedIngester:
 
 def _raw_content_from_document(document: Any) -> bytes | None:
     metadata = getattr(document, "metadata", {}) or {}
+    raw_content = metadata.get("raw_content")
+    if raw_content is not None:
+        if isinstance(raw_content, bytes):
+            return raw_content
+        if isinstance(raw_content, bytearray):
+            return bytes(raw_content)
+        return str(raw_content).encode("utf-8")
     raw_text = metadata.get("raw_text", "")
     if not raw_text:
         return None

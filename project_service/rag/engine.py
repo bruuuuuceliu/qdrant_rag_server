@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -55,6 +56,11 @@ class IngestQueueFullError(QueueFullError):
 
 def _ingestion_job_from_plan(job_id: str, plan: IngestPlan) -> IngestionJob:
     metadata = dict(plan.request.metadata)
+    if plan.request.raw_text is not None:
+        metadata["raw_text_present"] = True
+    if plan.request.raw_content is not None:
+        metadata["raw_content_present"] = True
+    hash_metadata = _ingest_hash_metadata(plan.request)
     metadata.update(
         {
             "project_id": plan.request.project_id,
@@ -62,7 +68,7 @@ def _ingestion_job_from_plan(job_id: str, plan: IngestPlan) -> IngestionJob:
             "kb_id": plan.request.kb_id,
             "doc_id": plan.request.doc_id,
             "data_type": str(metadata.get("data_type", "project_document")),
-            "content_hash": content_hash_from_metadata(metadata),
+            "content_hash": content_hash_from_metadata(hash_metadata),
         }
     )
     return IngestionJob(
@@ -72,6 +78,25 @@ def _ingestion_job_from_plan(job_id: str, plan: IngestPlan) -> IngestionJob:
         status=JobStatus.PENDING,
         metadata=metadata,
     )
+
+
+def _ingest_hash_metadata(request: Any) -> dict[str, Any]:
+    metadata = dict(getattr(request, "metadata", {}) or {})
+    raw_text = getattr(request, "raw_text", None)
+    raw_content = getattr(request, "raw_content", None)
+    if raw_text is not None:
+        metadata["raw_text"] = raw_text
+    if raw_content is not None:
+        if isinstance(raw_content, bytes):
+            metadata["raw_content"] = raw_content.decode("utf-8", errors="replace")
+        elif isinstance(raw_content, bytearray):
+            metadata["raw_content"] = bytes(raw_content).decode(
+                "utf-8",
+                errors="replace",
+            )
+        else:
+            metadata["raw_content"] = str(raw_content)
+    return metadata
 
 
 def _job_to_ingest_result(job: IngestionJob) -> IngestResult:
@@ -120,6 +145,8 @@ class RagEngine:
         ingest_event_publisher: QueueProducer | None = None,
         ingest_event_topic: str = "ingestion.events",
         ingest_worker_count: int = 4,
+        max_concurrent_searches: int = 32,
+        max_concurrent_ingest_schedules: int = 32,
     ) -> None:
         if embedding_provider is None and embed_fn is None:
             raise ValueError("embedding_provider is required")
@@ -146,6 +173,14 @@ class RagEngine:
         self._object_storage = object_storage
         self._ingest_event_publisher = ingest_event_publisher
         self._ingest_event_topic = ingest_event_topic
+        if max_concurrent_searches < 1:
+            raise ValueError("max_concurrent_searches must be at least 1")
+        if max_concurrent_ingest_schedules < 1:
+            raise ValueError("max_concurrent_ingest_schedules must be at least 1")
+        self._search_semaphore = asyncio.Semaphore(max_concurrent_searches)
+        self._ingest_schedule_semaphore = asyncio.Semaphore(
+            max_concurrent_ingest_schedules
+        )
         self._retrieval_service = retrieval_service or RetrievalService(
             embedding_provider=self._embedding_provider,
             qdrant_store=self._qdrant_store,
@@ -182,28 +217,33 @@ class RagEngine:
         self._ingest_workers = self._ingest_queue_runner.workers
         self._ingest_status = getattr(self._ingest_jobs, "records", {})
 
+    @property
+    def retrieval_service(self) -> RetrievalService:
+        return self._retrieval_service
+
     async def search(self, plan: SearchPlan) -> SearchResult:
-        settings = parse_retrieval_settings(
-            plan.config.retrieval_config,
-            default_top_k=DEFAULT_TOP_K,
-            default_candidate_count=DEFAULT_CANDIDATE_COUNT,
-        )
-        result = await self._retrieval_service.search(
-            RetrievalSearchRequest(
-                project_id=plan.config.project_id,
-                user_id=plan.request.user_id,
-                query_text=plan.request.query,
-                collection_name=plan.config.collection_name,
-                retrieval_config=dict(plan.config.retrieval_config),
-                retrieval_filter=plan.retrieval_filter,
-                cache_key=_make_search_cache_key(plan, settings),
+        async with self._search_semaphore:
+            settings = parse_retrieval_settings(
+                plan.config.retrieval_config,
+                default_top_k=DEFAULT_TOP_K,
+                default_candidate_count=DEFAULT_CANDIDATE_COUNT,
             )
-        )
-        return SearchResult(
-            chunks=result.chunks,
-            elapsed_ms=result.elapsed_ms,
-            cache_hit=result.cache_hit,
-        )
+            result = await self._retrieval_service.search(
+                RetrievalSearchRequest(
+                    project_id=plan.config.project_id,
+                    user_id=plan.request.user_id,
+                    query_text=plan.request.query,
+                    collection_name=plan.config.collection_name,
+                    retrieval_config=dict(plan.config.retrieval_config),
+                    retrieval_filter=plan.retrieval_filter,
+                    cache_key=_make_search_cache_key(plan, settings),
+                )
+            )
+            return SearchResult(
+                chunks=result.chunks,
+                elapsed_ms=result.elapsed_ms,
+                cache_hit=result.cache_hit,
+            )
 
     async def generate(
         self,
@@ -264,45 +304,48 @@ class RagEngine:
         return GenerateResult(response=result, cache_hit=False)
 
     async def schedule_ingest(self, plan: IngestPlan) -> IngestResult:
-        job_id = str(uuid.uuid4())
-        result = IngestResult(
-            job_id=job_id,
-            status=JobStatus.PENDING,
-            doc_id=plan.request.doc_id,
-            project_id=plan.request.project_id,
-            user_id=plan.request.user_id,
-            kb_id=plan.request.kb_id,
-            data_type=str(plan.request.metadata.get("data_type", "project_document")),
-            content_hash=content_hash_from_metadata(plan.request.metadata),
-        )
-        if self._metrics is not None:
-            self._metrics.record_ingest_job()
-        await self._ingest_jobs.create(_ingestion_job_from_plan(job_id, plan))
-        await self._publish_ingest_event(
-            event="ingest_scheduled",
-            job_id=job_id,
-            plan=plan,
-            status=JobStatus.PENDING,
-        )
-        try:
-            await self._ingest_queue_runner.submit(job_id, plan)
-        except QueueFullError as exc:
-            await self._ingest_jobs.update_status(
-                job_id,
-                JobStatus.FAILED,
-                error="ingest queue is full",
+        async with self._ingest_schedule_semaphore:
+            job_id = str(uuid.uuid4())
+            result = IngestResult(
+                job_id=job_id,
+                status=JobStatus.PENDING,
+                doc_id=plan.request.doc_id,
+                project_id=plan.request.project_id,
+                user_id=plan.request.user_id,
+                kb_id=plan.request.kb_id,
+                data_type=str(plan.request.metadata.get("data_type", "project_document")),
+                content_hash=content_hash_from_metadata(
+                    _ingest_hash_metadata(plan.request)
+                ),
             )
             if self._metrics is not None:
-                self._metrics.record_ingest_job_failed()
+                self._metrics.record_ingest_job()
+            await self._ingest_jobs.create(_ingestion_job_from_plan(job_id, plan))
             await self._publish_ingest_event(
-                event="ingest_failed",
+                event="ingest_scheduled",
                 job_id=job_id,
                 plan=plan,
-                status=JobStatus.FAILED,
-                error="ingest queue is full",
+                status=JobStatus.PENDING,
             )
-            raise IngestQueueFullError("ingest queue is full") from exc
-        return result
+            try:
+                await self._ingest_queue_runner.submit(job_id, plan)
+            except QueueFullError as exc:
+                await self._ingest_jobs.update_status(
+                    job_id,
+                    JobStatus.FAILED,
+                    error="ingest queue is full",
+                )
+                if self._metrics is not None:
+                    self._metrics.record_ingest_job_failed()
+                await self._publish_ingest_event(
+                    event="ingest_failed",
+                    job_id=job_id,
+                    plan=plan,
+                    status=JobStatus.FAILED,
+                    error="ingest queue is full",
+                )
+                raise IngestQueueFullError("ingest queue is full") from exc
+            return result
 
     async def get_ingest_status(self, job_id: str) -> IngestResult | None:
         job = await self._ingest_jobs.get(job_id)
@@ -452,7 +495,6 @@ class RagEngine:
                 event,
                 job_id,
             )
-
     async def delete_document(
         self,
         *,

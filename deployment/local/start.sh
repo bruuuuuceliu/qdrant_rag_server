@@ -197,4 +197,4 @@ if missing:
     raise SystemExit(1)
 PY
 
-exec python -m server.app
+exec python -m manager_service.server.app

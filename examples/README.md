@@ -1,43 +1,68 @@
 # Examples: Getting Started
 
-This guide shows the shortest practical path to start the local retrieval service and try ingest/search.
+This guide shows the shortest practical path to start the RAG platform and try ingest/search.
 
-The project is still a prototype. The app path needs real dependencies such as Qdrant, gRPC, and sentence-transformers installed in the active environment.
+The project is now a multi-service RAG platform with a **manager service** at the edge routing requests to ingestion, retrieval, project, and workflow-log services. The manager coordinates work through typed service clients and async queue contracts.
+
+## Architecture
+
+```
+Client → ManagerService → ManagerRouter → ProjectDocumentClient
+       ↓                       ↓
+  [ingestion_service]   [retrieval_service]
+  [project_service]     [workflow_log_service]
+  [memory_service]      [shared contracts & queue]
+```
+
+The `ManagerRouter` decides routing based on `operation` + `data_type`:
+
+| operation | data_type | target |
+|-----------|-----------|--------|
+| ingest | project_document | ingestion_service |
+| search | project_document | retrieval_service |
+| delete | project_document | retrieval_service |
+| status | project_document | ingestion_service |
 
 ## One-Line Local Start
 
 From the repository root:
 
 ```bash
-deployment/local/start.sh --init
+examples/local/run-all.sh --init
 ```
 
 This command:
 
-- activates the `evo` conda environment when available
-- sets local `/tmp/qdrant_rag` database paths
-- checks whether Qdrant is reachable
+- stores local data under `examples/local/.data`
+- starts Qdrant with Docker when needed and available
 - initializes a demo project config when `--init` is provided
-- starts `python -m server.app`
+- starts the manager-owned gRPC app via `python -m manager_service.server.app`
+- composes the project service, ingestion consumer, local queue, and workflow-log app behind the manager
+
+Stop local services with:
+
+```bash
+examples/local/stop-all.sh --clean
+```
 
 Useful variants:
 
 ```bash
-deployment/local/start.sh --init --project-id demo
-deployment/local/start.sh --init --no-server
-deployment/local/start.sh --init --grpc-port 50052
-deployment/local/start.sh --init --embedding-provider openrouter --embedding-model your-embedding-model --embedding-dimension 1536
-deployment/local/start.sh --init --generation
+examples/local/run-all.sh --reset --init --project-id demo
+examples/local/run-all.sh --init --no-server
+examples/local/run-all.sh --init --grpc-port 50052
+examples/local/run-all.sh --init --embedding-provider openrouter --embedding-model your-embedding-model --embedding-dimension 1536
+examples/local/run-all.sh --init --generation
 ```
 
 For remote/OpenRouter-compatible embeddings, provide an embedding API key:
 
 ```bash
 export RAG_EMBEDDING_API_KEY=sk-or-your-key
-deployment/local/start.sh --init --embedding-provider openrouter --embedding-model your-embedding-model --embedding-dimension 1536
+examples/local/run-all.sh --init --embedding-provider openrouter --embedding-model your-embedding-model --embedding-dimension 1536
 ```
 
-Remote embeddings avoid local sentence-transformer calculation. The embedding model dimension must match `--embedding-dimension`, because Qdrant collections are created with that vector size.
+The older `deployment/local/start.sh` remains available for direct one-process startup, but `examples/local/` is the preferred showcase runner because it includes matching cleanup scripts and local runtime files.
 
 ## 1. Activate Environment
 
@@ -62,15 +87,11 @@ If Docker is available:
 docker run --rm -p 6333:6333 -p 6334:6334 qdrant/qdrant
 ```
 
-The default server config expects Qdrant at:
-
-```text
-localhost:6333
-```
+The default config expects Qdrant at `localhost:6333`.
 
 ## 3. Create Local Runtime Directories
 
-The default `.env.example` uses `/var/lib/rag`, which may require elevated permissions. For local development, use `/tmp` paths:
+For local development, use `/tmp` paths:
 
 ```bash
 export RAG_CONFIG_DB_PATH=/tmp/qdrant_rag/config.db
@@ -78,13 +99,7 @@ export RAG_RESPONSE_CACHE_DB_PATH=/tmp/qdrant_rag/response_cache.db
 export RAG_GRPC_PORT=50051
 export RAG_QDRANT_HOST=localhost
 export RAG_QDRANT_PORT=6333
-export RAG_INGEST_WORKERS=2
-export BM25_SPARSE_VECTOR_NAME=bm25
-export BM25_DENSE_VECTOR_NAME=dense
-export BM25_ENCODER_PROVIDER=fastembed
-export BM25_ENCODER_MODEL=Qdrant/bm25
-export BM25_TEXT_FIELD=text_lemmatized
-export BM25_LEMMATIZE=true
+export RAG_INGEST_WORKERS=1
 export RAG_EMBEDDING_PROVIDER=local
 export RAG_EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
 export RAG_EMBEDDING_DEVICE=cpu
@@ -94,7 +109,7 @@ export RAG_GENERATION_ENABLED=false
 
 ## 4. Seed A Project Config
 
-The gateway resolves adapters from project config. Add a website project before calling search or ingest:
+The manager resolves adapters from project config. Add a website project:
 
 ```bash
 python - <<'PY'
@@ -126,10 +141,10 @@ PY
 ## 5. Start The Server
 
 ```bash
-python -m server.app
+python -m manager_service.server.app
 ```
 
-On first start, the embedding model may take time to download/load.
+On first start, the embedding model may take time to download/load. The manager app boots the manager, project service, ingestion consumer, and workflow log app behind a single gRPC entry point.
 
 ## 6. Ingest A Small Document
 
@@ -149,7 +164,6 @@ async def main():
             retrieval_service_pb2.IngestRequest(
                 project_id="demo",
                 user_id="user_1",
-                # kb_id may be omitted; blank means "default".
                 doc_id="hello_doc",
                 source_uri="memory://hello_doc",
                 content_type="text/plain",
@@ -189,12 +203,6 @@ asyncio.run(main())
 PY
 ```
 
-Expected status after processing:
-
-```text
-completed
-```
-
 ## 8. Search
 
 ```bash
@@ -221,82 +229,65 @@ asyncio.run(main())
 PY
 ```
 
-Search retrieves chunks from Qdrant using vector similarity plus server-built filters:
+## Showcase Scripts
 
-```text
-project_id = demo
-user_id IN [user_1, __shared__]
+### Programmatic API via ManagerService (recommended)
+
+Demonstrates using the `ManagerService` facade directly:
+
+```bash
+python -m examples.unites.rag_insertion_retrieval
 ```
 
-## Multi-Method Retrieval Showcase
+This showcase:
 
-To ingest one full document and search it with dense, BM25, and hybrid modes:
+- Creates a manager with a local queue broker and project client
+- Ingests documents through the manager routing boundary
+- Searches through the manager
+
+### Standalone Ingestion
+
+Tests the ingestion pipeline in isolation (no Qdrant, no embeddings):
+
+```bash
+python -m examples.unites.ingestion
+```
+
+### Multi-Retrieval Showcase
+
+Ingests a full document in hybrid mode and compares dense, BM25, and hybrid search:
 
 ```bash
 python -m examples.unites.rag_multi_retrieval_showcase
 ```
 
-The showcase indexes the document once with `mode="hybrid"` so Qdrant stores
-both dense vectors and the named sparse BM25 vector, then runs three searches by
-changing only the project `retrieval_config` mode.
-
-No KB filter is added unless `kb_ids` is provided.
-
 ## 9. Optional Generation
 
-Generation is disabled by default. To enable the OpenRouter client:
+Generation is disabled by default. To enable:
 
 ```bash
 export RAG_GENERATION_ENABLED=true
 ```
 
-Restart the server.
-
-Generation requests still require a request-scoped OpenRouter key:
-
-```text
-GenerateRequest.openrouter_api_key
-```
-
-Do not put provider keys in environment variables unless you are building your own wrapper outside this service. The service is designed to use user/request-provided keys.
+Restart the server. Generation requests still require a request-scoped OpenRouter key in `GenerateRequest.openrouter_api_key`.
 
 ## Troubleshooting
 
 ### `ModuleNotFoundError: grpc` or Missing Runtime Dependencies
 
-Install dependencies:
-
 ```bash
-python -m pip install -e ".[dev]"
-```
-
-Make sure you run this in the same environment that starts the server. For this workspace:
-
-```bash
-source /home/bruce/miniconda3/etc/profile.d/conda.sh
-conda activate evo
 python -m pip install -e ".[dev]"
 ```
 
 ### Qdrant Connection Errors
 
-Make sure Qdrant is running:
-
 ```bash
 curl http://localhost:6333/collections
 ```
 
-### Ingest Fails With Embedding Dimension Error
-
-Set `RAG_EMBEDDING_DIMENSION` to match the selected embedding model. The local default is 768.
-
 ### Search Returns No Results
 
-Check:
-
 - project config exists for `project_id`
-- ingest job completed
+- ingest job completed (`status=completed`)
 - Qdrant is running
 - `user_id` matches the ingested document
-- `include_shared` is true only if you expect shared records
-- `kb_ids` is omitted unless you intentionally used a custom KB

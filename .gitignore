@@ -87,3 +87,8 @@ Thumbs.db
 
 # Kilo
 .kilo/
+
+# local files
+*.runtime
+*.data
+*.run

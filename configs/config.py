@@ -37,6 +37,8 @@ class AppSettings:
     embedding_base_url: str
     embedding_dimension: int
     generation_enabled: bool
+    max_concurrent_searches: int = 32
+    max_concurrent_ingest_schedules: int = 32
     ingest_queue_maxsize: int = 100
     ingest_job_db_path: Path = Path("/tmp/qdrant_rag/ingestion_jobs.db")
     ingest_event_topic: str = "ingestion.events"
@@ -59,6 +61,11 @@ class AppSettings:
     bm25_index_version: str = "qdrant_bm25_v1"
     ner_provider: str = "disabled"
     ner_model: str = "en_core_web_sm"
+    rerank_enabled: bool = False
+    rerank_model: str = "BAAI/bge-reranker-base"
+    rerank_device: str = "cpu"
+    object_storage_provider: str = "filesystem"
+    object_storage_base_path: Path = Path("/tmp/qdrant_rag/raw_storage")
 
     @classmethod
     def from_env(
@@ -112,6 +119,16 @@ def load_settings(
         qdrant_port=qdrant_settings.port,
         max_per_project=get_int_value(values, "RAG_MAX_PER_PROJECT", 20),
         max_per_user=get_int_value(values, "RAG_MAX_PER_USER", 5),
+        max_concurrent_searches=get_positive_int_value(
+            values,
+            "RAG_MAX_CONCURRENT_SEARCHES",
+            32,
+        ),
+        max_concurrent_ingest_schedules=get_positive_int_value(
+            values,
+            "RAG_MAX_CONCURRENT_INGEST_SCHEDULES",
+            32,
+        ),
         ingest_worker_count=get_positive_int_value(values, "RAG_INGEST_WORKERS", 4),
         ingest_queue_maxsize=get_int_value(values, "RAG_INGEST_QUEUE_MAXSIZE", 100),
         ingest_job_db_path=Path(
@@ -152,6 +169,13 @@ def load_settings(
         bm25_index_version=retrieval_settings.bm25_index_version,
         ner_provider=retrieval_settings.ner_provider,
         ner_model=retrieval_settings.ner_model,
+        rerank_enabled=get_bool_value(values, "RAG_RERANK_ENABLED", False),
+        rerank_model=get_value(values, "RAG_RERANK_MODEL", "BAAI/bge-reranker-base"),
+        rerank_device=get_value(values, "RAG_RERANK_DEVICE", "cpu"),
+        object_storage_provider=get_value(values, "RAG_OBJECT_STORAGE_PROVIDER", "filesystem"),
+        object_storage_base_path=Path(
+            get_value(values, "RAG_OBJECT_STORAGE_BASE_PATH", "/tmp/qdrant_rag/raw_storage")
+        ),
     )
 
 
@@ -195,6 +219,16 @@ def get_int_value(values: dict[str, str], name: str, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer") from exc
+
+
+def get_float_value(values: dict[str, str], name: str, default: float) -> float:
+    value = values.get(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
 
 
 def get_positive_int_value(values: dict[str, str], name: str, default: int) -> int:

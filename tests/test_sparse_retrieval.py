@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from project_service.gateway import IngestPlan, IngestRequest, SearchPlan, SearchRequest
@@ -131,6 +132,61 @@ class QdrantHybridCollectionSchemaTest(unittest.IsolatedAsyncioTestCase):
             )
 
         store._client.create_collection.assert_not_called()
+
+    async def test_sparse_search_fails_clearly_without_sparse_slot(self) -> None:
+        store = object.__new__(QdrantStore)
+        store._client = MagicMock()
+        store._client.get_collection = AsyncMock(
+            return_value=_CollectionInfo(
+                {
+                    "config": {
+                        "params": {
+                            "vectors": {"dense": {"size": 768, "distance": "Cosine"}}
+                        }
+                    }
+                }
+            )
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "not compatible with sparse retrieval.*missing sparse vector 'bm25'",
+        ):
+            await store.search_sparse(
+                collection_name="rag_existing_v1",
+                sparse_vector_name="bm25",
+                query_sparse_vector=SparseVector(indices=[1], values=[1.0]),
+                query_filter="scope-filter",
+            )
+
+        store._client.query_points.assert_not_called()
+
+    async def test_sparse_search_with_sparse_slot_queries_qdrant(self) -> None:
+        store = object.__new__(QdrantStore)
+        store._client = MagicMock()
+        store._client.get_collection = AsyncMock(
+            return_value=_CollectionInfo(
+                {
+                    "config": {
+                        "params": {
+                            "vectors": {"dense": {"size": 768, "distance": "Cosine"}},
+                            "sparse_vectors": {"bm25": {}},
+                        }
+                    }
+                }
+            )
+        )
+        store._client.query_points = AsyncMock(return_value=SimpleNamespace(points=[]))
+
+        result = await store.search_sparse(
+            collection_name="rag_hybrid_v1",
+            sparse_vector_name="bm25",
+            query_sparse_vector=SparseVector(indices=[1], values=[1.0]),
+            query_filter="scope-filter",
+        )
+
+        self.assertEqual(result, [])
+        store._client.query_points.assert_awaited_once()
 
 
 class CandidateFusionTest(unittest.TestCase):

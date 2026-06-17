@@ -4,7 +4,15 @@ The manager service is the edge-facing coordinator. It owns route decisions and
 delegates work to project, ingestion, retrieval, memory, and workflow services.
 """
 
-from manager_service.clients import ProjectDocumentClient
+from manager_service.clients import (
+    IngestionClient,
+    LocalIngestionClient,
+    ProjectDocumentClient,
+    ProjectDocumentIngestionClient,
+    ProjectDocumentRetrievalClient,
+    LocalRetrievalClient,
+    RetrievalClient,
+)
 from manager_service.errors import (
     ManagerIngestFailedError,
     ManagerIngestTimeoutError,
@@ -22,6 +30,8 @@ from manager_service.service import ManagerService
 
 __all__ = [
     "DataType",
+    "IngestionClient",
+    "LocalIngestionClient",
     "ManagerIngestFailedError",
     "ManagerIngestTimeoutError",
     "ManagerRouter",
@@ -29,6 +39,10 @@ __all__ = [
     "ManagerServiceError",
     "Operation",
     "ProjectDocumentClient",
+    "ProjectDocumentIngestionClient",
+    "ProjectDocumentRetrievalClient",
+    "LocalRetrievalClient",
+    "RetrievalClient",
     "RouteDecision",
     "RouteRequest",
     "ServiceTarget",

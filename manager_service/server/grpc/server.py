@@ -1,28 +1,45 @@
-"""gRPC server whose public API is routed through the manager service."""
+"""Manager-owned gRPC server.
+
+This server translates gRPC proto messages into manager-service calls.
+It depends only on shared contracts, manager types, and the generated
+proto stubs (which are pure transport code, not business logic).
+
+Compatibility notes (temporary):
+- The proto definition (service RagService) is still shared with the
+  project_service compat layer. This will be replaced with a manager-native
+  proto after service extraction is complete.
+- The Generate RPC delegates directly to the generation engine until
+  generation is extracted into its own service boundary.
+"""
 
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 import grpc
 from grpc import aio
 
-from manager_service.errors import ManagerIngestFailedError
+from manager_service.errors import ManagerIngestFailedError, ManagerIngestTimeoutError
 from manager_service.service import ManagerService
-from project_service.gateway.requests import IngestRequest, SearchRequest
 from project_service.rag.engine import GenerationUnavailableError
-from retrieval_service.llm import OpenRouterClientError
-from shared.queue import QueueFullError
 from project_service.server.grpc.generated import retrieval_service_pb2
 from project_service.server.grpc.generated import retrieval_service_pb2_grpc
-from project_service.server.grpc.server import _search_result_to_proto
+from retrieval_service.llm import OpenRouterClientError
+from shared.queue import QueueFullError
 
 logger = logging.getLogger(__name__)
 
 
 class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
-    """Compatibility RagService implementation routed through manager dispatch."""
+    """Compatibility RagService implementation routed through manager dispatch.
+
+    All RPC methods translate proto → manager DTO → proto without importing
+    project_service domain types. The only remaining cross-service import is
+    the generated proto stubs, which are transport code shared across the
+    project.
+    """
 
     def __init__(
         self,
@@ -35,6 +52,8 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
         self._generation_engine = generation_engine
         self._health_checker = health_checker
 
+    # -- Search -----------------------------------------------------------
+
     async def Search(
         self,
         request: retrieval_service_pb2.SearchRequest,
@@ -42,7 +61,7 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
     ) -> retrieval_service_pb2.SearchResponse:
         try:
             result = await self._manager.search(
-                SearchRequest(
+                _Namespace(
                     project_id=request.project_id,
                     user_id=request.user_id,
                     query=request.query,
@@ -57,6 +76,8 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, "internal error")
         return _search_result_to_proto(result)
 
+    # -- Ingest -----------------------------------------------------------
+
     async def Ingest(
         self,
         request: retrieval_service_pb2.IngestRequest,
@@ -64,7 +85,7 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
     ) -> retrieval_service_pb2.IngestResponse:
         try:
             result = await self._manager.ingest(
-                IngestRequest(
+                _Namespace(
                     project_id=request.project_id,
                     user_id=request.user_id,
                     kb_id=request.kb_id,
@@ -78,7 +99,7 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         except QueueFullError as exc:
             await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, str(exc))
-        except TimeoutError as exc:
+        except ManagerIngestTimeoutError as exc:
             await context.abort(grpc.StatusCode.DEADLINE_EXCEEDED, str(exc))
         except ManagerIngestFailedError as exc:
             await context.abort(grpc.StatusCode.INTERNAL, str(exc))
@@ -86,9 +107,11 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
             logger.exception("manager ingest failed")
             await context.abort(grpc.StatusCode.INTERNAL, "internal error")
         return retrieval_service_pb2.IngestResponse(
-            job_id=result.job_id,
-            status=result.status.value,
+            job_id=str(getattr(result, "job_id", "")),
+            status=str(getattr(result, "status", "")),
         )
+
+    # -- Status -----------------------------------------------------------
 
     async def GetIngestJobStatus(
         self,
@@ -105,11 +128,13 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
         if result is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "job not found")
         return retrieval_service_pb2.GetIngestJobStatusResponse(
-            job_id=result.job_id,
-            status=result.status.value,
+            job_id=str(getattr(result, "job_id", "")),
+            status=str(getattr(result, "status", "")),
             error=getattr(result, "error", "") or "",
             doc_id=getattr(result, "doc_id", "") or "",
         )
+
+    # -- Generate (temporary compat pass-through) -------------------------
 
     async def Generate(
         self,
@@ -159,6 +184,8 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
             cache_hit=result.cache_hit,
         )
 
+    # -- Health -----------------------------------------------------------
+
     async def HealthCheck(
         self,
         request: retrieval_service_pb2.HealthCheckRequest,
@@ -174,6 +201,57 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
             status="healthy",
             components={},
         )
+
+
+# -- Helpers ---------------------------------------------------------------
+
+
+class _Namespace(SimpleNamespace):
+    """Lightweight request DTO passed to ManagerService methods.
+
+    ManagerService reads fields via getattr, so a SimpleNamespace subclass
+    suffices — no need to import project_service gateway request types.
+    """
+
+
+def _search_result_to_proto(result: Any) -> retrieval_service_pb2.SearchResponse:
+    """Convert a manager search result into the compat proto response.
+
+    Manager-owned copy that does not depend on project_service internal helpers.
+    """
+    chunks = []
+    for c in getattr(result, "chunks", []) or []:
+        if isinstance(c, dict):
+            chunks.append(
+                retrieval_service_pb2.ChunkResult(
+                    project_id=str(c.get("project_id", "")),
+                    user_id=str(c.get("user_id", "")),
+                    kb_id=str(c.get("kb_id", "")),
+                    doc_id=str(c.get("doc_id", "")),
+                    chunk_id=str(c.get("chunk_id", "")),
+                    chunk_index=int(c.get("chunk_index", 0)),
+                    text=str(c.get("text", "")),
+                    score=float(c.get("score", 0.0)),
+                )
+            )
+        else:
+            chunks.append(
+                retrieval_service_pb2.ChunkResult(
+                    project_id=str(getattr(c, "project_id", "")),
+                    user_id=str(getattr(c, "user_id", "")),
+                    kb_id=str(getattr(c, "kb_id", "")),
+                    doc_id=str(getattr(c, "doc_id", "")),
+                    chunk_id=str(getattr(c, "chunk_id", "")),
+                    chunk_index=int(getattr(c, "chunk_index", 0)),
+                    text=str(getattr(c, "text", "")),
+                    score=float(getattr(c, "score", 0.0)),
+                )
+            )
+    return retrieval_service_pb2.SearchResponse(
+        chunks=chunks,
+        elapsed_ms=int(getattr(result, "elapsed_ms", 0)),
+        cache_hit=bool(getattr(result, "cache_hit", False)),
+    )
 
 
 async def serve_grpc(

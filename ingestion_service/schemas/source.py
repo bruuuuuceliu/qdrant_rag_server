@@ -19,7 +19,22 @@ class SourceDescriptor:
 
     @classmethod
     def from_request(cls, request: Any) -> "SourceDescriptor":
+        if isinstance(request, dict):
+            metadata = dict(request.get("metadata", {}) or {})
+            raw_text = request.get("raw_text")
+            raw_content = request.get("raw_content")
+            return cls(
+                source_uri=str(request.get("source_uri", "")),
+                content_type=str(request.get("content_type", "text/plain")),
+                document_id=str(request.get("doc_id", "")),
+                filename=str(metadata.get("filename", "")),
+                data_type=str(metadata.get("data_type", "document")),
+                metadata=_source_metadata(metadata, raw_text, raw_content),
+            )
         metadata = dict(getattr(request, "metadata", {}) or {})
+        raw_text = getattr(request, "raw_text", None)
+        raw_content = getattr(request, "raw_content", None)
+        metadata = _source_metadata(metadata, raw_text, raw_content)
         return cls(
             source_uri=str(getattr(request, "source_uri", "")),
             content_type=str(getattr(request, "content_type", "text/plain")),
@@ -28,6 +43,19 @@ class SourceDescriptor:
             data_type=str(metadata.get("data_type", "document")),
             metadata=metadata,
         )
+
+
+def _source_metadata(
+    metadata: dict[str, Any],
+    raw_text: Any,
+    raw_content: Any,
+) -> dict[str, Any]:
+    metadata = dict(metadata)
+    if raw_text is not None:
+        metadata["raw_text"] = raw_text
+    if raw_content is not None:
+        metadata["raw_content"] = raw_content
+    return metadata
 
 
 @dataclass(frozen=True, slots=True)

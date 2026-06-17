@@ -1,13 +1,23 @@
-"""Local project-service client used during service extraction."""
+"""Project-service clients used during service extraction."""
 
 from __future__ import annotations
 
 from typing import Any
 
+import grpc
+
 from project_service.gateway.requests import (
     DeleteDocumentRequest,
     IngestRequest,
     SearchRequest,
+)
+from project_service.schemas import IngestResult, SearchResult
+from project_service.server.grpc.generated import retrieval_service_pb2
+from project_service.server.grpc.generated import retrieval_service_pb2_grpc
+from retrieval_service.core.schemas import JobStatus
+from retrieval_service.retrieval import (
+    DeleteDocumentRequest as RetrievalDeleteDocumentRequest,
+    RetrievalSearchRequest,
 )
 
 
@@ -43,6 +53,169 @@ class LocalProjectServiceClient:
         )
 
 
+class ProjectPlannedRetrievalClient:
+    """Retrieval client using project planning and retrieval-owned execution."""
+
+    def __init__(self, *, gateway: Any, retrieval_service: Any) -> None:
+        self._gateway = gateway
+        self._retrieval_service = retrieval_service
+
+    async def search(self, request: Any) -> SearchResult:
+        plan = await self._gateway.prepare_search(_search_request(request))
+        result = await self._retrieval_service.search(
+            RetrievalSearchRequest(
+                project_id=plan.config.project_id,
+                user_id=plan.request.user_id,
+                query_text=plan.request.query,
+                collection_name=plan.config.collection_name,
+                retrieval_config=dict(plan.config.retrieval_config),
+                retrieval_filter=plan.retrieval_filter,
+            )
+        )
+        return SearchResult(
+            chunks=result.chunks,
+            elapsed_ms=result.elapsed_ms,
+            cache_hit=result.cache_hit,
+        )
+
+    async def delete_document(self, request: Any) -> None:
+        plan = await self._gateway.prepare_delete(_delete_request(request))
+        await self._retrieval_service.delete_document(
+            RetrievalDeleteDocumentRequest(
+                project_id=plan.config.project_id,
+                user_id=plan.request.user_id,
+                kb_id=plan.request.kb_id,
+                doc_id=plan.request.doc_id,
+                collection_name=plan.config.collection_name,
+            )
+        )
+
+
+class ProjectPlannedRetrievalApiClient:
+    """Retrieval client using project planning and retrieval API execution."""
+
+    def __init__(self, *, gateway: Any, retrieval_api: Any) -> None:
+        self._gateway = gateway
+        self._retrieval_api = retrieval_api
+
+    async def search(self, request: Any) -> SearchResult:
+        plan = await self._gateway.prepare_search(_search_request(request))
+        response = await self._retrieval_api.search(
+            {
+                "request_id": _request_id("search", plan),
+                "request": {
+                    "project_id": plan.config.project_id,
+                    "user_id": plan.request.user_id,
+                    "query_text": plan.request.query,
+                    "collection_name": plan.config.collection_name,
+                    "retrieval_config": dict(plan.config.retrieval_config),
+                    "retrieval_filter": plan.retrieval_filter,
+                },
+            },
+            fallback_request_id=_request_id("search", plan),
+        )
+        result = _ensure_ok(response)
+        return SearchResult(
+            chunks=[dict(chunk) for chunk in result.get("chunks", [])],
+            elapsed_ms=int(result.get("elapsed_ms", 0)),
+            cache_hit=bool(result.get("cache_hit", False)),
+        )
+
+    async def delete_document(self, request: Any) -> None:
+        plan = await self._gateway.prepare_delete(_delete_request(request))
+        response = await self._retrieval_api.delete_document(
+            {
+                "request_id": _request_id("delete", plan),
+                "request": {
+                    "project_id": plan.config.project_id,
+                    "user_id": plan.request.user_id,
+                    "kb_id": plan.request.kb_id,
+                    "doc_id": plan.request.doc_id,
+                    "collection_name": plan.config.collection_name,
+                },
+            },
+            fallback_request_id=_request_id("delete", plan),
+        )
+        _ensure_ok(response)
+        return None
+
+
+class RemoteProjectServiceClient:
+    """gRPC project-document client for a separately running project service."""
+
+    def __init__(
+        self,
+        *,
+        target: str,
+        stub: Any | None = None,
+        channel: grpc.aio.Channel | None = None,
+    ) -> None:
+        if stub is None and channel is not None:
+            stub = retrieval_service_pb2_grpc.RagServiceStub(channel)
+        if stub is None:
+            channel = grpc.aio.insecure_channel(target)
+            stub = retrieval_service_pb2_grpc.RagServiceStub(channel)
+        self._target = target
+        self._channel = channel
+        self._stub = stub
+
+    async def shutdown(self) -> None:
+        if self._channel is not None:
+            await self._channel.close()
+
+    async def ingest(self, request: Any) -> IngestResult:
+        request = _ingest_request(request)
+        response = await self._stub.Ingest(_ingest_request_to_proto(request))
+        return IngestResult(
+            job_id=response.job_id,
+            status=_job_status(response.status),
+            doc_id=request.doc_id,
+            project_id=request.project_id,
+            user_id=request.user_id,
+            kb_id=request.kb_id,
+            data_type=str(request.metadata.get("data_type", "project_document")),
+        )
+
+    async def search(self, request: Any) -> SearchResult:
+        request = _search_request(request)
+        response = await self._stub.Search(
+            retrieval_service_pb2.SearchRequest(
+                project_id=request.project_id,
+                user_id=request.user_id,
+                query=request.query,
+                kb_ids=list(request.kb_ids),
+                include_shared=request.include_shared,
+            )
+        )
+        return SearchResult(
+            chunks=[_chunk_result_to_mapping(chunk) for chunk in response.chunks],
+            elapsed_ms=response.elapsed_ms,
+            cache_hit=response.cache_hit,
+        )
+
+    async def ingest_status(self, job_id: str) -> IngestResult | None:
+        try:
+            response = await self._stub.GetIngestJobStatus(
+                retrieval_service_pb2.GetIngestJobStatusRequest(job_id=job_id)
+            )
+        except grpc.aio.AioRpcError as exc:
+            if exc.code() == grpc.StatusCode.NOT_FOUND:
+                return None
+            raise
+        return IngestResult(
+            job_id=response.job_id,
+            status=_job_status(response.status),
+            doc_id=response.doc_id,
+            error=response.error or None,
+        )
+
+    async def delete_document(self, request: Any) -> Any:
+        raise NotImplementedError(
+            "remote project delete is not available until the project-service "
+            "gRPC contract adds DeleteDocument"
+        )
+
+
 def _ingest_request(request: Any) -> Any:
     if isinstance(request, dict):
         return IngestRequest.from_mapping(request)
@@ -59,3 +232,76 @@ def _delete_request(request: Any) -> Any:
     if isinstance(request, dict):
         return DeleteDocumentRequest.from_mapping(request)
     return request
+
+
+def _ensure_ok(response: dict[str, Any]) -> dict[str, Any]:
+    if response.get("ok") is True:
+        result = response.get("result")
+        return dict(result) if isinstance(result, dict) else {}
+    error = response.get("error")
+    if isinstance(error, dict):
+        code = str(error.get("code") or "retrieval_error")
+        message = str(error.get("message") or "retrieval request failed")
+        raise RuntimeError(f"{code}: {message}")
+    raise RuntimeError("retrieval_error: retrieval request failed")
+
+
+def _request_id(prefix: str, plan: Any) -> str:
+    request = plan.request
+    parts = [
+        prefix,
+        str(getattr(request, "project_id", "")),
+        str(getattr(request, "user_id", "")),
+        str(getattr(request, "kb_id", "")),
+        str(getattr(request, "doc_id", "")),
+    ]
+    return ":".join(part for part in parts if part)
+
+
+def _ingest_request_to_proto(request: Any) -> retrieval_service_pb2.IngestRequest:
+    metadata = dict(getattr(request, "metadata", {}) or {})
+    raw_text = getattr(request, "raw_text", None)
+    raw_content = getattr(request, "raw_content", None)
+    if raw_text is not None:
+        metadata["raw_text"] = str(raw_text)
+    if raw_content is not None:
+        if isinstance(raw_content, (bytes, bytearray)):
+            metadata["raw_content"] = bytes(raw_content).decode(
+                "utf-8",
+                errors="replace",
+            )
+        else:
+            metadata["raw_content"] = str(raw_content)
+    return retrieval_service_pb2.IngestRequest(
+        project_id=request.project_id,
+        user_id=request.user_id,
+        kb_id=request.kb_id,
+        doc_id=request.doc_id,
+        source_uri=request.source_uri,
+        content_type=request.content_type,
+        metadata=metadata,
+    )
+
+
+def _chunk_result_to_mapping(chunk: Any) -> dict[str, Any]:
+    result = {
+        "project_id": chunk.project_id,
+        "user_id": chunk.user_id,
+        "kb_id": chunk.kb_id,
+        "doc_id": chunk.doc_id,
+        "chunk_id": chunk.chunk_id,
+        "chunk_index": chunk.chunk_index,
+        "text": chunk.text,
+        "score": chunk.score,
+    }
+    metadata = dict(getattr(chunk, "metadata", {}) or {})
+    if metadata:
+        result["metadata"] = metadata
+    return result
+
+
+def _job_status(value: str) -> JobStatus:
+    try:
+        return JobStatus(value)
+    except ValueError:
+        return JobStatus.PENDING

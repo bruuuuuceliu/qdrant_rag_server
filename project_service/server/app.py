@@ -23,6 +23,9 @@ class AppContext:
     ner_extractor: object | None
     metrics: object
     ingest_event_broker: object
+    reranker: object | None
+    object_storage: object
+    version_manager: object
     workflow_log_app: object
     health_checker: object
     openrouter_client: object | None
@@ -34,6 +37,8 @@ class AppContext:
         await self.engine.shutdown()
         if self.openrouter_client is not None:
             await self.openrouter_client.shutdown()
+        if self.reranker is not None:
+            await self.reranker.shutdown()
         await self.embedding_provider.shutdown()
         if self.bm25_index is not None:
             await self.bm25_index.close()
@@ -63,9 +68,13 @@ async def create_app(
     from retrieval_service.llm import LLMProviderFactory
     from retrieval_service.services.bm25 import QdrantSparseBM25Index
     from retrieval_service.services.entities import LocalNerExtractor, NoopNerExtractor
+    from retrieval_service.services.reranker import RerankerService
     from retrieval_service.services.sparse_encoder import FastEmbedSparseTextEncoder
     from retrieval_service.services.vector_store import QdrantStore
+    from retrieval_service.storage.filesystem import FilesystemObjectStorage
+    from retrieval_service.storage.memory import MemoryObjectStorage
     from shared.queue import LocalQueueBroker
+    from project_service.versioning.manager import VersionManager
     from workflow_log_service.server import create_app as create_workflow_log_app
     serve_grpc = _resolve_serve_grpc()
 
@@ -73,7 +82,7 @@ async def create_app(
     await config_repo.initialize()
 
     registry = ProjectAdapterRegistry()
-    registry.register(WebsiteProjectAdapter())
+    registry.register(WebsiteProjectAdapter(config_repo=config_repo))
     gateway = RagGateway(
         adapter_resolver=ProjectAdapterResolver(
             project_types=config_repo,
@@ -126,6 +135,27 @@ async def create_app(
         ner_extractor = LocalNerExtractor(settings.ner_model)
         await ner_extractor.initialize()
 
+    # Optional reranker
+    rerank_fn = None
+    reranker = None
+    if settings.rerank_enabled:
+        reranker = RerankerService(
+            model_name=settings.rerank_model,
+            device=settings.rerank_device,
+        )
+        rerank_fn = await reranker.initialize()
+
+    # Object storage (filesystem for local dev, memory as fallback)
+    if settings.object_storage_provider == "filesystem":
+        object_storage = FilesystemObjectStorage(settings.object_storage_base_path)
+    else:
+        from retrieval_service.storage.memory import MemoryObjectStorage
+        object_storage = MemoryObjectStorage()
+
+    # Version manager
+    version_manager = VersionManager(config_repo=config_repo)
+    await version_manager.initialize()
+
     engine = RagEngine(
         embedding_provider=embedding_provider,
         qdrant_store=qdrant_store,
@@ -141,6 +171,11 @@ async def create_app(
         ingest_event_topic=settings.ingest_event_topic,
         sparse_encoder=sparse_encoder,
         ingest_worker_count=settings.ingest_worker_count,
+        max_concurrent_searches=settings.max_concurrent_searches,
+        max_concurrent_ingest_schedules=settings.max_concurrent_ingest_schedules,
+        rerank_fn=rerank_fn,
+        object_storage=object_storage,
+        version_manager=version_manager,
     )
     project_client = LocalProjectServiceClient(gateway=gateway, engine=engine)
     health_checker = HealthChecker(
@@ -177,6 +212,9 @@ async def create_app(
         health_checker=health_checker,
         openrouter_client=openrouter_client,
         server=server,
+        reranker=reranker,
+        object_storage=object_storage,
+        version_manager=version_manager,
     )
 
 

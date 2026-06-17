@@ -5,7 +5,10 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock
 
+from project_service.config.repository import ProjectConfigNotFoundError
+from project_service.schemas import ProjectConfig
 from retrieval_service.gateway import SearchRequest, IngestRequest
 from retrieval_service.core.schemas import BaseDocument as NeutralDocument
 from retrieval_service.ingest import UniversalSourceIngester
@@ -114,6 +117,64 @@ class WebsiteProjectAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(config, WebsiteProjectConfig)
         self.assertEqual(config.project_type, "website")
         self.assertEqual(config.project_id, "p1")
+
+    async def test_get_config_reads_repository_values(self) -> None:
+        repo = AsyncMock()
+        repo.get_project_config.return_value = ProjectConfig(
+            project_id="p1",
+            project_type="website",
+            active_embedding_version="v2",
+            embedding_model="custom-embed",
+            reranker_model="custom-reranker",
+            chunker_config={
+                "domains": ["docs.example.com"],
+                "crawl_rules": ["/docs/*"],
+                "sitemap_urls": ["https://docs.example.com/sitemap.xml"],
+                "default_locale": "fr",
+            },
+        )
+
+        config = await WebsiteProjectAdapter(config_repo=repo).get_config("p1")
+
+        self.assertEqual(config.active_embedding_version, "v2")
+        self.assertEqual(config.embedding_model, "custom-embed")
+        self.assertEqual(config.reranker_model, "custom-reranker")
+        self.assertEqual(config.domains, ("docs.example.com",))
+        self.assertEqual(config.crawl_rules, ("/docs/*",))
+        self.assertEqual(config.sitemap_urls, ("https://docs.example.com/sitemap.xml",))
+        self.assertEqual(config.default_locale, "fr")
+
+    async def test_get_config_reads_allowed_domains_alias(self) -> None:
+        repo = AsyncMock()
+        repo.get_project_config.return_value = ProjectConfig(
+            project_id="p1",
+            project_type="website",
+            active_embedding_version="v2",
+            embedding_model="custom-embed",
+            reranker_model="custom-reranker",
+            chunker_config={"allowed_domains": "docs.example.com"},
+        )
+
+        config = await WebsiteProjectAdapter(config_repo=repo).get_config("p1")
+
+        self.assertEqual(config.domains, ("docs.example.com",))
+
+    async def test_get_config_only_falls_back_for_missing_project(self) -> None:
+        repo = AsyncMock()
+        repo.get_project_config.side_effect = ProjectConfigNotFoundError("missing")
+
+        config = await WebsiteProjectAdapter(config_repo=repo).get_config("missing")
+
+        self.assertEqual(config.project_id, "missing")
+        self.assertEqual(config.domains, ())
+        self.assertTrue(config.allows_domain("any.example"))
+
+    async def test_get_config_propagates_repository_errors(self) -> None:
+        repo = AsyncMock()
+        repo.get_project_config.side_effect = RuntimeError("db is down")
+
+        with self.assertRaises(RuntimeError):
+            await WebsiteProjectAdapter(config_repo=repo).get_config("p1")
 
     async def test_build_query_scope_from_search_request(self) -> None:
         request = SearchRequest(

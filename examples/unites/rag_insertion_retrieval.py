@@ -1,4 +1,8 @@
-"""Minimal RAG insertion and retrieval showcase.
+"""Manager-service RAG insertion and retrieval showcase.
+
+Uses the ManagerService facade with a local queue broker and project client —
+the same composition the manager app boots. This is the recommended way to
+interact with the platform programmatically.
 
 Setup:
 1. Install dependencies: ``python -m pip install -e .``
@@ -9,8 +13,11 @@ Setup:
    ``RAG_EMBEDDING_DIMENSION`` match your local Qdrant/model settings.
 5. Run: ``python -m examples.unites.rag_insertion_retrieval``
 
-
-http://localhost:6333/dashboard
+The showcase:
+- Seeds a project config
+- Creates ManagerService with an ingest queue and project-document client
+- Ingests documents through the manager boundary (queue → consumer → engine)
+- Searches through the manager boundary
 """
 
 from __future__ import annotations
@@ -25,19 +32,22 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from project_service.adapters.website import (  # noqa: E402
-    WebsiteProjectAdapter,
-    WebsiteProjectConfig,
-)
+from manager_service import ManagerService, ProjectDocumentClient  # noqa: E402
+from manager_service.routing import ManagerRouter  # noqa: E402
+from project_service.adapters.website import WebsiteProjectAdapter  # noqa: E402
+from project_service.client import LocalProjectServiceClient  # noqa: E402
+from project_service.config import SQLiteProjectConfigRepository  # noqa: E402
 from project_service.gateway import (  # noqa: E402
-    IngestPlan,
+    AsyncConcurrencyLimiter,
     IngestRequest,
-    SearchPlan,
+    RagGateway,
     SearchRequest,
 )
 from project_service.rag import RagEngine  # noqa: E402
+from project_service.schemas import ProjectConfig  # noqa: E402
 from retrieval_service.embedding import EmbeddingProviderFactory  # noqa: E402
 from retrieval_service.services.vector_store import QdrantStore  # noqa: E402
+from shared.queue import LocalQueueBroker  # noqa: E402
 
 load_dotenv(Path(__file__).with_name(".env"))
 
@@ -55,20 +65,25 @@ async def main() -> None:
         print("Set RAG_EMBEDDING_API_KEY or RAG_GENERATION_API_KEY in examples/unites/.env")
         return
 
-    adapter = WebsiteProjectAdapter()
-    base_config = await adapter.get_config(project_id)
-    config = WebsiteProjectConfig(
-        project_id=base_config.project_id,
-        project_type=base_config.project_type,
-        active_embedding_version=base_config.active_embedding_version,
-        embedding_model=embedding_model,
-        reranker_model=base_config.reranker_model,
-        domains=base_config.domains,
-        crawl_rules=base_config.crawl_rules,
-        sitemap_urls=base_config.sitemap_urls,
-        default_locale=base_config.default_locale,
-        retrieval_config={"top_k": 2, "candidate_count": 2},
+    # --- Bootstrap: seed config, build service components -------------------
+
+    config_db = Path("/tmp/qdrant_rag_unite_config.db")
+
+    config_repo = SQLiteProjectConfigRepository(config_db)
+    await config_repo.initialize()
+    await config_repo.upsert_project(
+        ProjectConfig(
+            project_id=project_id,
+            project_type="website",
+            active_embedding_version="v1",
+            embedding_model=embedding_model,
+            reranker_model="bge-reranker-base",
+            retrieval_config={"top_k": 2, "candidate_count": 2},
+        )
     )
+    print(f"Seeded project config for {project_id}")
+
+    adapter = WebsiteProjectAdapter(config_repo=config_repo)
 
     embedding = EmbeddingProviderFactory.create(
         "openrouter",
@@ -87,57 +102,98 @@ async def main() -> None:
         port=int(os.getenv("RAG_QDRANT_PORT", "6333")),
         default_vector_size=embedding_dimension,
     )
+
+    gateway = RagGateway(
+        adapter_resolver=_FakeResolver(adapter),
+        concurrency_limiter=AsyncConcurrencyLimiter(
+            max_per_project=10,
+            max_per_user=5,
+        ),
+    )
+
     engine = RagEngine(
         embedding_provider=embedding,
         qdrant_store=qdrant_store,
         ingest_worker_count=1,
     )
 
+    # --- Build the manager boundary -----------------------------------------
+
+    project_client: ProjectDocumentClient = LocalProjectServiceClient(
+        gateway=gateway,
+        engine=engine,
+    )
+
+    broker = LocalQueueBroker(maxsize=10)
+    manager = ManagerService(
+        project_documents=project_client,
+        ingest_queue=broker,
+        ingest_topic="ingestion.requests",
+        ingest_response_timeout=30.0,
+        router=ManagerRouter(ingest_topic="ingestion.requests"),
+    )
+
+    # Start a tiny ingestion consumer in the background
+    from ingestion_service.server.consumer import IngestionRequestConsumer
+    consumer = IngestionRequestConsumer(
+        queue=broker,
+        project_documents=project_client,
+        topic="ingestion.requests",
+    )
+    consumer.start()
+    await asyncio.sleep(0.05)  # let consumer spin up
+
     try:
+        # --- Ingest through the manager -------------------------------------
         for doc_id, text in {
             "doc_qdrant": "Qdrant stores vectors for semantic search.",
             "doc_rag": "RAG retrieves context before generation.",
         }.items():
-            await engine.schedule_ingest(
-                IngestPlan(
-                    IngestRequest(
-                        project_id,
-                        user_id,
-                        kb_id,
-                        doc_id,
-                        f"https://example.com/{doc_id}",
-                        "text/html",
-                        {"raw_text": text},
-                    ),
-                    adapter,
-                    config,
+            result = await manager.ingest(
+                IngestRequest(
+                    project_id=project_id,
+                    user_id=user_id,
+                    kb_id=kb_id,
+                    doc_id=doc_id,
+                    source_uri=f"https://example.com/{doc_id}",
+                    content_type="text/html",
+                    raw_text=text,
                 )
             )
-        await engine._ingest_queue.join()
+            print(f"Ingested {doc_id} → job_id={result.job_id} status={result.status}")
 
-        search_request = SearchRequest(
-            project_id,
-            user_id,
-            "How does RAG retrieve context?",
-            (kb_id,),
-        )
-        scope = await adapter.build_query_scope(search_request)
-        retrieval_filter = await adapter.build_retrieval_filter(scope)
-        result = await engine.search(
-            SearchPlan(
-                search_request,
-                adapter,
-                config,
-                scope,
-                retrieval_filter,
+        # Wait for background processing to complete
+        await asyncio.sleep(0.2)
+
+        # --- Search through the manager -------------------------------------
+        search_result = await manager.search(
+            SearchRequest(
+                project_id=project_id,
+                user_id=user_id,
+                query="How does RAG retrieve context?",
+                kb_ids=(kb_id,),
             )
         )
-        for chunk in result.chunks:
-            print(f"{chunk['doc_id']} score={chunk['score']:.3f}: {chunk['text']}")
+        print("\nSearch results:")
+        for chunk in search_result.chunks:
+            print(f"  {chunk['doc_id']} score={chunk['score']:.3f}: {chunk['text']}")
+
     finally:
+        await consumer.stop()
         await engine.shutdown()
         await embedding.shutdown()
         await qdrant_store.close()
+
+
+class _FakeResolver:
+    """Simple resolver returning the same adapter for the showcase."""
+
+    def __init__(self, adapter: object) -> None:
+        self._adapter = adapter
+
+    async def resolve(self, project_id: str) -> object:
+        del project_id
+        return self._adapter
 
 
 if __name__ == "__main__":

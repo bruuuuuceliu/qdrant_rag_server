@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from configs.config import get_bool_value, get_value
+from configs.config import get_bool_value, get_float_value, get_int_value, get_value
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +20,13 @@ class RetrievalComponentSettings:
     ner_model: str
 
 
+@dataclass(frozen=True, slots=True)
+class RetrievalHttpSettings:
+    host: str
+    port: int
+    read_timeout: float
+
+
 def load_retrieval_component_settings(
     values: dict[str, str],
 ) -> RetrievalComponentSettings:
@@ -33,4 +40,12 @@ def load_retrieval_component_settings(
         bm25_index_version=get_value(values, "BM25_INDEX_VERSION", "qdrant_bm25_v1"),
         ner_provider=get_value(values, "RAG_NER_PROVIDER", "disabled"),
         ner_model=get_value(values, "RAG_NER_MODEL", "en_core_web_sm"),
+    )
+
+
+def load_retrieval_http_settings(values: dict[str, str]) -> RetrievalHttpSettings:
+    return RetrievalHttpSettings(
+        host=get_value(values, "RETRIEVAL_HTTP_HOST", "127.0.0.1"),
+        port=get_int_value(values, "RETRIEVAL_HTTP_PORT", 8081),
+        read_timeout=get_float_value(values, "RETRIEVAL_HTTP_READ_TIMEOUT", 5.0),
     )

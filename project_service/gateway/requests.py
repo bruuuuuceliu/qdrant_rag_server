@@ -48,6 +48,8 @@ class IngestRequest:
     doc_id: str
     source_uri: str
     content_type: str
+    raw_text: str | None = None
+    raw_content: bytes | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -59,6 +61,8 @@ class IngestRequest:
             doc_id=_required_str(data, "doc_id"),
             source_uri=_required_str(data, "source_uri"),
             content_type=_required_str(data, "content_type"),
+            raw_text=_optional_raw_text(data.get("raw_text")),
+            raw_content=_optional_raw_content(data.get("raw_content")),
             metadata=dict(data.get("metadata", {})),
         )
 
@@ -73,6 +77,10 @@ class IngestRequest:
         _validate_non_empty("doc_id", self.doc_id)
         _validate_non_empty("source_uri", self.source_uri)
         _validate_non_empty("content_type", self.content_type)
+        if self.raw_text is not None and self.raw_content is not None:
+            raise ValueError("raw_text and raw_content are mutually exclusive")
+        if self.raw_content is not None:
+            object.__setattr__(self, "raw_content", bytes(self.raw_content))
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,3 +115,19 @@ class DeleteDocumentRequest:
 def _optional_str(data: dict[str, Any], key: str, default: str) -> str:
     value = data.get(key, default)
     return _normalize_optional_str(value, default, field_name=key)
+
+
+def _optional_raw_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _optional_raw_content(value: Any) -> bytes | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    return str(value).encode("utf-8")

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from project_service.adapters.base import ProjectAdapter
+from project_service.config.repository import ProjectConfigNotFoundError
 from project_service.schemas import (
     ProjectChunk,
     ProjectChunkPayload,
@@ -66,6 +67,9 @@ class WebsiteChunkPayload(ProjectChunkPayload):
 class WebsiteProjectAdapter(ProjectAdapter):
     project_type = WEBSITE_PROJECT_TYPE
 
+    def __init__(self, *, config_repo: Any = None) -> None:
+        self._config_repo = config_repo
+
     def get_domain_from_url(self, url: str) -> str:
         from urllib.parse import urlparse
 
@@ -75,13 +79,38 @@ class WebsiteProjectAdapter(ProjectAdapter):
         return hostname
 
     async def get_config(self, project_id: str) -> WebsiteProjectConfig:
+        stored = None
+        if self._config_repo is not None:
+            try:
+                stored = await self._config_repo.get_project_config(project_id)
+            except ProjectConfigNotFoundError:
+                pass
+
+        if stored is not None:
+            return WebsiteProjectConfig(
+                project_id=project_id,
+                project_type=self.project_type,
+                active_embedding_version=stored.active_embedding_version,
+                embedding_model=stored.embedding_model,
+                reranker_model=stored.reranker_model,
+                domains=_string_tuple(
+                    stored.chunker_config.get("domains")
+                    or stored.chunker_config.get("allowed_domains")
+                    or stored.retrieval_config.get("domains")
+                    or stored.retrieval_config.get("allowed_domains")
+                    or ()
+                ),
+                crawl_rules=_string_tuple(stored.chunker_config.get("crawl_rules", ())),
+                sitemap_urls=_string_tuple(stored.chunker_config.get("sitemap_urls", ())),
+                default_locale=str(stored.chunker_config.get("default_locale", "en")),
+            )
+
         return WebsiteProjectConfig(
             project_id=project_id,
             project_type=self.project_type,
             active_embedding_version="v1",
             embedding_model="bge-base",
             reranker_model="bge-reranker-base",
-            domains=("example.com",),
             default_locale="en",
         )
 
@@ -228,6 +257,14 @@ def _render_document(document: BaseDocument, *, request: Any) -> WebsiteDocument
         page_title=source_uri,
         page_description="",
     )
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,) if value else ()
+    return tuple(str(item) for item in value if str(item))
 
 
 def _render_chunk(chunk: BaseChunk, *, document: WebsiteDocument) -> ProjectChunk:
