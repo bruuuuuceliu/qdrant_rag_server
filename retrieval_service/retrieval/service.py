@@ -8,6 +8,13 @@ from typing import Any
 
 from retrieval_service.indexing.sparse_text import _build_sparse_text
 from retrieval_service.pipeline.helpers import _elapsed_ms, _encode_query
+from retrieval_service.placement.execution import (
+    PlacementExecutionTarget,
+    PlacementStoreResolver,
+    placement_cache_scope,
+    placement_read_targets,
+    placement_write_targets,
+)
 from retrieval_service.query.qdrant_filters import _build_qdrant_filter
 from retrieval_service.ranking.entity_boost import (
     apply_entity_boosts,
@@ -18,11 +25,17 @@ from retrieval_service.retrieval.config import (
     parse_retrieval_settings,
 )
 from retrieval_service.retrieval.factory import ProjectRetrieverFactory
+from retrieval_service.services.bm25 import BM25Retriever, QdrantSparseBM25Index
 from retrieval_service.services.entities import (
     NerExtractor,
     NoopNerExtractor,
 )
-from retrieval_service.services.retriever import RetrievalHit, RetrievalQuery, Retriever
+from retrieval_service.services.retriever import (
+    QdrantVectorRetriever,
+    RetrievalHit,
+    RetrievalQuery,
+    Retriever,
+)
 from retrieval_service.services.sparse_encoder import SparseTextEncoder
 from retrieval_service.services.vector_store import QdrantStore
 
@@ -36,6 +49,7 @@ class RetrievalSearchRequest:
     retrieval_config: dict[str, Any] = field(default_factory=dict)
     retrieval_filter: Any = None
     cache_key: str = ""
+    placement_plan: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +66,7 @@ class DeleteDocumentRequest:
     kb_id: str
     doc_id: str
     collection_name: str
+    placement_plan: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,11 +93,15 @@ class RetrievalService:
         object_storage: Any = None,
         bm25_index: Any = None,
         metrics: Any = None,
+        placement_store_resolver: PlacementStoreResolver | None = None,
         default_top_k: int = 5,
         default_candidate_count: int = 20,
     ) -> None:
         self._embedding_provider = embedding_provider
         self._qdrant_store = qdrant_store
+        self._placement_store_resolver = placement_store_resolver or PlacementStoreResolver(
+            default_store=qdrant_store,
+        )
         self._retriever_factory = retriever_factory
         self._sparse_encoder = sparse_encoder
         self._ner_extractor = ner_extractor or NoopNerExtractor()
@@ -107,8 +126,9 @@ class RetrievalService:
             default_candidate_count=self._default_candidate_count,
         )
 
-        if self._tier1_cache is not None and request.cache_key:
-            cached = await self._tier1_cache.get(request.project_id, request.cache_key)
+        cache_key = _placement_cache_key(request.cache_key, request.placement_plan)
+        if self._tier1_cache is not None and cache_key:
+            cached = await self._tier1_cache.get(request.project_id, cache_key)
             if cached is not None:
                 cached = dict(cached)
                 cached["cache_hit"] = True
@@ -118,8 +138,10 @@ class RetrievalService:
                 cached["elapsed_ms"] = max(1, _elapsed_ms(start_ns))
                 return RetrievalSearchResult(**cached)
 
-        query = await self._build_query(request, settings=settings)
-        search_results = await self._search_candidates(query=query, settings=settings)
+        search_results = await self._search_placement_candidates(
+            request,
+            settings=settings,
+        )
         search_results = await self._apply_query_entity_boosts(
             request.query_text,
             search_results,
@@ -138,10 +160,10 @@ class RetrievalService:
             cache_hit=False,
         )
 
-        if self._tier1_cache is not None and request.cache_key:
+        if self._tier1_cache is not None and cache_key:
             await self._tier1_cache.set(
                 request.project_id,
-                request.cache_key,
+                cache_key,
                 {"chunks": chunks, "elapsed_ms": result.elapsed_ms},
             )
 
@@ -151,17 +173,23 @@ class RetrievalService:
         return result
 
     async def delete_document(self, request: DeleteDocumentRequest) -> None:
-        await self._qdrant_store.delete_document(
-            collection_name=request.collection_name,
-            project_id=request.project_id,
-            user_id=request.user_id,
-            kb_id=request.kb_id,
-            doc_id=request.doc_id,
+        targets = placement_write_targets(
+            request.placement_plan,
+            fallback_collection_name=request.collection_name,
         )
-        try:
-            if self._bm25_index is not None:
-                await self._bm25_index.delete_document(
-                    collection_name=request.collection_name,
+        for target in targets:
+            qdrant_store = await self._placement_store_resolver.resolve(target)
+            await qdrant_store.delete_document(
+                collection_name=target.collection_name,
+                project_id=request.project_id,
+                user_id=request.user_id,
+                kb_id=request.kb_id,
+                doc_id=request.doc_id,
+            )
+            bm25_index = self._bm25_index_for_store(qdrant_store)
+            if bm25_index is not None:
+                await bm25_index.delete_document(
+                    collection_name=target.collection_name,
                     filter_fields={
                         "project_id": request.project_id,
                         "user_id": request.user_id,
@@ -169,6 +197,7 @@ class RetrievalService:
                         "doc_id": request.doc_id,
                     },
                 )
+        try:
             if self._object_storage is not None:
                 from retrieval_service.storage.base import make_storage_key
 
@@ -183,6 +212,9 @@ class RetrievalService:
                 project_id=request.project_id,
                 user_id=request.user_id,
             )
+
+    async def shutdown(self) -> None:
+        await self._placement_store_resolver.close()
 
     async def _invalidate_document_caches(self, *, project_id: str, user_id: str) -> None:
         if self._tier1_cache is not None:
@@ -211,6 +243,7 @@ class RetrievalService:
         request: RetrievalSearchRequest,
         *,
         settings: ProjectRetrievalSettings,
+        collection_name: str | None = None,
     ) -> RetrievalQuery:
         _validate_retrieval_filter(request.retrieval_filter)
         qdrant_filter = _build_qdrant_filter(request.retrieval_filter)
@@ -235,7 +268,7 @@ class RetrievalService:
             )
 
         return RetrievalQuery(
-            collection_name=request.collection_name,
+            collection_name=collection_name or request.collection_name,
             query_text=request.query_text,
             query_vector=query_vector,
             query_sparse_vector=query_sparse_vector,
@@ -256,9 +289,75 @@ class RetrievalService:
         *,
         query: RetrievalQuery,
         settings: ProjectRetrievalSettings,
+        retriever_factory: ProjectRetrieverFactory | None = None,
     ) -> list[RetrievalHit]:
-        retriever: Retriever = self._retriever_factory.build(settings=settings)
+        factory = retriever_factory or self._retriever_factory
+        retriever: Retriever = factory.build(settings=settings)
         return await retriever.search(query)
+
+    async def _search_placement_candidates(
+        self,
+        request: RetrievalSearchRequest,
+        *,
+        settings: ProjectRetrievalSettings,
+    ) -> list[RetrievalHit]:
+        targets = placement_read_targets(
+            request.placement_plan,
+            fallback_collection_name=request.collection_name,
+        )
+        hits: list[RetrievalHit] = []
+        for target_group in _read_target_groups(targets):
+            last_error: Exception | None = None
+            for target in target_group:
+                try:
+                    store = await self._placement_store_resolver.resolve(target)
+                    query = await self._build_query(
+                        request,
+                        settings=settings,
+                        collection_name=target.collection_name,
+                    )
+                    hits.extend(
+                        await self._search_candidates(
+                            query=query,
+                            settings=settings,
+                            retriever_factory=self._retriever_factory_for_store(store),
+                        )
+                    )
+                    last_error = None
+                    break
+                except Exception as exc:
+                    last_error = exc
+            if last_error is not None:
+                raise last_error
+        return sorted(hits, key=lambda hit: hit.score, reverse=True)
+
+    def _retriever_factory_for_store(self, store: Any) -> ProjectRetrieverFactory:
+        if store is self._qdrant_store:
+            return self._retriever_factory
+        dense_retriever = QdrantVectorRetriever(store)
+        bm25_index = self._bm25_index_for_store(store)
+        bm25_retriever = BM25Retriever(bm25_index) if bm25_index is not None else None
+        return ProjectRetrieverFactory(
+            dense_retriever=dense_retriever,
+            bm25_retriever=bm25_retriever,
+        )
+
+    def _bm25_index_for_store(self, store: Any) -> Any | None:
+        if self._bm25_index is None:
+            return None
+        if store is self._qdrant_store:
+            return self._bm25_index
+        if not isinstance(self._bm25_index, QdrantSparseBM25Index):
+            return self._bm25_index
+        sparse_vector_name = getattr(
+            self._bm25_index,
+            "_sparse_vector_name",
+            "bm25",
+        )
+        return QdrantSparseBM25Index(
+            store=store,
+            sparse_vector_name=sparse_vector_name,
+        )
 
     async def _apply_query_entity_boosts(
         self,
@@ -296,6 +395,28 @@ def _chunks_from_hits(final: list[tuple[dict[str, Any], float]]) -> list[dict[st
         chunk["score"] = score
         chunks.append(chunk)
     return chunks
+
+
+def _placement_cache_key(cache_key: str, placement_plan: dict[str, Any]) -> str:
+    if not cache_key:
+        return ""
+    scope = placement_cache_scope(placement_plan)
+    if not scope:
+        return cache_key
+    return f"{scope}|{cache_key}"
+
+
+def _read_target_groups(
+    targets: list[PlacementExecutionTarget],
+) -> list[list[PlacementExecutionTarget]]:
+    groups: dict[str, list[PlacementExecutionTarget]] = {}
+    for target in targets:
+        key = target.routing_key or target.collection_name
+        groups.setdefault(key, []).append(target)
+    return [
+        sorted(group, key=lambda target: target.role != "primary")
+        for group in groups.values()
+    ]
 
 
 def _build_filter_fields(retrieval_filter: Any) -> dict[str, str | tuple[str, ...]]:

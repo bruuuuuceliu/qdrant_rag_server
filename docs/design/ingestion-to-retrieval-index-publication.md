@@ -1,6 +1,10 @@
 # Ingestion To Retrieval Index Publication
 
-Section status: implementation accepted for the fifth development loop section.
+Section status: superseded by the completed generic ingestion indexing path.
+
+Current note: retrieval index publication is now required for enabled ingestion
+workers, retrieval index completion is authoritative for queued ingest success,
+and compatibility project-document response fallback has been removed.
 
 ## Requirement Document
 

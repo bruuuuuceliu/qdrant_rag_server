@@ -1,6 +1,12 @@
 # Manager Client Contracts
 
-Section status: implementation accepted for the first development loop section.
+Section status: superseded by the completed manager project-task boundary.
+
+Current note: `ManagerService` now requires a project-document task client for
+normal project-document operations. Direct `ingestion=` / `retrieval=` manager
+construction and manager-owned ingest queue dispatch were removed from manager
+core; those clients remain only as compatibility/helper adapters outside the
+normal manager route.
 
 ## Requirement Document
 
@@ -43,8 +49,8 @@ Out of scope:
 - `ManagerService.delete` uses a retrieval client.
 - Existing callers can still construct `ManagerService(project_documents=...)`
   and get the same behavior through compatibility adapters.
-- New callers can construct `ManagerService(ingestion=..., retrieval=...)`
-  without providing a combined project-document client.
+- New callers must construct `ManagerService(project_documents=...)` for normal
+  project-document operations.
 - Queue-backed ingest remains compatible with `ingestion_service.server`, which
   still accepts a project-document client during the migration.
 - Tests cover the new client split and the compatibility path.

@@ -1,917 +1,486 @@
-# Multi-Service Boundary Progress
-
-**Reviewed**: 2026-06-16
-**Design reference**: `docs/boundary.md`
-**Current status**: partially extracted multi-service scaffold; not yet the ideal
-multi-server architecture.
-
-## Summary
-
-### Manager Client Contracts
-
-Status: accepted.
-
-Implemented:
-
-- manager-facing ingestion and retrieval client protocols
-- compatibility adapters from `ProjectDocumentClient`
-- `ManagerService` dispatch through service-specific clients
-- split-client and compatibility-path tests
-
-Verification:
-
-- `pytest tests/test_manager_service.py -q`
-- `pytest tests/test_ingestion_service_server.py tests/test_ingestion_worker_server.py -q`
-- `pytest tests/test_shared_contracts.py -q`
-- `pytest tests/test_manager_service.py tests/test_project_service_client.py tests/test_retrieval_service_facade.py -q`
-
-### Ingestion Job Acceptance
-
-Status: accepted.
-
-Implemented:
-
-- `QueuedIngestCommand` shared queue DTO and parser
-- ingestion job creation before delegated compatibility execution
-- worker wiring to `SQLiteIngestionJobRepository`
-- response payload job ID preserved for repository-backed acceptance
-- compatibility path when no repository is injected
-
-Verification:
-
-- `pytest tests/test_shared_contracts.py tests/test_ingestion_service_server.py tests/test_ingestion_jobs.py tests/test_ingestion_worker_server.py -q`
-- `pytest tests/test_manager_service.py -q`
-
-### Ingestion Preparation Metadata
-
-Status: accepted.
-
-Implemented:
-
-- optional `IngestionService` preparation in the queued ingestion consumer
-- durable job metadata updates for content hash, handler, chunk count, raw
-  content length, content type, and chunker versions
-- mapping-request support in `SourceDescriptor.from_request`
-- standalone ingestion worker wiring for preparation before compatibility
-  execution
-- tests for preparation metadata and no-preparation compatibility
-
-Verification:
-
-- `pytest tests/test_ingestion_service_server.py tests/test_ingestion_worker_server.py -q`
-- `pytest tests/test_ingestion_service.py tests/test_ingestion_service_server.py tests/test_ingestion_worker_server.py tests/test_ingestion_jobs.py tests/test_manager_service.py tests/test_shared_contracts.py -q`
-
-### Retrieval Index Queue Worker
-
-Status: accepted.
-
-Implemented:
-
-- `RetrievalIndexCommand` queue DTO for neutral retrieval indexing payloads
-- `RetrievalIndexConsumer` that calls `IndexingService.index_chunks(...)`
-- optional response topic publishing for success and failure
-- tests for command parsing and worker behavior
-
-Verification:
-
-- `pytest tests/test_retrieval_index_consumer.py -q`
-
-### Ingestion To Retrieval Index Publication
-
-Status: accepted.
-
-Implemented:
-
-- optional retrieval indexing queue publication from the ingestion consumer
-- retrieval index command payloads built from prepared ingestion chunks
-- worker composition injection for a retrieval queue
-- tests proving publication payloads parse through `RetrievalIndexCommand`
-- no-queue compatibility behavior preserved
-
-Verification:
-
-- `pytest tests/test_ingestion_service_server.py tests/test_ingestion_worker_server.py tests/test_retrieval_index_consumer.py -q`
-- `pytest tests/test_ingestion_service.py tests/test_ingestion_service_server.py tests/test_ingestion_worker_server.py tests/test_ingestion_jobs.py tests/test_retrieval_index_consumer.py tests/test_indexing_service.py tests/test_manager_service.py tests/test_shared_contracts.py -q`
-
-### Retrieval Index App Context
-
-Status: accepted.
-
-Implemented:
-
-- `RetrievalIndexAppContext` and `create_app(...)`
-- enabled/disabled consumer lifecycle management
-- focused app tests using the retrieval indexing queue consumer
-
-Verification:
-
-- `pytest tests/test_retrieval_index_consumer.py tests/test_retrieval_index_app.py -q`
-
-### Retrieval Index Publication Validation
-
-Status: accepted.
-
-Implemented:
-
-- validation of `collection_name` when retrieval publication is enabled
-- structured validation failure responses for incomplete retrieval publication
-- tests for success, validation failure, and compatibility-only ingestion
-
-Verification:
-
-- `pytest tests/test_ingestion_service_server.py tests/test_ingestion_worker_server.py tests/test_retrieval_index_consumer.py tests/test_retrieval_index_app.py -q`
-
-### Retrieval Service App Context
-
-Status: accepted.
-
-Implemented:
-
-- `RetrievalAppContext` and `create_app(...)`
-- delegated search, delete, raw-document, and shutdown methods
-- focused app tests alongside retrieval facade tests
-
-Verification:
-
-- `pytest tests/test_retrieval_service_app.py tests/test_retrieval_service_facade.py -q`
-
-### Manager Local Retrieval Client
-
-Status: accepted.
-
-Implemented:
-
-- `LocalRetrievalClient` manager-facing adapter
-- public export from `manager_service`
-- manager tests for split-client construction with independent retrieval
-  delegation
-
-Verification:
-
-- `pytest tests/test_manager_service.py tests/test_retrieval_service_app.py -q`
-
-### Manager Local Ingestion Client
-
-Status: accepted.
-
-Implemented:
-
-- `LocalIngestionClient` manager-facing adapter
-- repository-backed status conversion to shared `IngestJobResult`
-- public export from `manager_service`
-- manager tests for local ingestion and local retrieval client construction
-
-Verification:
-
-- `pytest tests/test_manager_service.py tests/test_ingestion_jobs.py -q`
-
-### Manager Import Boundary Guard
-
-Status: accepted.
-
-Implemented:
-
-- AST-based import-boundary test for manager core modules
-- guard against direct manager core imports of project, retrieval, ingestion,
-  Qdrant, and implementation internals
-
-Verification:
-
-- `pytest tests/test_manager_import_boundaries.py tests/test_manager_service.py -q`
-
-### Manager Split-Client Composition
-
-Status: accepted.
-
-Implemented:
-
-- manager app bootstrap now passes explicit ingestion and retrieval adapters to
-  `ManagerService`
-- composition root remains compatibility-based while the manager core uses
-  split clients
-- manager app tests assert the explicit adapters are present
-
-Verification:
-
-- `pytest tests/test_manager_service.py -q`
-
-### Retrieval Index Command Validation
-
-Status: accepted.
-
-Implemented:
-
-- retrieval-owned `collection_name` validation in `RetrievalIndexCommand`
-- invalid command response coverage in the retrieval indexing consumer
-- tests for valid parsing, parser rejection, and worker error response
-
-Verification:
-
-- `pytest tests/test_retrieval_index_consumer.py tests/test_retrieval_index_app.py tests/test_ingestion_service_server.py -q`
-
-### Retrieval Index Import Boundary Guard
-
-Status: accepted.
-
-Implemented:
-
-- AST-based import guard for retrieval indexing queue modules
-- protection against direct imports from manager, project service, or ingestion
-  service internals
-
-Verification:
-
-- `pytest tests/test_retrieval_index_import_boundaries.py tests/test_retrieval_index_consumer.py tests/test_retrieval_index_app.py -q`
-
-### Ingestion Server Import Boundary Guard
-
-Status: accepted.
-
-Implemented:
-
-- AST-based import guard for ingestion server queue modules
-- protection against direct imports from manager, project, retrieval, and Qdrant
-  internals in ingestion server app/consumer code
-
-Verification:
-
-- `pytest tests/test_ingestion_server_import_boundaries.py tests/test_ingestion_service_server.py -q`
-
-### Roadmap Boundary Alignment
-
-Status: accepted.
-
-Implemented:
-
-- updated implementation roadmap with retrieval app context and boundary guard
-  iterations
-- kept physical service APIs and production broker adapter marked pending
-
-Verification:
-
-- documentation-only change; covered by focused suite after surrounding sections
-
-### Section Design Index
-
-Status: accepted.
-
-Implemented:
-
-- added `docs/design/section-design-index.md` for accepted development-loop
-  section docs
-- linked the index from `docs/README.md`
-
-Verification:
-
-- documentation-only change; link target is repository-local
-
-### Docs README Link Integrity
-
-Status: accepted.
-
-Implemented:
-
-- removed stale missing-file links from `docs/README.md`
-- added focused docs entry-point link test
-
-Verification:
-
-- `pytest tests/test_docs_links.py -q`
-
-### Manager Context Ingestion Jobs
-
-Status: accepted.
-
-Implemented:
-
-- `ManagerAppContext.ingestion_jobs` property
-- manager app tests for embedded and external ingestion worker modes
-
-Verification:
-
-- `pytest tests/test_manager_service.py -q`
-
-### Manager Local Retrieval Composition
-
-Status: accepted.
-
-Implemented:
-
-- `ProjectPlannedRetrievalClient` that uses project gateway planning and
-  retrieval-owned execution
-- read-only `RagEngine.retrieval_service` property for local composition
-- manager local mode now uses retrieval-facade execution for search/delete
-- focused project client and manager app tests
-
-Verification:
-
-- `pytest tests/test_project_service_client.py tests/test_manager_service.py -q`
-
-### Boundary Docs Refresh
-
-Status: accepted.
-
-Implemented:
-
-- refreshed architecture, service-boundary, and contract text for local manager
-  retrieval composition
-- documented project-planned retrieval facade execution for local search/delete
-
-Verification:
-
-- covered by docs link and focused test runs after implementation
-
-### Retrieval Index Command Validation
-
-Status: accepted.
-
-Implemented:
-
-- retrieval-side validation for blank `collection_name` in index commands
-- consumer error responses for invalid command payloads
-- tests for parser validation and worker failure response behavior
-
-Verification:
-
-- `pytest tests/test_retrieval_index_consumer.py tests/test_retrieval_index_app.py -q`
-
-### Manager Local Ingestion Composition
-
-Status: accepted.
-
-Implemented:
-
-- `IngestionAppContext` now exposes its job repository
-- embedded manager app mode initializes an ingestion job repository
-- manager local embedded mode uses `LocalIngestionClient` for ingestion/status
-  while preserving compatibility direct ingest execution
-
-Verification:
-
-- `pytest tests/test_manager_service.py tests/test_ingestion_service_server.py -q`
-
-### Boundary Documentation Refresh
-
-Status: accepted.
-
-Implemented:
-
-- roadmap updates for manager split clients, ingestion-to-index publication, and
-  retrieval index queue worker
-- architecture updates for current `retrieval.index.requests` behavior
-- service-boundary updates for ingestion preparation/publication and retrieval
-  index consumer ownership
-
-Verification:
-
-- `rg -n 'future `retrieval\\.index`|future retrieval\\.index|retrieval\\.index.*future|Next Iteration: Durable Production Broker' docs/architecture.md docs/service-boundaries.md docs/implementation-roadmap.md docs/contracts.md`
-
-### Retrieval Transport Contracts
-
-Status: accepted.
-
-Implemented:
-
-- `RetrievalSearchCommand`, `RetrievalDeleteDocumentCommand`, and
-  `RetrievalRawDocumentCommand` for transport-neutral retrieval API payloads
-- conversion from direct mappings or `{request_id, response_topic, request}`
-  envelopes into existing retrieval facade request dataclasses
-- `RetrievalResponseEnvelope` and `RetrievalApiError` for structured retrieval
-  responses
-- search-result and raw-document result mapping helpers, including base64
-  serialization for raw document bytes
-- focused tests for parsing, validation, conversion, and response mapping
-- contract, architecture, roadmap, and section-design documentation updates
-
-Verification:
-
-- `pytest tests/test_retrieval_transport_contracts.py -q`
-
-### Retrieval API Handler
-
-Status: accepted.
-
-Implemented:
-
-- `RetrievalFilterSpec` for retrieval-owned transport filter payloads
-- mapping-filter normalization during search command parsing
-- `RetrievalApiHandler` for search, delete, and raw-document payload dispatch
-  through a retrieval app context
-- response-envelope mapping for success, validation errors, and unexpected app
-  errors
-- focused tests that avoid project-service filter classes at the transport
-  boundary
-- handler design, contracts, architecture, roadmap, and progress documentation
-  updates
-
-Verification:
-
-- `pytest tests/test_retrieval_transport_contracts.py tests/test_retrieval_api_handler.py -q`
-
-### Retrieval API Import Boundary Guard
-
-Status: accepted.
-
-Implemented:
-
-- AST import-boundary guard for `retrieval_service.retrieval.contracts` and
-  `retrieval_service.retrieval.handler`
-- protection against imports from manager, project, ingestion, generated
-  transport modules, and `grpc` in the transport-neutral retrieval API layer
-- focused design and roadmap documentation updates
-
-Verification:
-
-- `pytest tests/test_retrieval_api_import_boundaries.py tests/test_retrieval_transport_contracts.py tests/test_retrieval_api_handler.py -q`
-
-### Retrieval API Server Context
-
-Status: accepted.
-
-Implemented:
-
-- `retrieval_service.server.create_app(...)` for retrieval-owned API server
-  composition
-- `RetrievalApiServerContext` exposing search, delete, and raw-document payload
-  methods backed by `RetrievalApiHandler`
-- shutdown delegation through `RetrievalAppContext`
-- focused tests for payload dispatch and shutdown
-- contracts, architecture, roadmap, section-index, and progress documentation
-  updates
-
-Verification:
-
-- `pytest tests/test_retrieval_api_server.py tests/test_retrieval_api_handler.py tests/test_retrieval_transport_contracts.py -q`
-
-### Retrieval Server Import Boundary Guard
-
-Status: accepted.
-
-Implemented:
-
-- extended `tests/test_retrieval_api_import_boundaries.py` to guard
-  `retrieval_service.server.app`
-- protected the retrieval server context from manager, project, ingestion,
-  generated transport, and `grpc` imports
-- focused design, roadmap, section-index, and progress documentation updates
-
-Verification:
-
-- `pytest tests/test_retrieval_api_import_boundaries.py tests/test_retrieval_api_server.py -q`
-
-### Manager Retrieval API Client
-
-Status: accepted.
-
-Implemented:
-
-- `ProjectPlannedRetrievalApiClient` for manager-facing search/delete with
-  project gateway planning and retrieval API server-context execution
-- response-envelope mapping back to `SearchResult` and clear `RuntimeError`
-  failures for unsuccessful retrieval API responses
-- manager local composition now builds `retrieval_service.server` context and
-  injects the API-backed retrieval client
-- manager shutdown now closes the retrieval API context before the project app
-- focused project-client and manager-app tests
-- contracts, architecture, roadmap, section-index, and progress documentation
-  updates
-
-Verification:
-
-- `pytest tests/test_project_service_client.py tests/test_manager_service.py -q`
-
-### Retrieval API Queue Transport
-
-Status: accepted.
-
-Implemented:
-
-- `RetrievalApiQueueConsumer` for `retrieval.api.requests`
-- `RetrievalApiQueueClient` for request/response queue calls to retrieval API
-  operations
-- `RetrievalApiQueueTimeoutError` for missing responses
-- support for search, delete, and raw-document operations using response
-  envelopes from the retrieval API server context
-- non-retryable `validation_error` envelopes for unknown operations
-- focused LocalQueueBroker tests for success, validation, and timeout behavior
-- contracts, architecture, roadmap, section-index, and progress documentation
-  updates
-
-Verification:
-
-- `pytest tests/test_retrieval_api_queue.py tests/test_retrieval_api_server.py tests/test_retrieval_api_handler.py tests/test_retrieval_transport_contracts.py -q`
-
-### Retrieval API Queue App Context
-
-Status: accepted.
-
-Implemented:
-
-- `RetrievalApiQueueAppContext` for retrieval API queue worker composition
-- `create_queue_app(...)` to build a retrieval API server context and optional
-  `RetrievalApiQueueConsumer`
-- enabled/disabled consumer startup modes
-- shutdown sequencing for queue consumer and retrieval API context
-- focused queue app tests using `LocalQueueBroker`
-- roadmap, section-index, and progress documentation updates
-
-Verification:
-
-- `pytest tests/test_retrieval_api_queue_app.py tests/test_retrieval_api_queue.py tests/test_retrieval_api_server.py -q`
-
-### Manager Retrieval Queue Mode
-
-Status: accepted.
-
-Implemented:
-
-- manager retrieval settings for `MANAGER_RETRIEVAL_CLIENT_MODE`,
-  `MANAGER_RETRIEVAL_TOPIC`, and `MANAGER_RETRIEVAL_RESPONSE_TIMEOUT`
-- `get_float_value(...)` config helper for timeout parsing
-- manager local mode support for direct retrieval API execution or queue-backed
-  retrieval API execution
-- embedded retrieval API queue app startup in manager queue mode
-- queue-backed retrieval API client injection into `ProjectPlannedRetrievalApiClient`
-- manager shutdown of the embedded retrieval queue app
-- focused config and manager app tests for default, queue, and invalid modes
-- env example, contracts, architecture, roadmap, section-index, and progress
-  documentation updates
-
-Verification:
-
-- `pytest tests/test_app_config.py tests/test_manager_service.py tests/test_retrieval_api_queue_app.py tests/test_retrieval_api_queue.py -q`
-
-### Retrieval API Queue Import Boundary Guard
-
-Status: accepted.
-
-Implemented:
-
-- extended retrieval API import-boundary guard coverage to
-  `retrieval_service.server.queue`
-- protected retrieval API queue transport from manager, project, ingestion,
-  generated transport, and `grpc` imports
-- focused design, roadmap, section-index, and progress documentation updates
-
-Verification:
-
-- `pytest tests/test_retrieval_api_import_boundaries.py tests/test_retrieval_api_queue.py tests/test_retrieval_api_queue_app.py -q`
-
-### Retrieval HTTP API Transport
-
-Status: accepted.
-
-Implemented:
-
-- `RetrievalHttpApp` testable HTTP route dispatcher over the existing retrieval
-  API server context
-- physical stdlib asyncio HTTP server adapter for the retrieval API
-- JSON routes for search, document delete, raw-document lookup, and health
-- structured response-envelope handling for invalid JSON, validation failures,
-  unknown routes, and unexpected retrieval failures
-- retrieval HTTP settings in `configs/retrieval` and env examples
-- import-boundary guard coverage for the retrieval HTTP transport
-- focused HTTP transport tests
-
-Verification:
-
-- `pytest tests/test_retrieval_http_server.py tests/test_retrieval_api_import_boundaries.py tests/test_app_config.py -q`
-
-The repository already has the right service-oriented shape for the target
-design: `manager_service`, `project_service`, `ingestion_service`,
-`retrieval_service`, `workflow_log_service`, `memory_service`, `shared`, and
-service-specific config folders exist. The manager can route operations, ingest
-can move through a queue, ingestion workers can run separately for local
-multi-process development, retrieval has search/index/delete facades, and
-workflow logs can consume lifecycle events.
-
-The main gap is physical runtime ownership. The current system still relies
-heavily on `project_service.rag.RagEngine` and a compatibility `RagService` gRPC
-contract. The manager now expresses ingestion and retrieval ownership through
-separate in-process client contracts, but those contracts still adapt the
-compatibility project-document client until independent service APIs exist.
-Ingestion queue workers still delegate to a project-document client, which then
-runs the compatibility project/RAG path. The ideal architecture in
-`docs/boundary.md` is therefore a good target, but the implementation is still in
-a migration phase.
-
-## Current Implementation Against Ideal Design
-
-| Boundary area | Current implementation | Gap to ideal design |
-| --- | --- | --- |
-| Repository shape | Service folders and config namespaces exist for manager, project, ingestion, retrieval, workflow log, memory, shared, tests, docs, deployment, and examples. | Some folders are placeholders or compatibility layers. `memory_service` has no real service boundary yet. |
-| Public manager | `manager_service` has route decisions, a gRPC server bootstrap, service-specific ingestion/retrieval client contracts, compatibility adapters, and a `ManagerService` facade. It routes ingest/search/delete/status for `project_document`. | Manager still adapts the compatibility `ProjectDocumentClient` at composition roots because independent ingestion/retrieval network APIs do not exist yet. |
-| Routing registry | `shared.contracts.data_types` defines `project_document`, `agent_memory`, and `workflow_log`; manager uses this registry. | Registry is route-label only. Data-type-specific schemas, policies, parsing, and retrieval defaults are still not modeled. |
-| Project service | `project_service` owns project adapters, config repository, gateway planning, scope construction, and gRPC compatibility app. | It still composes the local RAG engine and much of the end-to-end workflow. It should become config/scope/policy only. |
-| Ingestion service | `ingestion_service.service.IngestionService` can load, route, parse, clean, and chunk one source. Handlers, source fetchers, normalization, chunking, jobs, and storage folders exist. | Queue consumer does not yet call this service as the primary runtime path. It delegates to `ProjectDocumentClient.ingest`, which runs compatibility orchestration. |
-| Task services | No separate task-service package exists. Batch/crawl/fan-out is represented only as an ideal design concept. | Need explicit task worker boundary and topics for batch expansion, website crawling, fan-out, retry, and fan-in. |
-| Ingestion queue | `shared.queue` provides `QueueMessage`, `QueueBroker`, in-process local broker, and SQLite broker. Manager can publish to `ingestion.requests`; ingestion worker consumes it and responds on a per-request topic. | SQLite broker is local-development only. No production broker adapter, claim timeout, retry policy, dead-letter topic, or idempotent retry envelope. |
-| Ingestion job state | `ingestion_service.jobs` has memory and SQLite repositories. App config includes ingestion job DB settings. | Job state is partly driven by `RagEngine`; ingestion workers are not yet the sole owners of job execution state. |
-| Retrieval service | `retrieval_service.retrieval.RetrievalService` owns search/delete/raw reads. `retrieval_service.indexing.IndexingService` owns dense/sparse embedding, entity enrichment, and Qdrant upsert. | There is no independent retrieval server API for manager-facing search/delete/index commands. Facades are used through compatibility composition. |
-| Indexing queue | Ideal topic `retrieval.index.requests` is documented. Indexing facade exists. | No queue consumer or worker service currently consumes indexing requests. Ingestion does not yet publish prepared chunks to a retrieval indexing queue. |
-| Workflow log service | `workflow_log_service` has a consumer, server app, SQLite repository, models, config, and tests. It consumes `ingestion.events`. | It is wired locally through an in-process event broker in `project_service.server.app`; production broker, retry, and cross-process deployment remain pending. |
-| Memory service | `memory_service` package exists. `agent_memory` route is reserved. | No schemas, storage, server, retrieval behavior, or lifecycle policy implemented. |
-| Storage boundaries | Project config, ingestion jobs, workflow logs, retrieval cache, Qdrant, object storage, and version manager exist as separate abstractions. | Some state ownership is still blurred by `RagEngine`. Services can still reach implementation objects directly inside local composition. |
-| Synchronous APIs | gRPC compatibility service supports search, ingest, ingest status, generation, and health. Remote project/RAG client exists for search, ingest, and status. | Proto lacks explicit delete, data type, and first-class raw-content fields. Manager-native service contracts are not complete. |
-| Async events | Ingest lifecycle events publish to `ingestion.events` best-effort. Workflow log can persist them. | Retrieval index events, cache events, retry events, and dead-letter events are not implemented. |
-| Observability | Health checker and metrics scaffold exist. Queue messages carry correlation IDs in some paths. | Correlation IDs are not enforced across every public request, service call, queue message, and event. Metrics are not yet a full service-level observability layer. |
-| Tests | Tests cover routing, manager service, project client, ingestion service, ingestion server, worker server, SQLite queue, workflow log service, retrieval/indexing facades, and RAG behavior. | More cross-process, broker, live Qdrant, idempotency, retry, and failure-isolation tests are needed. |
-
-## Implemented And Reliable Enough To Keep
-
-- Folder-level service split is directionally correct.
-- `ManagerRouter` correctly expresses the desired owner for
-  `project_document` ingest/search/delete/status.
-- `ProjectDocumentClient` is a useful compatibility boundary during migration.
-- `LocalQueueBroker` and `SQLiteQueueBroker` preserve topic/key/headers/payload
-  semantics and are good local substitutes for a future broker.
-- Ingestion parsing, source loading, normalization, chunking, and file routing
-  exist in `ingestion_service` and should become the primary ingestion runtime.
-- Retrieval search/delete/raw and indexing facades exist and should become the
-  manager-facing retrieval server internals.
-- Workflow log service already has independent consumer/repository/server code.
-- Existing docs now clearly separate current service boundaries, contracts,
-  roadmap, and the ideal system boundary.
-
-## Important Mismatches With `docs/boundary.md`
-
-1. **Manager target services are logical, not physical yet.**
-
-   The router says ingest belongs to ingestion and search/delete belong to
-   retrieval, but `ManagerService` calls the same project-document client for
-   all operations. This is acceptable for migration but not the final boundary.
-
-2. **Ingestion workers do not own ingestion execution end to end.**
-
-   The queue consumer accepts `ingestion.requests`, then calls
-   `project_documents.ingest(...)`. The target design expects ingestion workers
-   to fetch, parse, normalize, chunk, persist job state, and publish indexing
-   commands directly.
-
-3. **Indexing is a facade, not an async service.**
-
-   `IndexingService` is well-shaped, but there is no `retrieval.index.requests`
-   worker that consumes prepared chunks from ingestion.
-
-4. **The project service is still too central.**
-
-   It currently wires the engine, Qdrant store, embeddings, sparse encoder,
-   object storage, workflow events, cache, generation, health, and versioning in
-   one local composition root. The ideal design makes project service own only
-   project config, scope, adapters, and policy.
-
-5. **Queue semantics are not production-grade.**
-
-   SQLite queue supports local multi-process testing but not durable production
-   semantics such as visibility timeout, retry count, dead-letter topics,
-   partitioning, consumer groups, or broker metrics.
-
-6. **Transport contracts are still compatibility contracts.**
-
-   The active gRPC API is `RagService`. It does not yet model the manager,
-   ingestion, retrieval, project, workflow log, and memory contracts as separate
-   service APIs.
-
-7. **Task services are missing.**
-
-   The ideal design calls for task services to split batch, website crawl, and
-   large-source work before ingestion workers. No implementation exists yet.
-
-8. **Memory service is reserved only.**
-
-   It is correctly kept out of the current critical path, but it is not a real
-   service yet.
-
-## Development Plan To Complete The Design
-
-### Phase 1: Stabilize Current Migration Baseline
-
-Goal: make the current compatibility architecture explicit and safe before
-extracting more services.
-
-- Keep `docs/boundary.md`, `docs/service-boundaries.md`, `docs/contracts.md`,
-  and this file aligned after each boundary-changing implementation.
-- Add a small architecture test or import-boundary check that prevents
-  `manager_service` from importing parser, Qdrant, embedding, or engine internals.
-- Add explicit TODO markers or issues for every compatibility call where
-  manager or ingestion still uses `ProjectDocumentClient` instead of a final
-  service-specific client.
-- Verify the current test suite after this documentation update.
-
-Exit criteria:
-
-- Existing tests pass.
-- Compatibility dependencies are documented and intentionally contained.
-- No new code depends directly on `project_service.rag.RagEngine` outside
-  compatibility composition roots.
-
-### Phase 2: Add Service-Specific Client Contracts
-
-Goal: replace the single project-document compatibility client at the manager
-boundary with owner-specific contracts.
-
-- Add manager-facing `ProjectConfigClient`, `IngestionClient`,
-  `RetrievalClient`, and `WorkflowLogClient` protocols.
-- Keep adapters that wrap the existing `ProjectDocumentClient` temporarily so
-  behavior does not change during extraction.
-- Update `ManagerService` so route targets call the matching client type:
-  project for scope/config, ingestion for ingest/status, retrieval for
-  search/delete, workflow log for audit reads.
-- Add tests that prove manager routing no longer needs one combined
-  project-document client.
-
-Exit criteria:
-
-- Manager code expresses the same boundaries as `ManagerRouter`.
-- Compatibility wrappers are isolated and easy to delete later.
-
-### Phase 3: Make Ingestion Service Own Ingest Execution
-
-Goal: move runtime ingestion work from compatibility project/RAG orchestration
-into `ingestion_service`.
-
-- Define a typed ingestion command DTO for `ingestion.requests` payloads.
-- Update `IngestionRequestConsumer` to create durable job records directly.
-- Use `IngestionService.process(...)` as the primary source fetch, route,
-  parse, normalize, and chunk path.
-- Store raw artifacts through ingestion-owned storage when policy requires it.
-- Publish lifecycle events from ingestion-owned code.
-- Keep a compatibility adapter only for behavior not yet migrated.
-- Add idempotency using job ID, document ID, project/user/KB, and content hash.
-
-Exit criteria:
-
-- Ingest status is owned by `ingestion_service.jobs`.
-- Queue consumer no longer delegates normal document ingestion to
-  `ProjectDocumentClient.ingest`.
-- Ingestion can produce neutral prepared chunks without importing retrieval
-  internals.
-
-### Phase 4: Add Retrieval Indexing Queue Workers
-
-Goal: make indexing an async retrieval-service responsibility.
-
-- Define `retrieval.index.requests` message schema for prepared chunks,
-  retrieval payloads, collection name, retrieval settings, and job ID.
-- Add a retrieval indexing worker/server that consumes indexing requests and
-  calls `IndexingService.index_chunks(...)`.
-- Publish `retrieval.index.events` for running, completed, and failed states.
-- Decide how indexing completion updates ingestion job status: direct ingestion
-  callback, status event, or shared job-result topic.
-- Add retry and idempotency behavior for duplicate indexing messages.
-
-Exit criteria:
-
-- Ingestion publishes prepared chunks to retrieval indexing queue.
-- Retrieval indexing workers own embedding, sparse encoding, entity enrichment,
-  and Qdrant upsert.
-- Successful indexing can complete the ingest job without project engine
-  orchestration.
-
-### Phase 5: Expose Independent Retrieval APIs
-
-Goal: make retrieval search and delete physically owned by retrieval service.
-
-- Add retrieval-service server entry point for search, delete, raw lookup,
-  health, and index status.
-- Add a manager-facing `RemoteRetrievalClient` and local adapter.
-- Move search/delete manager dispatch away from the project/RAG compatibility
-  service.
-- Extend transport DTOs with explicit `data_type`, `kb_id`, filters, retrieval
-  mode, and delete policy fields.
-- Add live Qdrant integration tests for dense, sparse, hybrid, delete, and cache
-  invalidation where infrastructure is available.
-
-Exit criteria:
-
-- Manager search/delete calls `retrieval_service`, not `project_service`.
-- Retrieval service can run as its own process in local split-service mode.
-
-### Phase 6: Narrow Project Service To Config And Scope
-
-Goal: remove project service from heavy RAG execution.
-
-- Keep project adapters, project config repository, scope rules, project policy,
-  and visibility decisions in `project_service`.
-- Move or delete compatibility engine wiring from the normal project-service
-  path once ingestion and retrieval services own their work.
-- Add typed adapter-specific config APIs instead of relying only on generic JSON
-  config maps.
-- Make project service provide only config/scope/policy responses to manager,
-  ingestion, and retrieval.
-
-Exit criteria:
-
-- `project_service` no longer owns Qdrant, embeddings, chunk indexing,
-  retrieval ranking, or generation wiring in the normal runtime path.
-
-### Phase 7: Add Task Services
-
-Goal: implement the async fan-out/fan-in layer described in the ideal design.
-
-- Add a task-service package or service folder for batch, crawl, and large-file
-  orchestration.
-- Define `ingestion.tasks` message contracts.
-- Implement batch document expansion and website crawl expansion as first
-  concrete task types.
-- Add bounded retry, subtask tracking, and final task status aggregation.
-
-Exit criteria:
-
-- Manager can submit a batch or crawl request without knowing the subtask
-  execution details.
-- Ingestion workers consume source-specific tasks rather than manager-shaped
-  batch requests.
-
-### Phase 8: Add Production Broker Semantics
-
-Goal: replace local-only queue behavior with production-ready async handling.
-
-- Choose and implement a broker adapter behind `shared.queue.QueueBroker`
-  such as Redis Streams, NATS, Kafka, or Redpanda.
-- Add delivery metadata: attempt count, first-seen timestamp, last error,
-  visibility timeout or claim lease, and idempotency key.
-- Add retry topics and `dead_letter` topic handling.
-- Add broker metrics: depth, age, attempts, processing latency, failures, and
-  dead-letter counts.
-- Keep `LocalQueueBroker` and `SQLiteQueueBroker` for tests and local
-  development only.
-
-Exit criteria:
-
-- Async ingestion/indexing can survive process restarts and worker failure.
-- Failed messages are retryable and eventually dead-lettered with enough
-  context for repair.
-
-### Phase 9: Complete Workflow And Observability
-
-Goal: make lifecycle tracing first-class across the service graph.
-
-- Enforce correlation IDs on every public request, service call, queue message,
-  and lifecycle event.
-- Add retrieval index events and cache events to workflow logging.
-- Add status/audit query API to workflow log service.
-- Add structured logs and service metrics for manager, ingestion, retrieval,
-  task workers, workflow log, and broker adapters.
-- Add health checks for each independent service and its owned dependencies.
-
-Exit criteria:
-
-- A document can be traced from manager acceptance through ingestion, indexing,
-  retrieval readiness, and workflow log persistence.
-
-### Phase 10: Add Reserved Services And Data-Type Expansion
-
-Goal: safely grow beyond project documents after the core path is stable.
-
-- Implement `memory_service` only after project-document ingest/search/delete is
-  independently owned and tested.
-- Define data-type-specific schemas, parsing rules, retrieval defaults, storage
-  policies, and deletion semantics.
-- Expand manager routing to executable `agent_memory` and workflow-log read
-  routes when the owning services are ready.
-
-Exit criteria:
-
-- New data types can be added without changing parser, retrieval, and storage
-  behavior for project documents.
-
-## Recommended Next Milestone
-
-```text
-Manager-owned routing with separate client contracts, ingestion-owned job
-execution, and retrieval-owned async indexing.
+# Development Progress
+
+**Reviewed**: 2026-06-23
+**Status**: architecture target corrected. Service features are mostly
+implemented locally, but the repository does not yet satisfy the broker-first
+independent-server topology in `structure.md`.
+
+## Overall Progress
+
+| Area | Progress | Completed? | Current state | Missing / How to improve |
+| --- | ---: | --- | --- | --- |
+| Architecture standard | 32% | No | The target is now broker-first with task-manager dispatch: manager/auth -> broker intake -> task manager -> broker -> domain service -> broker -> task manager -> broker -> helper nodes -> broker -> task manager. Earlier manager-direct-service and manager-direct-domain-trigger docs were wrong. | Redesign runtime routing so manager only accepts public requests, task manager triggers domain task servers, and every worker/server communicates through Redpanda. |
+| Independent service folders | 75% | Partial | Top-level service folders exist. Broker, Redis, and SQLite config folders plus service test folders now exist as tracked layout placeholders. | Move actual tests into service folders and split remaining mixed compatibility/runtime code out of service packages. |
+| Manager service | 65% | Partial | Manager routing, client boundaries, and injection-only manager server bootstrap exist, but current semantics still assume manager-facing project-document execution. | Reduce manager to auth/API envelope creation and broker publication. Remove manager-direct business routing. |
+| Project service | 65% | Partial | Project planning, task orchestration, scope, placement-plan creation, and capability clients exist. | Reposition project service as a broker-consumed domain task server triggered by task manager commands. It should return project info/plans to the broker, not be triggered by public manager or directly own task lifecycle. |
+| Ingestion service | 80% | Partial | Async jobs, preparation, status API, worker startup, and retrieval-index publication exist locally. | Run only as an independent server/worker in local and production. Replace local queue shortcuts with Redpanda transport. Keep parsing/chunking fully inside ingestion. |
+| Retrieval service | 80% | Partial | Search/delete/raw facades, HTTP API, queue API, indexing worker, placement execution, fanout merge, replica writes/deletes, and cache scoping exist locally. | Ensure retrieval HTTP/index workers are independent servers with no cross-service imports. Add production-like Redpanda and multi-Qdrant smoke coverage. |
+| Retrieval placement | 85% | Partial | Placement models, policies, registry, routing, versioned placement records, rebalance states, primary/replica writes, and read failover exist locally. | Add migration/reindex orchestration and live multi-endpoint validation. Keep placement owned by retrieval service, exposed through contracts only. |
+| Workflow log service | 60% | No | Local event sink and durable audit storage exist. | Make it a fully independent consumer service behind broker events. Standardize event envelopes and add query/read APIs. |
+| Broker | 10% | No | Queue-shaped contracts exist, but the corrected architecture requires broker-mediated flow for manager intake, task-manager dispatch, domain services, helper nodes, and task results. | Add Redpanda as the central runtime broker and define topics/envelopes for manager intake, task dispatch, domain info/plans, helper commands/results, and task status/result events. |
+| Task manager service | 5% | No | Not yet separated as the central task lifecycle/fan-out/fan-in and dispatch service required by the corrected topology. | Add an independent task manager service that consumes manager intake events, triggers domain task servers, dispatches helper work, consumes results, and keeps Redis task status updated by `task_id`. |
+| Config layout | 72% | Partial | `configs/` has service folders, profile modules, and tracked broker/Redis/SQLite node folders with local env examples. | Wire broker/Redis/SQLite settings into runtime loaders and move remaining service-specific settings out of shared profile files. |
+| Test layout | 30% | No | Service test folders now exist, but most tests still live as flat files under `tests/`. | Move tests into service folders and keep cross-service smoke tests under `tests/integration/`. |
+| Local runner | 35% | No | Local runner can start split development modes, but still supports local shortcuts and the previous manager-direct topology. | Local must start manager/auth, Redpanda, Redis, domain services, helper nodes, task manager, storage nodes, and DB nodes using the same code as production. |
+| Production readiness | 20% | No | Local tests previously passed, and major feature pieces exist. The corrected broker-first topology is not implemented. | Finish broker-first service routing, task manager, service isolation, config/test separation, deployment docs, observability, and live service smoke tests. |
+
+## Steps
+
+Implementation roadmap to complete the whole project:
+
+| Step | Build order | Implementation work | Done when | Status |
+| ---: | --- | --- | --- | --- |
+| 1 | Repository split | Create/finish independent workspaces for manager, broker, Redis task status, task manager, project, workflow log, ingestion, retrieval, storage, SQLite DB node, and tests/configs. Move tests into service folders. | Every server/node has its own folder, config folder, tests, entrypoint, and no shared parent runtime. | In progress |
+| 2 | Shared message contracts | Implement broker message envelope, topic constants, schema versions, message validation, producer/consumer interfaces, and test fixtures. | All services import only stable contracts for messages, not another service's internals. | Pending |
+| 3 | Redpanda broker adapter | Add Kafka/Redpanda producer and consumer implementation, config loader, local env examples, topic bootstrap, health checks, and broker tests. | Local and production runtime can publish/consume through Redpanda with the same code path. | Pending |
+| 4 | Manager/auth server | Change manager to authenticate/validate public requests, create `correlation_id`/`task_id`, publish only to task intake topics, and read Redis task status by `task_id`. Remove manager business execution and manager domain dispatch. | Manager no longer calls or triggers project, ingestion, retrieval, storage, workflow, or task internals directly. | Pending |
+| 5 | Task manager server | Implement task creation, lifecycle updates, domain dispatch, helper dispatch, fan-out/fan-in tracking, Redis status updates, completed-task TTL, and final result publishing. | Task manager consumes manager intake events, triggers domain task servers, dispatches helper work, and is the only writer of task lifecycle/status. | Pending |
+| 6 | Project domain service | Convert project service into a Redpanda consumer for task-manager-issued `project_document` domain commands. It loads project config/scope/policy and publishes domain plans/info results. | Project service is triggered only by task manager messages, does not execute ingestion/retrieval directly, and does not depend on manager runtime. | Pending |
+| 7 | Workflow log domain service | Convert workflow log into an independent Redpanda consumer/producer triggered by task-manager workflow commands and service events, with durable audit storage and query/status output messages. | Workflow logging runs as its own server and receives runtime work only through Redpanda. | Pending |
+| 8 | Ingestion helper nodes | Convert ingestion workers to consume task-manager-issued ingestion commands from Redpanda, parse/chunk content, store ingestion-owned state, and publish prepared chunks/status. | Ingestion has no manager/project direct dependency and no local queue runtime path. | Pending |
+| 9 | Retrieval helper nodes | Convert retrieval search/delete/index workers to consume task-manager-issued retrieval/index commands from Redpanda and publish results. Keep placement inside retrieval. | Retrieval work is broker-command driven and no service imports retrieval internals. | Pending |
+| 10 | Storage, Redis, and DB nodes | Implement storage helper node, Redis task-status node, and SQLite/database-node runtime boundaries for project config, ingestion jobs, workflow logs, task state, raw artifacts, and retrieval-owned storage. | Services use owned storage/status nodes/contracts; no service reads another service's private DB/files. | Pending |
+| 11 | Local runner rewrite | Rewrite local runner to start Redpanda, Redis, manager, task manager, domain services, helper nodes, storage nodes, DB nodes, and Qdrant as real local servers. | Local and production differ only by addresses, credentials, ports, and paths. | Pending |
+| 12 | Broker-first integration tests | Add integration tests under `tests/integration/` for ingest, search, delete, status, workflow logging, task fan-in, and service restart behavior using Redpanda. | Broker-first flows pass without in-memory queues, SQLite queues, embedded services, or cross-service imports. | Pending |
+| 13 | Observability and operations | Add logs, metrics, health endpoints, service readiness, topic lag checks, deployment docs, and runbooks for every server/node. | Operators can start, inspect, and troubleshoot the full local/production-equivalent stack. | Pending |
+| 14 | Compatibility removal | Remove legacy `RagService`, local runtime composition, direct service clients, SQLite/local queue runtime paths, duplicate schemas, and import shims. | Normal runtime contains only independent servers communicating through Redpanda. | Pending |
+
+## Target Architecture Graph
+
+```mermaid
+flowchart LR
+    Client[Client / SDK] --> Manager[Manager / Auth Server]
+
+    Broker[(Redpanda Broker)]
+
+    Manager <--> Broker
+    Project[Project Domain Service] <--> Broker
+    Workflow[Workflow Logging Service] <--> Broker
+    Other[Other Domain Services] <--> Broker
+    TaskManager[Task Manager Service] <--> Broker
+    Ingestion[Ingestion Helper Node] <--> Broker
+    Retrieval[Retrieval Helper Node] <--> Broker
+    Storage[Storage Helper Node] <--> Broker
+    TaskManager --> Redis[(Redis Task Status Store)]
+    Manager --> Redis
 ```
 
-This is the smallest milestone that turns the current scaffold into the actual
-architecture described in `docs/boundary.md` without prematurely adding memory,
-advanced auth, or a full production broker.
+Storage, database, cache, Qdrant, and placement state are accessed through their
+own service/node boundaries. They are not direct cross-service links in the
+target runtime.
 
-## Verification Needed Next
+Redis is the task-status exception: task manager writes status by `task_id`, and
+manager reads Redis directly for client status checks. Completed task keys must
+expire with TTL. Redis is not the message broker.
 
-- Run the full Python test suite.
-- Add focused tests for manager route-to-client ownership after client contracts
-  are split.
-- Add ingestion queue tests that verify durable job creation happens before
-  async processing.
-- Add indexing queue worker tests for success, retryable failure, duplicate
-  message handling, and lifecycle events.
-- Add optional live Qdrant tests for dense, sparse, hybrid, delete, and cache
-  invalidation.
-- Add cross-process local split-service smoke test using manager, project,
-  ingestion worker, workflow log, SQLite queue, and Qdrant.
+## Message Communication Graph
 
-## Documentation Policy
+```mermaid
+flowchart TB
+    Client[Client / SDK] -->|HTTP/gRPC public API| Manager[Manager / Auth Server]
 
-Status documents should distinguish:
+    subgraph Redpanda[Redpanda Broker]
+        direction TB
 
-- implemented scaffold
-- local compatibility behavior
-- physically independent service behavior
-- mocked unit coverage
-- live integration coverage
-- production-ready behavior
+        subgraph Intake[Request Intake Topics]
+            RequestAccepted[manager.request.accepted]
+            RequestRejected[manager.request.rejected]
+        end
 
-Avoid percentage-complete claims. The useful question is whether each boundary
-is owned by the correct service, accessed through the correct contract, and
-verified under the failure modes expected by the ideal architecture.
+        subgraph Domain[Domain Command Topics]
+            ProjectCmd[domain.project.commands]
+            WorkflowCmd[domain.workflow_log.commands]
+            MemoryCmd[domain.memory.commands]
+            OtherDomainCmd[domain.other.commands]
+        end
+
+        subgraph DomainResults[Domain Result Topics]
+            ProjectPlan[domain.project.plans]
+            WorkflowResult[domain.workflow_log.results]
+            DomainEvent[domain.events]
+        end
+
+        subgraph HelperCommands[Helper Command Topics]
+            IngestCmd[helper.ingestion.commands]
+            RetrievalCmd[helper.retrieval.commands]
+            IndexCmd[helper.retrieval_index.commands]
+            StorageCmd[helper.storage.commands]
+            OtherHelperCmd[helper.other.commands]
+        end
+
+        subgraph HelperResults[Helper Result Topics]
+            IngestResult[helper.ingestion.results]
+            RetrievalResult[helper.retrieval.results]
+            IndexResult[helper.retrieval_index.results]
+            StorageResult[helper.storage.results]
+            HelperEvent[helper.events]
+        end
+
+        subgraph TaskTopics[Task Manager Topics]
+            TaskStarted[task.started]
+            TaskStep[task.step.events]
+            TaskResult[task.results]
+        end
+
+        subgraph Observability[Observability Topics]
+            AuditEvent[audit.events]
+            MetricEvent[metrics.events]
+            HealthEvent[health.events]
+        end
+    end
+
+    Manager -->|publish authenticated envelope| RequestAccepted
+    Manager -->|publish rejected auth/validation envelope| RequestRejected
+
+    RequestAccepted --> TaskIntake[task.intake]
+    TaskIntake --> TaskManager[Task Manager Service]
+    TaskManager -->|dispatch project_document task| ProjectCmd
+    TaskManager -->|dispatch workflow_log task| WorkflowCmd
+    TaskManager -->|dispatch agent_memory task| MemoryCmd
+    TaskManager -->|dispatch other domain task| OtherDomainCmd
+
+    ProjectCmd --> Project[Project Domain Service]
+    WorkflowCmd --> Workflow[Workflow Logging Service]
+    MemoryCmd --> Memory[Memory Domain Service]
+    OtherDomainCmd --> OtherDomain[Other Domain Services]
+
+    Project -->|publish project info + execution plan| ProjectPlan
+    ProjectPlan --> TaskStep
+    TaskManager -->|dispatch ingestion helper work| IngestCmd
+    TaskManager -->|dispatch retrieval helper work| RetrievalCmd
+    TaskManager -->|dispatch retrieval index work| IndexCmd
+    TaskManager -->|dispatch storage helper work| StorageCmd
+    Workflow -->|publish workflow result| WorkflowResult
+    Memory -->|publish memory helper commands/results| OtherHelperCmd
+    OtherDomain -->|publish domain event| DomainEvent
+
+    IngestCmd --> Ingestion[Ingestion Helper Node]
+    RetrievalCmd --> Retrieval[Retrieval Helper Node]
+    IndexCmd --> RetrievalIndex[Retrieval Index Helper Node]
+    StorageCmd --> Storage[Storage Helper Node]
+    OtherHelperCmd --> OtherHelper[Other Helper Nodes]
+
+    Ingestion -->|publish chunks/status| IngestResult
+    Retrieval -->|publish search/delete result| RetrievalResult
+    RetrievalIndex -->|publish index result| IndexResult
+    Storage -->|publish storage result| StorageResult
+    OtherHelper -->|publish helper event/result| HelperEvent
+
+    TaskManager --> TaskStarted
+    WorkflowResult --> TaskStep
+    DomainEvent --> TaskStep
+    IngestResult --> TaskStep
+    RetrievalResult --> TaskStep
+    IndexResult --> TaskStep
+    StorageResult --> TaskStep
+    HelperEvent --> TaskStep
+
+    TaskStarted --> TaskManager
+    TaskStep --> TaskManager
+    TaskManager -->|write task_id status + TTL on completed| Redis[(Redis Task Status Store)]
+    TaskManager -->|publish final result| TaskResult
+    TaskResult --> Manager
+    Manager -->|read status by task_id| Redis
+
+    RequestAccepted --> AuditEvent
+    RequestRejected --> AuditEvent
+    DomainEvent --> AuditEvent
+    HelperEvent --> AuditEvent
+    TaskResult --> AuditEvent
+    Project --> MetricEvent
+    Ingestion --> MetricEvent
+    Retrieval --> MetricEvent
+    RetrievalIndex --> MetricEvent
+    Storage --> MetricEvent
+    TaskManager --> HealthEvent
+```
+
+Every service-to-service edge above is topic publish/consume through Redpanda.
+Redis is used only for task status lookup by `task_id`: task manager writes it,
+manager reads it, and completed task keys expire by TTL. The message envelope
+must carry at least `message_id`, `correlation_id`, `task_id`, `producer`,
+`message_type`, `data_type`, `schema_version`, `created_at`, `headers`, and
+`payload`. Retries, leases, attempt counts, backoff, and dead-letter topics are
+intentionally out of scope for the current phase.
+
+## Task Handling Sequences
+
+### Ingest And Index Task
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant M as Manager / Auth
+    participant B as Redpanda
+    participant P as Project Domain
+    participant I as Ingestion Helper
+    participant S as Storage Helper
+    participant R as Retrieval Index Helper
+    participant T as Task Manager
+    participant Redis as Redis Status Store
+
+    C->>M: ingest request
+    M->>B: publish manager.request.accepted to task intake
+    B->>T: consume task intake
+    T->>Redis: write accepted/running status by task_id
+    T->>B: publish domain.project.commands
+    B->>P: consume task-manager domain command
+    P->>B: publish domain.project.plans
+    B->>T: consume project plan/info result
+    T->>B: publish helper.ingestion.commands
+    B->>I: consume task-manager ingestion command
+    I->>B: publish helper.storage.commands, if raw/store needed
+    B->>S: consume helper.storage.commands
+    S->>B: publish helper.storage.results
+    I->>B: publish helper.ingestion.results
+    B->>T: consume helper result events
+    T->>B: publish helper.retrieval_index.commands
+    B->>R: consume task-manager index command
+    R->>B: publish helper.retrieval_index.results
+    B->>T: consume task.step.events
+    T->>Redis: write task status by task_id
+    T->>B: publish task.results
+    M->>Redis: read status by task_id
+    M-->>C: accepted/status/final result response
+```
+
+### Search Task
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant M as Manager / Auth
+    participant B as Redpanda
+    participant P as Project Domain
+    participant R as Retrieval Helper
+    participant T as Task Manager
+    participant Redis as Redis Status Store
+
+    C->>M: search request
+    M->>B: publish manager.request.accepted to task intake
+    B->>T: consume task intake
+    T->>Redis: write accepted/running status by task_id
+    T->>B: publish domain.project.commands
+    B->>P: consume task-manager domain command
+    P->>B: publish domain.project.plans
+    B->>T: consume project plan/info result
+    T->>B: publish helper.retrieval.commands
+    B->>R: consume task-manager retrieval command
+    R->>B: publish helper.retrieval.results
+    B->>T: consume task.step.events
+    T->>Redis: write task status by task_id
+    T->>B: publish task.results
+    M->>Redis: read status by task_id
+    M-->>C: accepted/status/final result response
+```
+
+### Delete Task
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant M as Manager / Auth
+    participant B as Redpanda
+    participant P as Project Domain
+    participant R as Retrieval Helper
+    participant S as Storage Helper
+    participant T as Task Manager
+    participant Redis as Redis Status Store
+
+    C->>M: delete request
+    M->>B: publish manager.request.accepted to task intake
+    B->>T: consume task intake
+    T->>Redis: write accepted/running status by task_id
+    T->>B: publish domain.project.commands
+    B->>P: consume task-manager domain command
+    P->>B: publish domain.project.plans
+    B->>T: consume project plan/info result
+    T->>B: publish helper.retrieval.commands
+    T->>B: publish helper.storage.commands, if raw delete needed
+    B->>R: consume task-manager retrieval command
+    B->>S: consume task-manager storage command
+    R->>B: publish helper.retrieval.results
+    S->>B: publish helper.storage.results
+    B->>T: consume task.step.events
+    T->>Redis: write task status by task_id
+    T->>B: publish task.results
+    M->>Redis: read status by task_id
+    M-->>C: accepted/status/final result response
+```
+
+### Status Task
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant M as Manager / Auth
+    participant Redis as Redis Status Store
+
+    C->>M: status request
+    M->>Redis: read status by task_id
+    M-->>C: task status response
+```
+
+### Workflow Log Task
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client or Service Event
+    participant M as Manager / Auth
+    participant B as Redpanda
+    participant W as Workflow Logging Domain
+    participant T as Task Manager
+    participant Redis as Redis Status Store
+
+    C->>M: workflow log query or event request
+    M->>B: publish manager.request.accepted to task intake
+    B->>T: consume task intake
+    T->>B: publish domain.workflow_log.commands
+    B->>W: consume task-manager workflow command
+    W->>B: publish domain.workflow_log.results
+    W->>B: publish audit.events
+    B->>T: consume task.step.events
+    T->>Redis: write task status by task_id
+    T->>B: publish task.results, when final result exists
+    M->>Redis: read status by task_id, when request/response is needed
+    M-->>C: workflow response, when client initiated
+```
+
+## Current Completion View
+
+```mermaid
+xychart-beta
+    title "Progress Toward Independent-Server Standard"
+    x-axis [Architecture, Folders, Manager, Project, Ingestion, Retrieval, Placement, Workflow, Broker, Redis, TaskMgr, Configs, Tests, Runner, Production]
+    y-axis "Percent" 0 --> 100
+    bar [30, 75, 65, 65, 80, 80, 85, 60, 10, 10, 5, 72, 30, 35, 20]
+```
+
+## Required Runtime Shape
+
+```mermaid
+flowchart TB
+    Local[Local Machine] --> M[Manager server]
+    Local --> T[Task manager server]
+    Local --> P[Project service server]
+    Local --> D[Other domain service servers]
+    Local --> I1[Ingestion worker server]
+    Local --> I2[Additional ingestion worker server]
+    Local --> RA[Retrieval API server]
+    Local --> RI[Retrieval index worker server]
+    Local --> S1[Storage node]
+    Local --> SQL[SQLite small DB node]
+    Local --> Redis[Redis task-status node]
+    Local --> B[Redpanda broker]
+    Local --> W[Workflow log server]
+
+    Prod[Production] --> PM[Same manager code]
+    Prod --> PP[Same project code]
+    Prod --> PI[Same ingestion code]
+    Prod --> PR[Same retrieval code]
+    Prod --> PB[Same Redpanda broker contract]
+
+    Local -.differs only by config addresses.-> Prod
+```
+
+## Service Boundary Rules Now In Force
+
+- Each independent server must live in its own independent top-level folder.
+- Service code must not import another service's internal modules.
+- No shared parent service classes, inherited server frameworks, or shared
+  runtime abstractions between servers.
+- Shared code is limited to stable contracts, schemas, protocol clients, and
+  generic utilities that do not control server behavior.
+- `configs/` must be separated by service or node.
+- `tests/` must be separated by service or node, with cross-service checks under
+  `tests/integration/`.
+- Local and production use the same code paths. Local only changes addresses,
+  ports, credentials, and paths.
+- Runtime node-to-node communication goes through Redpanda, not direct public
+  service APIs, in-memory queues, files, SQLite queues, or cross-service
+  imports. Public APIs are limited to client-to-manager and narrow
+  status/health-style boundaries.
+- Manager is auth/API entry only. It publishes authenticated request envelopes
+  to the broker instead of directly invoking domain or helper services.
+- Domain services consume task-manager-issued broker commands, gather service
+  information, and publish plans/info back to the broker.
+- Task manager consumes domain plans/info and dispatches helper-node commands
+  through the broker.
+- Helper nodes consume task-manager-issued broker commands and publish results
+  back to the broker.
+- Task manager consumes task events/results and owns lifecycle, dispatch,
+  fan-out/fan-in, status, and final result aggregation.
+
+## Implemented Locally
+
+- Manager, project, ingestion, retrieval, workflow-log, and memory service
+  folders exist.
+- Manager server bootstrap is injection-only and no longer constructs project,
+  ingestion, retrieval, or queue internals.
+- Temporary local compatibility composition lives outside the manager service in
+  `local_runtime.manager_app`.
+- Broker and SQLite/database-node config folders exist under `configs/`.
+- Service-specific test folders exist under `tests/` as the target layout.
+- Manager currently routes project-document ingest/search/delete/status through
+  client boundaries, but this is now marked as legacy relative to the corrected
+  broker-first target.
+- Project planning creates search, ingest, delete, and placement plans.
+- Ingestion owns job records, preparation metadata, worker startup, and status
+  API.
+- Ingestion publishes prepared indexing work to retrieval indexing contracts.
+- Retrieval owns search/delete/raw contracts, HTTP transport, queue transport,
+  API handler, and index worker.
+- Retrieval placement supports routing policies, placement records, routing-key
+  assignment, primary/replica writes, read failover, fanout merge, delete, and
+  placement-scoped cache keys.
+- Config profiles and service config folders exist under `configs/`.
+- Local runner and smoke tests exist for several split-service paths.
+
+## Not Yet Implemented From The Plan
+
+- Redpanda broker runtime for local and production.
+- Broker-first manager/auth request publication.
+- Broker-consumed domain services for project, workflow logging, memory, and
+  other service types.
+- Independent task manager service for task lifecycle, fan-out/fan-in, status,
+  and result aggregation.
+- Broker-mediated helper-node command/result flow for ingestion, storage,
+  retrieval, and other helpers.
+- Removal of in-memory, SQLite queue, file-based, and embedded local runtime
+  shortcuts.
+- Physical import isolation so no service imports another service's internals.
+- Elimination of shared parent classes or shared runtime behavior between
+  services.
+- Full independent top-level workspace for every server/node, including broker,
+  SQLite DB node, storage nodes, ingestion workers, retrieval API, retrieval
+  index worker, manager, project, and workflow log.
+- Service-separated test tree under `tests/`.
+- Runtime wiring for broker and SQLite/database-node config loaders.
+- Remote project-service task APIs for ingest, search, delete, and status.
+- Delete support in the remote project-service transport.
+- Placement migration/reindex orchestration that moves data before activating
+  replacement placements.
+- Multi-endpoint live smoke tests for placement-enabled indexing/search/delete.
+- Standardized event envelopes with idempotency, correlation, causation,
+  timestamps, and errors.
+- Full workflow-log read/query integration from manager.
+- Removal of duplicate compatibility schemas, legacy import shims, and the old
+  compatibility `RagService` path.
+- Production deployment documentation and validation for the independent-server
+  Redpanda-based runtime.
+
+## Next Priority
+
+**Corrected topology first**: define broker topics/envelopes and task-manager
+responsibilities for the manager/auth -> broker intake -> task manager ->
+broker -> domain task server -> broker -> task manager -> broker -> helper
+nodes -> broker -> task manager flow. After that, continue code-level service
+isolation.
+
+Retries, leases, attempt counts, backoff, and dead-letter handling are not in
+scope for this phase.

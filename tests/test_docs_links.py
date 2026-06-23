@@ -10,6 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 DOCS_TO_CHECK = (
+    ROOT / "README.md",
     ROOT / "docs" / "README.md",
     ROOT / "docs" / "design" / "section-design-index.md",
 )

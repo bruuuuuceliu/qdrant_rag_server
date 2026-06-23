@@ -9,39 +9,38 @@ background (durable job status can be polled separately).
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict, is_dataclass
 import logging
 from typing import Any
 
 from ingestion_service.jobs import IngestionJobRepository
 from ingestion_service.schemas import IngestionJob
 from ingestion_service.service import IngestionResult, IngestionService
-from shared.contracts import IngestError, IngestResponseEnvelope, QueuedIngestCommand
+from shared.contracts import IngestError, IngestResponseEnvelope, JobStatus, QueuedIngestCommand
 from shared.queue import QueueBroker, QueueMessage
 
 logger = logging.getLogger(__name__)
 
 
 class IngestionRequestConsumer:
-    """Consumes queued ingest requests and delegates to a project-document client."""
+    """Consumes queued ingest requests and publishes prepared chunks for indexing."""
 
     def __init__(
         self,
         *,
         queue: QueueBroker,
-        project_documents: Any,
-        jobs: IngestionJobRepository | None = None,
-        ingestion_service: IngestionService | None = None,
-        retrieval_queue: QueueBroker | None = None,
+        jobs: IngestionJobRepository,
+        ingestion_service: IngestionService,
+        retrieval_queue: QueueBroker,
         retrieval_index_topic: str = "retrieval.index.requests",
+        retrieval_index_response_timeout: float = 30.0,
         topic: str = "ingestion.requests",
     ) -> None:
         self._queue = queue
-        self._project_documents = project_documents
         self._jobs = jobs
         self._ingestion_service = ingestion_service
         self._retrieval_queue = retrieval_queue
         self._retrieval_index_topic = retrieval_index_topic
+        self._retrieval_index_response_timeout = retrieval_index_response_timeout
         self._topic = topic
         self._task: asyncio.Task[None] | None = None
         self._inflight_tasks: set[asyncio.Task[None]] = set()
@@ -88,15 +87,21 @@ class IngestionRequestConsumer:
         request_id = command.request_id
         try:
             accepted_job_id = await self._accept_job(command)
+            await self._update_job_status(command.request_id, JobStatus.RUNNING)
             prepared = await self._prepare_job(command)
-            await self._publish_index_request(command, prepared)
-            result = await self._project_documents.ingest(command.request_payload())
+            index_result = await self._publish_index_request(command, prepared)
+            await self._update_job_metadata(
+                command.request_id,
+                _index_result_metadata(index_result),
+            )
+            await self._update_job_status(command.request_id, JobStatus.COMPLETED)
+            result = _indexed_result_payload(command, index_result)
             await self._publish_response(
                 message,
                 ok=True,
                 result=_accepted_result_payload(
                     command,
-                    _result_to_payload(result),
+                    result,
                     accepted_job_id=accepted_job_id,
                 ),
             )
@@ -107,6 +112,11 @@ class IngestionRequestConsumer:
             )
         except Exception as exc:
             logger.exception("queued ingest failed: request_id=%s", request_id)
+            await self._update_job_status(
+                command.request_id,
+                JobStatus.FAILED,
+                error=str(exc),
+            )
             await self._publish_response(
                 message,
                 ok=False,
@@ -114,8 +124,6 @@ class IngestionRequestConsumer:
             )
 
     async def _accept_job(self, command: QueuedIngestCommand) -> str | None:
-        if self._jobs is None:
-            return None
         await self._jobs.create(
             IngestionJob(
                 job_id=command.request_id,
@@ -126,9 +134,7 @@ class IngestionRequestConsumer:
         )
         return command.request_id
 
-    async def _prepare_job(self, command: QueuedIngestCommand) -> IngestionResult | None:
-        if self._jobs is None or self._ingestion_service is None:
-            return None
+    async def _prepare_job(self, command: QueuedIngestCommand) -> IngestionResult:
         result = await self._ingestion_service.process(command.request_payload())
         await self._jobs.update_metadata(
             command.request_id,
@@ -139,11 +145,11 @@ class IngestionRequestConsumer:
     async def _publish_index_request(
         self,
         command: QueuedIngestCommand,
-        prepared: IngestionResult | None,
-    ) -> None:
-        if self._retrieval_queue is None or prepared is None:
-            return
+        prepared: IngestionResult,
+    ) -> dict[str, Any]:
         payload = _index_request_payload(command, prepared)
+        response_topic = f"{self._retrieval_index_topic}.responses.{command.request_id}"
+        payload["response_topic"] = response_topic
         await self._retrieval_queue.publish(
             QueueMessage(
                 topic=self._retrieval_index_topic,
@@ -152,6 +158,38 @@ class IngestionRequestConsumer:
                 headers={"correlation_id": command.request_id},
             )
         )
+        response = await asyncio.wait_for(
+            self._retrieval_queue.consume(response_topic),
+            timeout=self._retrieval_index_response_timeout,
+        )
+        self._retrieval_queue.task_done(response_topic)
+        if response.payload.get("ok") is True:
+            result = response.payload.get("result")
+            return dict(result) if isinstance(result, dict) else {}
+        error = response.payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "retrieval indexing failed")
+            error_type = str(error.get("type") or "")
+            if error_type:
+                message = f"{error_type}: {message}"
+            raise RuntimeError(message)
+        raise RuntimeError("retrieval indexing failed")
+
+    async def _update_job_status(
+        self,
+        job_id: str,
+        status: JobStatus,
+        *,
+        error: str | None = None,
+    ) -> None:
+        await self._jobs.update_status(job_id, status, error=error)
+
+    async def _update_job_metadata(
+        self,
+        job_id: str,
+        metadata: dict[str, object],
+    ) -> None:
+        await self._jobs.update_metadata(job_id, metadata)
 
     async def _publish_response(
         self,
@@ -191,16 +229,6 @@ def _classify_error(exc: Exception) -> IngestError:
     return IngestError(code="INTERNAL_ERROR", message=str(exc), retryable=True)
 
 
-def _result_to_payload(result: Any) -> dict[str, Any]:
-    if result is None:
-        return {}
-    if is_dataclass(result):
-        return asdict(result)
-    if isinstance(result, dict):
-        return dict(result)
-    return dict(getattr(result, "__dict__", {}))
-
-
 def _accepted_result_payload(
     command: QueuedIngestCommand,
     result: dict[str, Any],
@@ -214,6 +242,29 @@ def _accepted_result_payload(
     payload.setdefault("doc_id", command.doc_id)
     payload.setdefault("project_id", command.project_id)
     return payload
+
+
+def _indexed_result_payload(
+    command: QueuedIngestCommand,
+    index_result: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "job_id": command.request_id,
+        "status": JobStatus.COMPLETED.value,
+        "doc_id": command.doc_id,
+        "project_id": command.project_id,
+        "indexed_chunk_count": int(index_result.get("chunk_count", 0) or 0),
+        "dense_enabled": bool(index_result.get("dense_enabled", False)),
+        "sparse_enabled": bool(index_result.get("sparse_enabled", False)),
+    }
+
+
+def _index_result_metadata(index_result: dict[str, Any]) -> dict[str, object]:
+    return {
+        "indexed_chunk_count": int(index_result.get("chunk_count", 0) or 0),
+        "dense_enabled": bool(index_result.get("dense_enabled", False)),
+        "sparse_enabled": bool(index_result.get("sparse_enabled", False)),
+    }
 
 
 def _preparation_metadata(result: IngestionResult) -> dict[str, Any]:
@@ -236,6 +287,7 @@ def _index_request_payload(
     if not collection_name.strip():
         raise ValueError("retrieval index collection_name is required")
     retrieval_config = command.metadata.get("retrieval_config", {})
+    placement_plan = command.metadata.get("placement_plan", {})
     chunks = [_chunk_payload(chunk) for chunk in result.chunks]
     return {
         "request_id": command.request_id,
@@ -244,6 +296,7 @@ def _index_request_payload(
         "chunks": chunks,
         "payloads": [_retrieval_payload(chunk) for chunk in chunks],
         "retrieval_config": dict(retrieval_config) if isinstance(retrieval_config, dict) else {},
+        "placement_plan": dict(placement_plan) if isinstance(placement_plan, dict) else {},
     }
 
 

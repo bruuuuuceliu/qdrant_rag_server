@@ -1,6 +1,11 @@
 # Ingestion Job Acceptance
 
-Section status: implementation accepted for the second development loop section.
+Section status: superseded by the completed generic ingestion indexing path.
+
+Current note: ingestion now always owns queued job records, runs generic
+preparation, and completes successful queued jobs from retrieval indexing
+responses. The compatibility project-document client delegation described below
+was removed from the enabled ingestion worker path.
 
 ## Requirement Document
 

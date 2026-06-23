@@ -5,6 +5,7 @@ delegates work to project, ingestion, retrieval, memory, and workflow services.
 """
 
 from manager_service.clients import (
+    IngestionApiStatusClient,
     IngestionClient,
     LocalIngestionClient,
     ProjectDocumentClient,
@@ -26,15 +27,17 @@ from manager_service.routing import (
     RouteRequest,
     ServiceTarget,
 )
-from manager_service.service import ManagerService
+from manager_service.service import ManagerRequestContext, ManagerService
 
 __all__ = [
     "DataType",
+    "IngestionApiStatusClient",
     "IngestionClient",
     "LocalIngestionClient",
     "ManagerIngestFailedError",
     "ManagerIngestTimeoutError",
     "ManagerRouter",
+    "ManagerRequestContext",
     "ManagerService",
     "ManagerServiceError",
     "Operation",

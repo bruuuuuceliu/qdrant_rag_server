@@ -5,18 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from retrieval_service.core.schemas.common import (
+from project_service.schemas.common import (
     SHARED_USER_ID,
     normalize_kb_ids,
     require_non_empty,
 )
-from retrieval_service.core.schemas.scope import BaseQueryScope, BaseRetrievalFilter
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ProjectQueryScope(BaseQueryScope):
+class ProjectQueryScope:
     project_id: str
     user_id: str
+    scope_id: str = ""
+    owner_id: str = ""
+    namespaces: tuple[str, ...] = ()
+    include_shared: bool = True
     kb_ids: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -26,15 +29,22 @@ class ProjectQueryScope(BaseQueryScope):
         object.__setattr__(self, "scope_id", self.scope_id or self.project_id)
         object.__setattr__(self, "owner_id", self.owner_id or self.user_id)
         object.__setattr__(self, "namespaces", self.namespaces or normalized_kb_ids)
-        BaseQueryScope.__post_init__(self)
+        object.__setattr__(self, "namespaces", normalize_kb_ids(self.namespaces))
+        require_non_empty("scope_id", self.scope_id)
+        require_non_empty("owner_id", self.owner_id)
         require_non_empty("project_id", self.project_id)
         require_non_empty("user_id", self.user_id)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ProjectRetrievalFilter(BaseRetrievalFilter):
+class ProjectRetrievalFilter:
     project_id: str
     user_id: str
+    scope_id: str = ""
+    owner_id: str = ""
+    namespaces: tuple[str, ...] = ()
+    resource_ids: tuple[str, ...] = ()
+    shared_owner_id: str | None = SHARED_USER_ID
     kb_ids: tuple[str, ...] = ()
     doc_ids: tuple[str, ...] = ()
     shared_user_id: str | None = SHARED_USER_ID
@@ -50,7 +60,10 @@ class ProjectRetrievalFilter(BaseRetrievalFilter):
         object.__setattr__(self, "namespaces", self.namespaces or normalized_kb_ids)
         object.__setattr__(self, "resource_ids", self.resource_ids or normalized_doc_ids)
         object.__setattr__(self, "shared_owner_id", self.shared_user_id)
-        BaseRetrievalFilter.__post_init__(self)
+        object.__setattr__(self, "namespaces", normalize_kb_ids(self.namespaces))
+        object.__setattr__(self, "resource_ids", tuple(self.resource_ids))
+        require_non_empty("scope_id", self.scope_id)
+        require_non_empty("owner_id", self.owner_id)
         require_non_empty("project_id", self.project_id)
         require_non_empty("user_id", self.user_id)
 
@@ -78,3 +91,9 @@ class ProjectRetrievalFilter(BaseRetrievalFilter):
         if self.shared_user_id is None:
             return (self.user_id,)
         return (self.user_id, self.shared_user_id)
+
+    @property
+    def allowed_owner_ids(self) -> tuple[str, ...]:
+        if self.shared_owner_id is None:
+            return (self.owner_id,)
+        return (self.owner_id, self.shared_owner_id)

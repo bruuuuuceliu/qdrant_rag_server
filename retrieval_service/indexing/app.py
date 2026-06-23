@@ -13,10 +13,15 @@ class RetrievalIndexAppContext:
     enabled: bool
     topic: str
     consumer: RetrievalIndexConsumer | None
+    indexing_service: Any | None = None
 
     async def shutdown(self) -> None:
         if self.consumer is not None:
             await self.consumer.stop()
+        if self.indexing_service is not None:
+            shutdown = getattr(self.indexing_service, "shutdown", None)
+            if shutdown is not None:
+                await shutdown()
 
 
 async def create_app(
@@ -38,4 +43,5 @@ async def create_app(
         enabled=enabled,
         topic=topic,
         consumer=consumer,
+        indexing_service=indexing_service,
     )

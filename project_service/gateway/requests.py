@@ -19,6 +19,7 @@ class SearchRequest:
     project_id: str
     user_id: str
     query: str
+    topic_id: str = ""
     kb_ids: tuple[str, ...] = ()
     include_shared: bool = True
 
@@ -29,6 +30,7 @@ class SearchRequest:
             project_id=_required_str(data, "project_id"),
             user_id=_required_str(data, "user_id"),
             query=_required_str(data, "query"),
+            topic_id=str(data.get("topic_id", "") or ""),
             kb_ids=tuple(data.get("kb_ids", ())),
             include_shared=bool(data.get("include_shared", True)),
         )
@@ -48,6 +50,7 @@ class IngestRequest:
     doc_id: str
     source_uri: str
     content_type: str
+    topic_id: str = ""
     raw_text: str | None = None
     raw_content: bytes | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -61,6 +64,7 @@ class IngestRequest:
             doc_id=_required_str(data, "doc_id"),
             source_uri=_required_str(data, "source_uri"),
             content_type=_required_str(data, "content_type"),
+            topic_id=str(data.get("topic_id", "") or ""),
             raw_text=_optional_raw_text(data.get("raw_text")),
             raw_content=_optional_raw_content(data.get("raw_content")),
             metadata=dict(data.get("metadata", {})),
@@ -89,6 +93,7 @@ class DeleteDocumentRequest:
     user_id: str
     kb_id: str
     doc_id: str
+    topic_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -98,6 +103,7 @@ class DeleteDocumentRequest:
             user_id=_required_str(data, "user_id"),
             kb_id=_optional_str(data, "kb_id", DEFAULT_KB_ID),
             doc_id=_required_str(data, "doc_id"),
+            topic_id=str(data.get("topic_id", "") or ""),
             metadata=dict(data.get("metadata", {})),
         )
 

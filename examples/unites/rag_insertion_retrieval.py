@@ -1,8 +1,7 @@
 """Manager-service RAG insertion and retrieval showcase.
 
-Uses the ManagerService facade with a local queue broker and project client —
-the same composition the manager app boots. This is the recommended way to
-interact with the platform programmatically.
+Uses the ManagerService facade with a project client. This is the recommended
+programmatic boundary for manager -> project-service task routing.
 
 Setup:
 1. Install dependencies: ``python -m pip install -e .``
@@ -15,9 +14,14 @@ Setup:
 
 The showcase:
 - Seeds a project config
-- Creates ManagerService with an ingest queue and project-document client
-- Ingests documents through the manager boundary (queue → consumer → engine)
+- Creates ManagerService with a project-document client
+- Creates a local placement resolver and project planning service
+- Ingests documents through the manager -> project-service boundary
 - Searches through the manager boundary
+
+Placement note: this script exercises placement-plan creation and message
+propagation against the current single-Qdrant local runtime. Multi-database
+execution is design-only for now.
 """
 
 from __future__ import annotations
@@ -43,11 +47,18 @@ from project_service.gateway import (  # noqa: E402
     RagGateway,
     SearchRequest,
 )
+from project_service.planning import ProjectPlanningService  # noqa: E402
 from project_service.rag import RagEngine  # noqa: E402
 from project_service.schemas import ProjectConfig  # noqa: E402
 from retrieval_service.embedding import EmbeddingProviderFactory  # noqa: E402
+from retrieval_service.placement import (  # noqa: E402
+    InMemoryPlacementRepository,
+    InMemoryRetrievalShardRepository,
+    PlacementResolver,
+    RetrievalShard,
+    RoutingPolicy,
+)
 from retrieval_service.services.vector_store import QdrantStore  # noqa: E402
-from shared.queue import LocalQueueBroker  # noqa: E402
 
 load_dotenv(Path(__file__).with_name(".env"))
 
@@ -116,32 +127,38 @@ async def main() -> None:
         qdrant_store=qdrant_store,
         ingest_worker_count=1,
     )
+    placement_resolver, routing_policy = _build_showcase_placement(
+        qdrant_host=os.getenv("RAG_QDRANT_HOST", "localhost"),
+        qdrant_port=int(os.getenv("RAG_QDRANT_PORT", "6333")),
+    )
+    planning = ProjectPlanningService(
+        gateway=gateway,
+        placement_resolver=placement_resolver,
+        routing_policy=routing_policy,
+    )
 
     # --- Build the manager boundary -----------------------------------------
 
     project_client: ProjectDocumentClient = LocalProjectServiceClient(
         gateway=gateway,
         engine=engine,
+        planning=planning,
     )
+    placement_preview = await planning.plan_search(
+        SearchRequest(
+            project_id=project_id,
+            user_id=user_id,
+            query="placement preview",
+            kb_ids=(kb_id,),
+        )
+    )
+    print(f"Placement preview: {placement_preview.placement_plan}")
 
-    broker = LocalQueueBroker(maxsize=10)
     manager = ManagerService(
         project_documents=project_client,
-        ingest_queue=broker,
         ingest_topic="ingestion.requests",
-        ingest_response_timeout=30.0,
         router=ManagerRouter(ingest_topic="ingestion.requests"),
     )
-
-    # Start a tiny ingestion consumer in the background
-    from ingestion_service.server.consumer import IngestionRequestConsumer
-    consumer = IngestionRequestConsumer(
-        queue=broker,
-        project_documents=project_client,
-        topic="ingestion.requests",
-    )
-    consumer.start()
-    await asyncio.sleep(0.05)  # let consumer spin up
 
     try:
         # --- Ingest through the manager -------------------------------------
@@ -155,6 +172,7 @@ async def main() -> None:
                     user_id=user_id,
                     kb_id=kb_id,
                     doc_id=doc_id,
+                    topic_id="showcase",
                     source_uri=f"https://example.com/{doc_id}",
                     content_type="text/html",
                     raw_text=text,
@@ -162,7 +180,7 @@ async def main() -> None:
             )
             print(f"Ingested {doc_id} → job_id={result.job_id} status={result.status}")
 
-        # Wait for background processing to complete
+        # Wait for background indexing to complete
         await asyncio.sleep(0.2)
 
         # --- Search through the manager -------------------------------------
@@ -171,6 +189,7 @@ async def main() -> None:
                 project_id=project_id,
                 user_id=user_id,
                 query="How does RAG retrieve context?",
+                topic_id="showcase",
                 kb_ids=(kb_id,),
             )
         )
@@ -179,7 +198,6 @@ async def main() -> None:
             print(f"  {chunk['doc_id']} score={chunk['score']:.3f}: {chunk['text']}")
 
     finally:
-        await consumer.stop()
         await engine.shutdown()
         await embedding.shutdown()
         await qdrant_store.close()
@@ -194,6 +212,26 @@ class _FakeResolver:
     async def resolve(self, project_id: str) -> object:
         del project_id
         return self._adapter
+
+
+def _build_showcase_placement(
+    *,
+    qdrant_host: str,
+    qdrant_port: int,
+) -> tuple[PlacementResolver, RoutingPolicy]:
+    resolver = PlacementResolver(
+        shard_repository=InMemoryRetrievalShardRepository(
+            [
+                RetrievalShard(
+                    shard_id="local-qdrant",
+                    cluster_id="local",
+                    qdrant_endpoint=f"http://{qdrant_host}:{qdrant_port}",
+                )
+            ]
+        ),
+        placement_repository=InMemoryPlacementRepository(),
+    )
+    return resolver, RoutingPolicy(project_id="*", routing_mode="project_single")
 
 
 if __name__ == "__main__":

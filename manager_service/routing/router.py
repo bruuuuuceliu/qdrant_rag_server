@@ -104,23 +104,22 @@ class ManagerRouter:
             return RouteDecision(
                 operation=operation,
                 data_type=DataType.PROJECT_DOCUMENT,
-                target_service=ServiceTarget.INGESTION,
+                target_service=ServiceTarget.PROJECT,
                 executable=True,
                 async_required=True,
-                queue_topic=self._ingest_topic,
             )
         if operation in {Operation.SEARCH, Operation.DELETE}:
             return RouteDecision(
                 operation=operation,
                 data_type=DataType.PROJECT_DOCUMENT,
-                target_service=ServiceTarget.RETRIEVAL,
+                target_service=ServiceTarget.PROJECT,
                 executable=True,
             )
         if operation == Operation.STATUS:
             return RouteDecision(
                 operation=operation,
                 data_type=DataType.PROJECT_DOCUMENT,
-                target_service=ServiceTarget.INGESTION,
+                target_service=ServiceTarget.PROJECT,
                 executable=True,
             )
         raise ValueError(f"unsupported project_document operation: {operation!r}")

@@ -1,8 +1,7 @@
-"""Manager service routing and local queue tests."""
+"""Manager service routing and project-task boundary tests."""
 
 from __future__ import annotations
 
-import asyncio
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,14 +14,13 @@ from configs.manager import load_manager_settings
 from configs.manager import ManagerSettings
 from manager_service import (
     DataType,
+    IngestionApiStatusClient,
     LocalIngestionClient,
     LocalRetrievalClient,
-    ManagerIngestFailedError,
+    ManagerRequestContext,
     ManagerRouter,
     Operation,
     ProjectDocumentClient,
-    ProjectDocumentIngestionClient,
-    ProjectDocumentRetrievalClient,
     RouteRequest,
     ServiceTarget,
 )
@@ -30,33 +28,30 @@ from manager_service.service import ManagerService
 from manager_service.server.grpc.server import ManagerRagServiceServicer
 from ingestion_service.schemas import IngestionJob
 from project_service.schemas import IngestResult, SearchResult
-from project_service.client import ProjectPlannedRetrievalApiClient
-from shared.contracts import IngestJobResult
 from project_service.server.grpc.generated import retrieval_service_pb2
 from retrieval_service.core.schemas import JobStatus
-from shared.queue import LocalQueueBroker, QueueFullError, QueueMessage, SQLiteQueueBroker
-from ingestion_service.server import create_app as create_ingestion_app
+from shared.queue import LocalQueueBroker, QueueFullError, QueueMessage
 
 
 class ManagerRouterTest(unittest.TestCase):
-    def test_routes_project_document_ingest_to_ingestion_queue(self) -> None:
+    def test_routes_project_document_ingest_to_project_service(self) -> None:
         decision = ManagerRouter(ingest_topic="docs.ingest").route(
             RouteRequest(operation="ingest", data_type="project_document")
         )
 
         self.assertEqual(decision.operation, Operation.INGEST)
         self.assertEqual(decision.data_type, DataType.PROJECT_DOCUMENT)
-        self.assertEqual(decision.target_service, ServiceTarget.INGESTION)
+        self.assertEqual(decision.target_service, ServiceTarget.PROJECT)
         self.assertTrue(decision.executable)
         self.assertTrue(decision.async_required)
-        self.assertEqual(decision.queue_topic, "docs.ingest")
+        self.assertEqual(decision.queue_topic, "")
 
-    def test_routes_project_document_search_to_retrieval(self) -> None:
+    def test_routes_project_document_search_to_project_service(self) -> None:
         decision = ManagerRouter().route(
             RouteRequest(operation="search", data_type="project_document")
         )
 
-        self.assertEqual(decision.target_service, ServiceTarget.RETRIEVAL)
+        self.assertEqual(decision.target_service, ServiceTarget.PROJECT)
         self.assertTrue(decision.executable)
         self.assertFalse(decision.async_required)
 
@@ -132,40 +127,18 @@ class ManagerSettingsTest(unittest.TestCase):
 
 
 class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
-    async def test_can_construct_with_split_clients(self) -> None:
-        ingestion_client = _FakeIngestionClient()
-        retrieval_client = _FakeRetrievalClient()
-        manager = ManagerService(
-            ingestion=ingestion_client,
-            retrieval=retrieval_client,
-        )
-        request = _Request(metadata={"data_type": "project_document"})
-
-        ingest_result = await manager.ingest(request)
-        status_result = await manager.ingest_status("job1")
-        search_result = await manager.search(request)
-        delete_result = await manager.delete(request)
-
-        self.assertEqual(ingest_result.job_id, "job1")
-        self.assertEqual(status_result, "status:job1")
-        self.assertEqual(search_result, "search-result")
-        self.assertEqual(delete_result, "deleted")
-        self.assertIs(ingestion_client.ingest_request, request)
-        self.assertEqual(ingestion_client.status_job_id, "job1")
-        self.assertIs(retrieval_client.search_request, request)
-        self.assertIs(retrieval_client.delete_request, request)
+    async def test_requires_project_document_client(self) -> None:
+        with self.assertRaisesRegex(ValueError, "project-document client"):
+            ManagerService(project_documents=None)
 
     async def test_can_use_local_retrieval_client_adapter(self) -> None:
         ingestion_client = _FakeIngestionClient()
         retrieval_app = _FakeRetrievalApp()
-        manager = ManagerService(
-            ingestion=ingestion_client,
-            retrieval=LocalRetrievalClient(retrieval_app),
-        )
+        client = LocalRetrievalClient(retrieval_app)
         request = _Request(metadata={"data_type": "project_document"})
 
-        search_result = await manager.search(request)
-        delete_result = await manager.delete(request)
+        search_result = await client.search(request)
+        delete_result = await client.delete_document(request)
 
         self.assertEqual(search_result, "retrieval-search")
         self.assertEqual(delete_result, "retrieval-delete")
@@ -182,14 +155,11 @@ class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
             status=JobStatus.RUNNING,
             metadata={"project_id": "p1", "doc_id": "d1"},
         )
-        manager = ManagerService(
-            ingestion=LocalIngestionClient(ingestion=ingestion_executor, jobs=jobs),
-            retrieval=_FakeRetrievalClient(),
-        )
+        client = LocalIngestionClient(ingestion=ingestion_executor, jobs=jobs)
         request = _Request(metadata={"data_type": "project_document"})
 
-        ingest_result = await manager.ingest(request)
-        status_result = await manager.ingest_status("job1")
+        ingest_result = await client.ingest(request)
+        status_result = await client.ingest_status("job1")
 
         self.assertEqual(ingest_result, "accepted")
         self.assertIs(ingestion_executor.ingest_request, request)
@@ -198,13 +168,49 @@ class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status_result.doc_id, "d1")
         self.assertEqual(status_result.project_id, "p1")
 
-    async def test_rejects_missing_split_client(self) -> None:
-        with self.assertRaisesRegex(ValueError, "ingestion client"):
-            ManagerService(retrieval=_FakeRetrievalClient())
-        with self.assertRaisesRegex(ValueError, "retrieval client"):
-            ManagerService(ingestion=_FakeIngestionClient())
+    async def test_can_use_ingestion_api_status_client_adapter(self) -> None:
+        ingestion_executor = _FakeIngestionExecutor()
+        api = _FakeIngestionApi()
+        client = IngestionApiStatusClient(
+            ingestion=ingestion_executor,
+            api=api,
+        )
+        request = _Request(metadata={"data_type": "project_document"})
 
-    async def test_ingest_delegates_executable_project_document_route(self) -> None:
+        ingest_result = await client.ingest(request)
+        status_result = await client.ingest_status("job1")
+
+        self.assertEqual(ingest_result, "accepted")
+        self.assertIs(ingestion_executor.ingest_request, request)
+        self.assertEqual(status_result.job_id, "job1")
+        self.assertEqual(status_result.status, JobStatus.COMPLETED)
+        self.assertEqual(status_result.doc_id, "d1")
+        self.assertEqual(status_result.project_id, "p1")
+        self.assertEqual(api.status_payload["request"]["job_id"], "job1")
+
+    async def test_ingestion_api_status_client_preserves_missing_job_fallback(self) -> None:
+        api = _FakeIngestionApi(ok=False, code="not_found")
+        client = IngestionApiStatusClient(
+            ingestion=_FakeIngestionExecutor(),
+            api=api,
+        )
+
+        result = await client.ingest_status("missing")
+
+        self.assertEqual(result.job_id, "missing")
+        self.assertEqual(result.status, JobStatus.PENDING)
+
+    async def test_ingestion_api_status_client_raises_other_api_failures(self) -> None:
+        api = _FakeIngestionApi(ok=False, code="unavailable", message="down")
+        client = IngestionApiStatusClient(
+            ingestion=_FakeIngestionExecutor(),
+            api=api,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "unavailable: down"):
+            await client.ingest_status("job1")
+
+    async def test_ingest_delegates_to_project_document_task_start(self) -> None:
         project_client = _FakeProjectDocumentClient()
         manager = ManagerService(
             project_documents=project_client,
@@ -216,9 +222,9 @@ class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.job_id, "job1")
         self.assertEqual(result.status, JobStatus.PENDING)
         self.assertIs(project_client.ingest_request, request)
-        self.assertIsInstance(manager._ingestion, ProjectDocumentIngestionClient)
+        self.assertEqual(project_client.started_task_request, request)
 
-    async def test_search_delegates_through_project_and_retrieval_clients(self) -> None:
+    async def test_search_delegates_to_project_document_task_executor(self) -> None:
         project_client = _FakeProjectDocumentClient()
         manager = ManagerService(
             project_documents=project_client,
@@ -229,9 +235,9 @@ class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "search-result")
         self.assertIs(project_client.search_request, request)
-        self.assertIsInstance(manager._retrieval, ProjectDocumentRetrievalClient)
+        self.assertEqual(project_client.searched_documents_request, request)
 
-    async def test_status_delegates_to_ingestion_client(self) -> None:
+    async def test_status_delegates_to_project_document_task_status(self) -> None:
         project_client = _FakeProjectDocumentClient()
         manager = ManagerService(
             project_documents=project_client,
@@ -241,6 +247,7 @@ class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "status:job1")
         self.assertEqual(project_client.status_job_id, "job1")
+        self.assertEqual(project_client.task_status_job_id, "job1")
 
     async def test_status_rejects_reserved_future_route(self) -> None:
         project_client = _FakeProjectDocumentClient()
@@ -260,6 +267,31 @@ class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "deleted")
         self.assertIs(project_client.delete_request, request)
+
+    async def test_forwards_manager_request_context_to_project_tasks(self) -> None:
+        project_client = _ContextAwareProjectDocumentClient()
+        manager = ManagerService(project_documents=project_client)
+        request = _Request(metadata={"data_type": "project_document"})
+        context = ManagerRequestContext(
+            request_id="req1",
+            auth_context={"subject_id": "user1", "customer_id": "cust1"},
+            customer_context={"customer_tier": "premium"},
+            placement_hint={"routing_key_hint": "project:p1"},
+        )
+
+        await manager.ingest(request, context=context)
+        await manager.search(request, context=context)
+        await manager.ingest_status("job1", context=context)
+        await manager.delete(request, context=context)
+
+        self.assertEqual(project_client.contexts[0]["request_id"], "req1")
+        self.assertEqual(project_client.contexts[0]["auth_context"]["customer_id"], "cust1")
+        self.assertEqual(project_client.contexts[1]["customer_context"]["customer_tier"], "premium")
+        self.assertEqual(
+            project_client.contexts[2]["placement_hint"]["routing_key_hint"],
+            "project:p1",
+        )
+        self.assertEqual(len(project_client.contexts), 4)
 
     async def test_rejects_reserved_future_route(self) -> None:
         project_client = _FakeProjectDocumentClient()
@@ -288,137 +320,55 @@ class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(project_client.ingest_request)
 
-    async def test_ingest_can_route_through_request_queue(self) -> None:
-        broker = LocalQueueBroker()
-        project_client = _FakeProjectDocumentClient()
-        ingestion_app = await create_ingestion_app(
-            queue=broker,
-            project_documents=project_client,
-            enabled=True,
-            topic="ingestion.requests",
-        )
-        manager = ManagerService(
-            project_documents=project_client,
-            ingest_queue=broker,
-            ingest_topic="ingestion.requests",
-            ingest_response_timeout=1,
-        )
-
-        result = await manager.ingest(
-            {
-                "project_id": "p1",
-                "user_id": "u1",
-                "kb_id": "kb",
-                "doc_id": "d1",
-                "source_uri": "memory://d1",
-                "content_type": "text/plain",
-                "metadata": {"data_type": "project_document"},
-            }
-        )
-
-        self.assertIsInstance(result, IngestJobResult)
-        self.assertEqual(result.job_id, "job1")
-        self.assertEqual(result.status, JobStatus.PENDING)
-        self.assertEqual(project_client.ingest_request["doc_id"], "d1")
-
-        status = await manager.ingest_status(result.job_id)
-        self.assertEqual(status, "status:job1")
-        self.assertEqual(project_client.status_job_id, "job1")
-
-        await ingestion_app.shutdown()
-
-    async def test_queued_ingest_preserves_top_level_raw_text(self) -> None:
-        broker = LocalQueueBroker()
-        project_client = _FakeProjectDocumentClient()
-        ingestion_app = await create_ingestion_app(
-            queue=broker,
-            project_documents=project_client,
-            enabled=True,
-            topic="ingestion.requests",
-        )
-        manager = ManagerService(
-            project_documents=project_client,
-            ingest_queue=broker,
-            ingest_topic="ingestion.requests",
-            ingest_response_timeout=1,
-        )
-
-        await manager.ingest(
-            SimpleNamespace(
-                project_id="p1",
-                user_id="u1",
-                kb_id="kb",
-                doc_id="d1",
-                source_uri="memory://d1",
-                content_type="text/plain",
-                raw_text="queued raw text",
-                metadata={"data_type": "project_document"},
-            )
-        )
-
-        self.assertEqual(project_client.ingest_request["raw_text"], "queued raw text")
-        await ingestion_app.shutdown()
-
-    async def test_ingest_routes_through_cross_process_sqlite_queue(self) -> None:
-        from tempfile import TemporaryDirectory
-
-        with TemporaryDirectory() as tempdir:
-            queue_path = Path(tempdir) / "ingestion_queue.db"
-            manager_queue = SQLiteQueueBroker(queue_path)
-            worker_queue = SQLiteQueueBroker(queue_path)
-            project_client = _FakeProjectDocumentClient()
-            ingestion_app = await create_ingestion_app(
-                queue=worker_queue,
-                project_documents=project_client,
-                enabled=True,
-                topic="ingestion.requests",
-            )
-            manager = ManagerService(
-                project_documents=project_client,
-                ingest_queue=manager_queue,
-                ingest_topic="ingestion.requests",
-                ingest_response_timeout=1,
-            )
-
-            result = await manager.ingest(
-                {
-                    "project_id": "p1",
-                    "user_id": "u1",
-                    "kb_id": "kb",
-                    "doc_id": "d1",
-                    "source_uri": "memory://d1",
-                    "content_type": "text/plain",
-                    "metadata": {"data_type": "project_document"},
-                }
-            )
-
-            self.assertIsInstance(result, IngestJobResult)
-            self.assertEqual(result.job_id, "job1")
-            self.assertEqual(project_client.ingest_request["doc_id"], "d1")
-
-            await ingestion_app.shutdown()
-
-    async def test_ingest_queue_failure_raises_manager_error(self) -> None:
-        queue = _FailingIngestQueue()
-        manager = ManagerService(
-            project_documents=_FakeProjectDocumentClient(),
-            ingest_queue=queue,
-            ingest_topic="ingestion.requests",
-            ingest_response_timeout=1,
-        )
-
-        with self.assertRaises(ManagerIngestFailedError) as raised:
-            await manager.ingest(_Request(metadata={"data_type": "project_document"}))
-
-        self.assertEqual(str(raised.exception), "bad input")
-        self.assertEqual(queue.published.topic, "ingestion.requests")
-
 
 class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
-    async def test_create_app_uses_manager_settings_for_router_topics(self) -> None:
+    async def test_manager_service_app_requires_injected_project_client(self) -> None:
         from manager_service.server import app as manager_app
 
+        with self.assertRaisesRegex(ValueError, "project-document client"):
+            await manager_app.create_app(_settings())
+
+    async def test_manager_service_app_uses_injected_project_client(self) -> None:
+        from manager_service.server import app as manager_app
+
+        project_client = _FakeProjectDocumentClient()
+        manager_server = _FakeServer()
+        manager_settings = ManagerSettings(
+            ingest_topic="custom.ingest",
+            workflow_topic="custom.workflow",
+        )
+
+        with patch.object(
+            manager_app,
+            "serve_manager_grpc",
+            AsyncMock(return_value=manager_server),
+        ) as serve_manager_grpc:
+            context = await manager_app.create_app(
+                _settings(),
+                project_client=project_client,
+                manager_settings=manager_settings,
+            )
+
+        decision = context.manager._router.route(
+            RouteRequest(operation="ingest", data_type="project_document")
+        )
+        self.assertEqual(decision.queue_topic, "")
+        self.assertEqual(decision.target_service, ServiceTarget.PROJECT)
+        self.assertIs(context.manager._project_documents, project_client)
+        self.assertIs(context.project_client, project_client)
+        self.assertEqual(context.manager_settings.workflow_topic, "custom.workflow")
+        self.assertIs(context.server, manager_server)
+        serve_manager_grpc.assert_awaited_once()
+        self.assertIsNone(serve_manager_grpc.await_args.kwargs["health_checker"])
+        self.assertIsNone(serve_manager_grpc.await_args.kwargs["generation_engine"])
+        await context.shutdown()
+        manager_server.stop.assert_awaited_once_with(grace=5)
+
+    async def test_create_app_uses_manager_settings_for_router_topics(self) -> None:
+        from local_runtime import manager_app
+
         project_app = _FakeProjectApp()
+        ingestion_app = _FakeIngestionApp()
         retrieval_api_app = _FakeRetrievalApiApp()
         manager_server = _FakeServer()
         manager_settings = ManagerSettings(
@@ -431,6 +381,14 @@ class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
             "create_project_app",
             AsyncMock(return_value=project_app),
         ) as create_project_app, patch.object(
+            manager_app,
+            "create_ingestion_app",
+            AsyncMock(return_value=ingestion_app),
+        ) as create_ingestion_app, patch.object(
+            manager_app,
+            "create_ingestion_api_app",
+            AsyncMock(),
+        ) as create_ingestion_api_app, patch.object(
             manager_app,
             "create_retrieval_api_app",
             AsyncMock(return_value=retrieval_api_app),
@@ -447,15 +405,22 @@ class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
         decision = context.manager._router.route(
             RouteRequest(operation="ingest", data_type="project_document")
         )
-        self.assertEqual(decision.queue_topic, "custom.ingest")
+        self.assertEqual(decision.queue_topic, "")
+        self.assertEqual(decision.target_service, ServiceTarget.PROJECT)
         self.assertEqual(context.ingestion_app.topic, "custom.ingest")
         self.assertIs(context.ingestion_jobs, context.ingestion_app.jobs)
+        self.assertIs(context.ingestion_api_app, create_ingestion_api_app.return_value)
         self.assertEqual(context.manager_settings.workflow_topic, "custom.workflow")
         self.assertIs(context.server, manager_server)
         self.assertIs(context.retrieval_api_app, retrieval_api_app)
-        self.assertIsInstance(context.manager._ingestion, LocalIngestionClient)
-        self.assertIsInstance(context.manager._retrieval, ProjectPlannedRetrievalApiClient)
+        self.assertIsNot(context.manager._project_documents, project_app.project_client)
         create_project_app.assert_awaited_once_with(_settings(), start_server=False)
+        create_ingestion_app.assert_awaited_once()
+        self.assertIs(create_ingestion_app.await_args.kwargs["retrieval_queue"], create_ingestion_app.await_args.kwargs["queue"])
+        self.assertNotIn("project_documents", create_ingestion_app.await_args.kwargs)
+        create_ingestion_api_app.assert_awaited_once_with(
+            ingestion_app=ingestion_app,
+        )
         create_retrieval_api_app.assert_awaited_once_with(
             retrieval_service=project_app.engine.retrieval_service,
         )
@@ -463,10 +428,12 @@ class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(serve_manager_grpc.await_args.kwargs["health_checker"], project_app.health_checker)
         await context.shutdown()
         manager_server.stop.assert_awaited_once_with(grace=5)
+        create_ingestion_api_app.return_value.shutdown.assert_awaited_once()
+        ingestion_app.shutdown.assert_not_awaited()
         retrieval_api_app.shutdown.assert_awaited_once()
 
     async def test_create_app_external_ingestion_mode_skips_embedded_consumer(self) -> None:
-        from manager_service.server import app as manager_app
+        from local_runtime import manager_app
 
         project_app = _FakeProjectApp()
         manager_server = _FakeServer()
@@ -496,13 +463,14 @@ class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIsNone(context.ingestion_app)
+        self.assertIsNone(context.ingestion_api_app)
         self.assertIsNone(context.ingestion_jobs)
         create_ingestion_app.assert_not_called()
         self.assertEqual(context.manager._ingest_topic, "custom.ingest")
         await context.shutdown()
 
     async def test_create_app_queue_retrieval_mode_uses_retrieval_queue_client(self) -> None:
-        from manager_service.server import app as manager_app
+        from local_runtime import manager_app
 
         project_app = _FakeProjectApp()
         retrieval_queue_app = _FakeRetrievalApiApp()
@@ -537,7 +505,7 @@ class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIs(context.retrieval_api_app, retrieval_queue_app)
-        self.assertIsInstance(context.manager._retrieval, ProjectPlannedRetrievalApiClient)
+        self.assertIsNot(context.manager._project_documents, project_app.project_client)
         create_retrieval_queue_app.assert_awaited_once()
         self.assertEqual(create_retrieval_queue_app.await_args.kwargs["topic"], "retrieval.custom")
         retrieval_queue_client_class.assert_called_once()
@@ -550,7 +518,7 @@ class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
         retrieval_queue_app.shutdown.assert_awaited_once()
 
     async def test_create_app_http_retrieval_mode_uses_remote_http_client(self) -> None:
-        from manager_service.server import app as manager_app
+        from local_runtime import manager_app
 
         project_app = _FakeProjectApp()
         retrieval_http_client = _FakeRetrievalHttpClient()
@@ -589,7 +557,7 @@ class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(context.retrieval_api_app)
         self.assertIs(context.retrieval_api_client, retrieval_http_client)
-        self.assertIsInstance(context.manager._retrieval, ProjectPlannedRetrievalApiClient)
+        self.assertIsNot(context.manager._project_documents, project_app.project_client)
         create_retrieval_api_app.assert_not_called()
         create_retrieval_queue_app.assert_not_called()
         retrieval_http_client_class.assert_called_once_with(
@@ -600,7 +568,7 @@ class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
         retrieval_http_client.shutdown.assert_awaited_once()
 
     async def test_create_app_rejects_unknown_retrieval_client_mode(self) -> None:
-        from manager_service.server import app as manager_app
+        from local_runtime import manager_app
 
         manager_settings = ManagerSettings(retrieval_client_mode="bad")
 
@@ -619,7 +587,7 @@ class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
                 )
 
     async def test_create_app_grpc_project_mode_uses_remote_client(self) -> None:
-        from manager_service.server import app as manager_app
+        from local_runtime import manager_app
 
         manager_server = _FakeServer()
         remote_client = _FakeRemoteProjectClient()
@@ -652,8 +620,6 @@ class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(context.project_app, None)
         self.assertIs(context.project_client, remote_client)
         self.assertIs(context.manager._project_documents, remote_client)
-        self.assertIsInstance(context.manager._ingestion, ProjectDocumentIngestionClient)
-        self.assertIsInstance(context.manager._retrieval, ProjectDocumentRetrievalClient)
         self.assertIsNone(serve_manager_grpc.await_args.kwargs["health_checker"])
         self.assertIsNone(serve_manager_grpc.await_args.kwargs["generation_engine"])
 
@@ -812,6 +778,9 @@ class _FakeProjectDocumentClient:
     search_request: object | None = None
     status_job_id: str | None = None
     delete_request: object | None = None
+    started_task_request: object | None = None
+    searched_documents_request: object | None = None
+    task_status_job_id: str | None = None
 
     async def ingest(self, request: object) -> str:
         self.ingest_request = request
@@ -824,17 +793,70 @@ class _FakeProjectDocumentClient:
             kb_id="kb",
         )
 
+    async def start_document_ingest_task(self, request: object) -> IngestResult:
+        self.started_task_request = request
+        return await self.ingest(request)
+
     async def search(self, request: object) -> str:
         self.search_request = request
         return "search-result"
+
+    async def search_documents(self, request: object) -> str:
+        self.searched_documents_request = request
+        return await self.search(request)
 
     async def ingest_status(self, job_id: str) -> str:
         self.status_job_id = job_id
         return f"status:{job_id}"
 
+    async def get_document_task_status(self, job_id: str) -> str:
+        self.task_status_job_id = job_id
+        return await self.ingest_status(job_id)
+
     async def delete_document(self, request: object) -> str:
         self.delete_request = request
         return "deleted"
+
+
+class _ContextAwareProjectDocumentClient(_FakeProjectDocumentClient):
+    def __init__(self) -> None:
+        self.contexts: list[dict[str, object]] = []
+
+    async def start_document_ingest_task(
+        self,
+        request: object,
+        *,
+        context: dict[str, object],
+    ) -> IngestResult:
+        self.contexts.append(context)
+        return await super().start_document_ingest_task(request)
+
+    async def search_documents(
+        self,
+        request: object,
+        *,
+        context: dict[str, object],
+    ) -> str:
+        self.contexts.append(context)
+        return await super().search_documents(request)
+
+    async def get_document_task_status(
+        self,
+        job_id: str,
+        *,
+        context: dict[str, object],
+    ) -> str:
+        self.contexts.append(context)
+        return await super().get_document_task_status(job_id)
+
+    async def delete_document(
+        self,
+        request: object,
+        *,
+        context: dict[str, object],
+    ) -> str:
+        self.contexts.append(context)
+        return await super().delete_document(request)
 
 
 class _FakeIngestionClient:
@@ -865,6 +887,41 @@ class _FakeIngestionExecutor:
         return "accepted"
 
 
+class _FakeIngestionApi:
+    def __init__(
+        self,
+        *,
+        ok: bool = True,
+        code: str = "",
+        message: str = "",
+    ) -> None:
+        self.ok = ok
+        self.code = code
+        self.message = message
+        self.status_payload = None
+
+    async def get_status(self, payload, *, fallback_request_id="ingestion-status"):
+        self.status_payload = payload
+        if self.ok:
+            return {
+                "request_id": payload.get("request_id", fallback_request_id),
+                "ok": True,
+                "result": {
+                    "job": {
+                        "job_id": "job1",
+                        "status": JobStatus.COMPLETED.value,
+                        "doc_id": "d1",
+                        "metadata": {"project_id": "p1"},
+                    }
+                },
+            }
+        return {
+            "request_id": payload.get("request_id", fallback_request_id),
+            "ok": False,
+            "error": {"code": self.code, "message": self.message},
+        }
+
+
 class _FakeIngestionJobs:
     record: IngestionJob | None = None
 
@@ -872,6 +929,15 @@ class _FakeIngestionJobs:
         if self.record is not None and self.record.job_id == job_id:
             return self.record
         return None
+
+
+class _FakeIngestionApp:
+    def __init__(self) -> None:
+        self.enabled = True
+        self.topic = "custom.ingest"
+        self.jobs = _FakeIngestionJobs()
+        self.consumer = object()
+        self.shutdown = AsyncMock()
 
 
 class _FakeRetrievalClient:
@@ -901,13 +967,12 @@ class _FakeRetrievalApp:
 
 
 class _FakeProjectApp:
-    gateway = _FakeGateway()
-    engine = _FakeEngine()
-    project_client: ProjectDocumentClient = _FakeProjectDocumentClient()
-    server = object()
-
     def __init__(self) -> None:
         self.settings = _settings()
+        self.gateway = _FakeGateway()
+        self.engine = _FakeEngine()
+        self.project_client: ProjectDocumentClient = _FakeProjectDocumentClient()
+        self.server = object()
         self.health_checker = _FakeHealthChecker()
         self.jobs = _FakeIngestionJobs()
 

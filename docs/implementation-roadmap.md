@@ -52,13 +52,13 @@ Status: implemented.
 ## Iteration 5: Async Service Events
 
 Status: implemented locally for ingest lifecycle events and workflow-log
-consumption; retry/dead-letter behavior remains a future broker-adapter
-concern.
+consumption; Redpanda runtime transport remains pending.
 
 - Publish ingest/index lifecycle events through `shared.queue`.
 - Wire the local app with a bounded `LocalQueueBroker` for `ingestion.events`.
 - Keep event publishing best-effort so lifecycle logging does not block ingest.
-- Define retry/dead-letter behavior before adding a network broker.
+- Keep retries, leases, attempt counts, backoff, and dead-letter handling out of
+  scope for the current broker phase.
 - Preserve successful indexing state when post-index metadata, status, cache, or
   event bookkeeping fails.
 - Add a local `workflow_log_service` consumer that persists lifecycle events
@@ -77,8 +77,8 @@ Status: implemented.
   gateway and engine internals directly.
 - Route manager `status` and `delete` operations through the same route/client
   boundary.
-- Keep clients in-process for now while preserving a replacement point for
-  future gRPC or queue-backed clients.
+- Treat in-process clients as compatibility scaffolding while preserving a
+  replacement point for public API or Redpanda-backed clients.
 - Add tests for manager routing through the client boundary.
 
 ## Iteration 7: Ingestion Request Queue Consumer
@@ -88,11 +88,11 @@ Status: implemented locally with multi-process local worker support.
 - Add `ingestion_service.server` with an `ingestion.requests` queue consumer.
 - Wire the local manager app to publish ingest requests through the queue and
   wait for a per-request response topic.
-- Add standalone ingestion worker server mode backed by a local SQLite queue for
-  multi-process development while keeping the broker contract replaceable.
+- Add standalone ingestion worker server mode backed by the current queue
+  contract as migration scaffolding.
 - Add typed ingestion service settings under `configs/ingestion`.
-- Keep the consumer local and in-process for now while preserving the
-  Kafka-compatible message shape in `shared.queue`.
+- Preserve the Kafka-compatible message shape in `shared.queue` so it can be
+  backed by Redpanda in local and production runtime.
 
 ## Iteration 8: Shared Data-Type Routing Registry
 
@@ -115,8 +115,9 @@ support.
   gRPC transport.
 - Add manager configuration for `MANAGER_PROJECT_CLIENT_MODE=local|grpc` and
   `MANAGER_PROJECT_GRPC_TARGET`.
-- Add ingestion worker configuration for `INGESTION_PROJECT_CLIENT_MODE=local|grpc`
-  and `INGESTION_PROJECT_GRPC_TARGET`.
+- Earlier ingestion worker project-client settings have been removed; ingestion
+  now publishes prepared chunks to retrieval indexing instead of delegating to a
+  project-document client.
 - Allow local scripts to run manager, project/RAG service, ingestion worker,
   and Qdrant as separate local services with `--split-services`.
 - Keep the gRPC contract intentionally narrow and call out delete as unsupported
@@ -212,25 +213,227 @@ Status: implemented for retrieval search, delete, raw lookup, and health.
 - Keep the HTTP transport free of manager, project, ingestion, generated
   transport, and gRPC imports.
 
-## Next Iteration: Physical Ingestion Service APIs And Retrieval Worker Startup
+## Iteration 16: Manager Remote Retrieval HTTP Client
+
+Status: implemented locally.
+
+- Add manager retrieval mode `http` for executing retrieval calls through a
+  separately running retrieval HTTP service.
+
+## Iteration 17: Retrieval Placement Core And Local Execution
+
+Status: implemented locally; production migration/reindex orchestration deferred.
+
+- Add retrieval-owned placement models, routing keys, shard records, placement
+  records, and placement plans.
+- Add stable hashing and weighted rendezvous assignment for new routing keys.
+- Add in-memory and SQLite placement registries.
+- Add local placement config and register the configured Qdrant endpoint as the
+  default local shard.
+- Attach `placement_plan` to project search/ingest/delete plans.
+- Preserve `placement_plan` through retrieval search/delete/index command
+  contracts and split ingestion-to-index messages.
+- Resolve placement targets to live Qdrant stores in retrieval indexing and
+  retrieval HTTP/queue execution.
+- Write indexed chunks to primary plus replica placement targets.
+- Search bucketed read targets with primary-first replica failover and merge
+  hits by score.
+- Delete dense and sparse records from primary plus replica placement targets.
+- Namespace search cache keys by placement version, shard ID, and routing key.
+- Persist per-project/default routing policies in the placement registry.
+- Keep versioned placement history and support explicit moving/stale/active
+  rebalance state transitions.
+- Add manager retrieval HTTP base URL and timeout settings under
+  `configs/manager`.
+- Add `RetrievalApiHttpClient` for `POST /search`, `POST /documents/delete`,
+  and `POST /documents/raw` response-envelope calls.
+- Keep project planning in the manager local composition while replacing only
+  retrieval execution with the remote HTTP adapter.
+- Preserve local and queue-backed retrieval modes.
+
+## Iteration 17: Retrieval Index Worker Startup
+
+Status: implemented locally.
+
+- Add a standalone retrieval indexing worker entry point with
+  `python -m retrieval_service.indexing.worker`.
+- Load worker settings from `configs/retrieval` and retrieval-specific
+  environment variables.
+- Support local and SQLite queue adapters for `retrieval.index.requests`.
+- Build retrieval-owned indexing dependencies without involving project
+  service runtime composition.
+- Start the retrieval indexing worker in local split-service mode and stop it
+  through the local cleanup script.
+
+## Iteration 18: Ingestion API Status And Control
+
+Status: implemented locally.
+
+- Add transport-neutral ingestion API contracts for job status payloads and
+  response envelopes.
+- Add an ingestion API handler over `IngestionAppContext` and the ingestion job
+  repository.
+- Add an ingestion API server context exposing `get_status(...)` and
+  `health(...)` payload methods for future HTTP, gRPC, or queue transports.
+- Keep the ingestion API free of manager, project, retrieval, generated
+  transport, and gRPC imports.
+- Leave queued ingest submission and compatibility execution unchanged.
+
+## Iteration 19: Manager Ingestion API Status Client
+
+Status: implemented locally.
+
+- Add a manager-facing ingestion adapter that delegates ingest submission while
+  serving status through the ingestion API server context.
+- Map ingestion API status envelopes to shared `IngestJobResult` values.
+- Preserve the existing pending fallback for missing job status.
+- Use the ingestion API status adapter in embedded manager ingestion
+  composition.
+- Keep manager core and manager server bootstrap free of ingestion-service
+  imports; temporary compatibility composition now lives in
+  `local_runtime.manager_app`.
+
+## Iteration 20: Ingestion Worker Retrieval Index Queue Wiring
+
+Status: implemented locally.
+
+- Add ingestion worker settings for retrieval index publication.
+- Build a retrieval index queue automatically in the standalone ingestion
+  worker when publication is enabled.
+- Pass the configured retrieval index topic through to the ingestion consumer.
+- Wire local split-service mode so ingestion publication and retrieval indexing
+  consume the same SQLite queue database and topic.
+- Keep publication disabled by default outside split-service/local opt-in modes.
+
+## Iteration 21: Local Split Ingestion Index Smoke
+
+Status: implemented locally.
+
+- Add a lightweight SQLite queue smoke test for the local split ingestion to
+  retrieval indexing handoff.
+- Exercise ingestion request consumption, preparation metadata, retrieval index
+  request publication, and retrieval index consumer processing through separate
+  queue broker instances sharing one SQLite database.
+- Use fakes for project-document ingest and indexing so the smoke test does not
+  require Qdrant, embedding models, or network services.
+
+## Iteration 22: Retrieval HTTP Server Startup
+
+Status: implemented locally.
+
+- Add a standalone retrieval HTTP server entry point with
+  `python -m retrieval_service.server.worker`.
+- Build retrieval-owned runtime dependencies for search, delete, raw lookup,
+  caching, sparse retrieval, NER, object storage, and metrics.
+- Serve the existing retrieval HTTP API transport over the retrieval API server
+  context.
+- Add optional local runner support with `--external-retrieval-http`, which
+  starts the retrieval HTTP service and switches manager retrieval mode to HTTP.
+- Keep the worker free of manager, project, ingestion, generated transport, and
+  gRPC imports.
+
+## Iteration 23: Local Runner Retrieval HTTP Mode Guard
+
+Status: implemented locally.
+
+- Keep `--external-retrieval-http` supported only with local manager project
+  planning.
+- Fail early when `--external-retrieval-http` is combined with
+  `--external-project-service` or `--split-services`.
+- Document the current project-planning constraint until project config/scope
+  APIs are extracted.
+
+## Iteration 24: Config Profile Variants
+
+Status: implemented locally.
+
+- Add explicit local and production Python profile defaults under `configs/`.
+- Add a testing profile with in-memory defaults for tests.
+- Move shared settings code to `configs/base.py` and keep `configs/config.py`
+  as the stable active settings entrypoint.
+- Make `configs/config_local.py` and `configs/config_production.py`
+  active-compatible entrypoints so either profile can be promoted over
+  `configs/config.py` without breaking imports.
+- Support profile selection through `profile=...` and `RAG_CONFIG_PROFILE`.
+- Preserve env override order: profile defaults, profile env file, component env
+  files, then process environment variables.
+- Keep local runner env defaults under `configs/local.env` /
+  `configs/local.env.example` instead of `examples/local`.
+- Document the optional deployment copy workflow for teams that promote a
+  profile module into the active `config.py`.
+- Reject unknown profile names and provide side-effect-free production
+  validation for URLs, paths, modes, placement counts, and required secrets.
+
+## Next Iteration: Independent Server Compliance
 
 Status: pending.
 
-- Add manager-facing remote retrieval HTTP client composition when manager and
-  retrieval run in separate processes.
-- Add transport startup for the retrieval indexing worker.
-- Add independent ingestion-service transport for job status and worker control.
+- Make every independent server or node own an independent top-level workspace,
+  runtime entrypoint, config folder, test folder, and deployment definition.
+- Remove cross-service imports of internal modules, repositories, handlers,
+  runtime objects, and implementation details.
+- Remove shared parent classes, base service classes, inherited server
+  frameworks, and cross-service runtime abstractions.
+- Keep shared code limited to stable contracts, schemas, protocol clients,
+  correlation IDs, common errors, and generic utilities that do not control
+  server behavior.
+- Add service import-boundary tests for manager, project, ingestion, retrieval,
+  workflow log, broker, storage, and SQLite database node code.
+
+## Next Iteration: Task Manager Dispatch Topology
+
+Status: pending.
+
+- Create the independent `task_manager_service` server workspace, entrypoint,
+  config folder, and tests.
+- Consume manager-published task intake messages from Redpanda.
+- Create and update task lifecycle state, including accepted/running/completed
+  and failed task states.
+- Write Redis task status by `task_id`; apply TTL to completed task keys.
+- Dispatch project/workflow/memory/other domain commands through Redpanda.
+- Consume domain plan/info results and dispatch ingestion, retrieval, storage,
+  indexing, or other helper commands through Redpanda.
+- Consume helper results, aggregate final task results, update Redis, and
+  publish final result events when needed.
+- Keep retries, leases, attempt counts, backoff, and dead-letter behavior out of
+  scope.
+
+## Next Iteration: Redpanda Runtime Broker
+
+Status: pending.
+
+- Add a Redpanda/Kafka-compatible broker adapter for runtime service
+  communication.
+- Use Redpanda in local and production. Local means Redpanda runs on the same
+  machine, not that services use in-memory, file, or SQLite queue shortcuts.
+- Route manager task intake, task-manager domain commands, domain results,
+  task-manager helper commands, helper results, and service events through
+  Redpanda topics.
+- Keep retries, leases, attempt counts, backoff, and dead-letter queues out of
+  scope for this phase.
+- Remove local runner paths that rely on in-memory, file-based, embedded, or
+  SQLite queue communication for runtime service-to-service messaging.
+
+## Next Iteration: Config And Test Separation
+
+Status: pending.
+
+- Move service-specific settings into service folders under `configs/`.
+- Add missing config folders for broker and SQLite/database nodes.
+- Reorganize tests into service folders under `tests/`.
+- Move cross-service smoke tests to `tests/integration/`.
+- Ensure integration tests exercise public APIs or Redpanda topics instead of
+  importing service internals across folders.
+
+## Later Iteration: Compatibility Composition Reduction
+
+Status: pending.
+
 - Move manager production composition away from project/RAG compatibility
   clients once physical service APIs exist.
-
-## Later Iteration: Durable Production Broker Adapter
-
-Status: pending.
-
-- Add a real broker adapter such as Redis Streams, NATS, or Kafka behind
-  `shared.queue.QueueBroker`.
-- Add claim timeout/retry/dead-letter semantics for failed ingestion workers.
-- Keep SQLite queue as a local-development adapter only.
+- Replace remote compatibility gRPC with project-native task APIs for ingest,
+  search, delete, and status.
+- Remove legacy duplicate schemas and compatibility import shims.
 
 ## Guardrails
 
@@ -238,5 +441,8 @@ Status: pending.
 - Add only narrow contracts to `shared`.
 - Do not put Qdrant, parsers, project adapters, or business orchestration in
   shared code.
-- Prefer local, testable abstractions before adding Kafka/Redpanda or extra
-  infrastructure.
+- Do not add shared parent service classes, inherited server frameworks, or
+  cross-service runtime abstractions.
+- Use Redpanda as the broker target for both local and production runtime.
+- Keep local and production on the same code paths; only addresses,
+  credentials, ports, and paths should differ by config.

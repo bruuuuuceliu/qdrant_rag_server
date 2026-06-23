@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GUARDED_FILES = (
     ROOT / "manager_service" / "clients.py",
     ROOT / "manager_service" / "service.py",
+    ROOT / "manager_service" / "server" / "app.py",
 )
 
 FORBIDDEN_PREFIXES = (

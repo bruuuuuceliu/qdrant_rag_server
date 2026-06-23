@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from retrieval_service.indexing.sparse_text import (
@@ -10,6 +10,10 @@ from retrieval_service.indexing.sparse_text import (
     _build_sparse_text,
 )
 from retrieval_service.pipeline.helpers import _encode_batch
+from retrieval_service.placement.execution import (
+    PlacementStoreResolver,
+    placement_write_targets,
+)
 from retrieval_service.retrieval.config import (
     ProjectRetrievalSettings,
     parse_retrieval_settings,
@@ -30,6 +34,7 @@ class IndexChunksRequest:
     payloads: list[Any]
     retrieval_config: dict[str, Any]
     job_id: str = ""
+    placement_plan: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,11 +54,15 @@ class IndexingService:
         qdrant_store: QdrantStore,
         sparse_encoder: SparseTextEncoder | None = None,
         ner_extractor: NerExtractor | None = None,
+        placement_store_resolver: PlacementStoreResolver | None = None,
         default_top_k: int = 5,
         default_candidate_count: int = 20,
     ) -> None:
         self._embedding_provider = embedding_provider
         self._qdrant_store = qdrant_store
+        self._placement_store_resolver = placement_store_resolver or PlacementStoreResolver(
+            default_store=qdrant_store,
+        )
         self._sparse_encoder = sparse_encoder
         self._ner_extractor = ner_extractor or NoopNerExtractor()
         self._default_top_k = default_top_k
@@ -76,6 +85,11 @@ class IndexingService:
                 dense_enabled=settings.dense_enabled,
                 sparse_enabled=settings.bm25_enabled,
             )
+
+        targets = placement_write_targets(
+            request.placement_plan,
+            fallback_collection_name=request.collection_name,
+        )
 
         texts = [chunk.text for chunk in request.chunks]
         payloads = await self._enrich_payloads_with_entities(
@@ -106,30 +120,38 @@ class IndexingService:
                 sparse_texts,
                 field_name=settings.bm25.text_field,
             )
-            await self._qdrant_store.upsert_hybrid_points(
-                collection_name=request.collection_name,
-                dense_vectors=vectors,
-                sparse_vectors=sparse_vectors,
-                payloads=payloads,
-                ids=[
-                    str(getattr(payload, "chunk_id", index))
-                    for index, payload in enumerate(payloads)
-                ],
-                dense_vector_name=settings.bm25.dense_vector_name,
-                sparse_vector_name=settings.bm25.sparse_vector_name,
-            )
+            ids = [
+                str(getattr(payload, "chunk_id", index))
+                for index, payload in enumerate(payloads)
+            ]
+            for target in targets:
+                qdrant_store = await self._placement_store_resolver.resolve(target)
+                await qdrant_store.upsert_hybrid_points(
+                    collection_name=target.collection_name,
+                    dense_vectors=vectors,
+                    sparse_vectors=sparse_vectors,
+                    payloads=payloads,
+                    ids=ids,
+                    dense_vector_name=settings.bm25.dense_vector_name,
+                    sparse_vector_name=settings.bm25.sparse_vector_name,
+                )
         elif vectors is not None:
-            await self._qdrant_store.upsert(
-                collection_name=request.collection_name,
-                vectors=vectors,
-                payloads=payloads,
-            )
+            for target in targets:
+                qdrant_store = await self._placement_store_resolver.resolve(target)
+                await qdrant_store.upsert(
+                    collection_name=target.collection_name,
+                    vectors=vectors,
+                    payloads=payloads,
+                )
 
         return IndexChunksResult(
             chunk_count=len(request.chunks),
             dense_enabled=settings.dense_enabled,
             sparse_enabled=settings.bm25_enabled,
         )
+
+    async def shutdown(self) -> None:
+        await self._placement_store_resolver.close()
 
     async def _enrich_payloads_with_entities(
         self,

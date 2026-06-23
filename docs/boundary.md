@@ -13,16 +13,20 @@ through stable APIs.
 ## Design Goals
 
 - Keep every server independently deployable, testable, and replaceable.
-- Keep public request routing centralized in the manager service.
+- Keep every independent server in its own independent top-level workspace.
+- Prevent services from importing another service's internals.
+- Avoid shared parent classes, inherited service frameworks, and shared runtime
+  abstractions between servers.
+- Keep public authentication and request-envelope creation centralized in the
+  manager service.
 - Keep service ownership narrow: each service owns one category of decisions and
   state.
-- Use queues for long-running work so request handling remains asynchronous and
-  resilient.
+- Use Redpanda topics for long-running work so request handling remains
+  asynchronous and resilient.
 - Treat ingestion, indexing, storage, retrieval, and workflow logging as separate
   concerns.
-- Preserve typed contracts between services so implementations can move from
-  local clients to gRPC, HTTP, Kafka, Redpanda, or another broker without
-  changing domain logic.
+- Preserve typed contracts between services so implementations communicate
+  through public APIs or Redpanda topics without changing domain logic.
 
 ## Ideal Repository Shape
 
@@ -78,6 +82,12 @@ qdrant_rag_server/
     repository/
     schemas/
 
+  task_manager_service/
+    server/
+    consumer/
+    repository/
+    schemas/
+
   shared/
     contracts/
     queue/
@@ -91,9 +101,19 @@ qdrant_rag_server/
     retrieval/
     memory/
     workflow_log/
+    broker/
+    sqlite/
 
   docs/
   tests/
+    manager/
+    project/
+    ingestion/
+    retrieval/
+    workflow_log/
+    broker/
+    sqlite/
+    integration/
   deployment/
   examples/
 ```
@@ -103,28 +123,37 @@ access should happen through typed clients, queue messages, or transport DTOs
 defined in the owning service or in `shared/contracts` when the contract is
 truly service-neutral.
 
+Shared code must not contain parent service classes, inherited server
+frameworks, lifecycle managers, or runtime wiring shared across services. Shared
+code is limited to stable contracts, schemas, protocol clients, and small
+generic utilities.
+
+Local development uses this same shape. All servers and nodes may run on the
+same machine, but they must still communicate through Redpanda topics rather
+than embedded calls, in-memory queues, SQLite queue substitutes, files, or direct
+imports. The direct runtime exception is manager task-status lookup from Redis
+by `task_id`; Redis is not the message broker.
+
 ## Service Ownership
 
 ### Manager Service
 
 The manager is the only public entry point for normal client traffic. It owns
-request classification, authorization handoff, route selection, correlation ID
-creation, and response aggregation.
+authentication, request validation, request classification, and correlation/task
+ID creation. It publishes authenticated request envelopes to Redpanda.
 
 Ideal responsibilities:
 
 - Accept public API requests.
 - Validate operation, `data_type`, tenant, project, user, and KB identifiers.
-- Decide the target service for each operation.
-- Convert public requests into internal service commands.
-- Publish asynchronous commands to queues when work is long-running.
-- Call synchronous service APIs only for short reads, status checks, health, and
-  already-completed retrieval operations.
-- Return stable request acknowledgements, job IDs, status responses, or retrieval
-  results to clients.
+- Publish authenticated request envelopes to Redpanda.
+- Return stable acknowledgements and task IDs.
+- Read task status directly from Redis by `task_id` for client status checks.
+- Return final results when Redis/task state shows the task has completed.
 
 The manager should not parse documents, call Qdrant directly, create embeddings,
-perform chunking, or write service-owned databases.
+perform chunking, write service-owned databases, call helper nodes directly, or
+aggregate helper results itself.
 
 ### Project Service
 
@@ -165,23 +194,28 @@ Ideal responsibilities:
 The ingestion service should not own vector database search behavior, ranking,
 generation, or project route decisions.
 
-### Task Services
+### Task Manager Service
 
-Task services are specialized workers that sit between the manager and concrete
-ingestion handlers when a request needs additional routing or decomposition.
-They exist to keep the manager simple and keep ingestion workers focused.
+The task manager is the single task lifecycle and dispatch owner. It sits after
+the manager task intake topic, not inside the public manager. It keeps the
+manager simple and keeps domain/helper nodes focused on their own work.
 
-Example task service responsibilities:
+Ideal responsibilities:
 
-- Split a batch ingest request into per-document ingest commands.
-- Expand a website ingest request into page-level crawl tasks.
-- Route large uploads to file-specific ingestion queues.
-- Retry failed subtasks with bounded policies.
-- Fan out work across specialized ingestion workers.
-- Fan in partial results and publish a final task status.
+- Consume authenticated task intake events from Redpanda.
+- Create task records and keep Redis status current by `task_id`.
+- Dispatch domain commands to project, workflow log, memory, or other domain
+  services through Redpanda.
+- Consume domain plans/info and dispatch helper commands to ingestion,
+  retrieval, storage, indexing, or other helper nodes through Redpanda.
+- Fan out helper work across specialized worker nodes.
+- Fan in partial results and publish final task results when complete.
+- Apply TTL to completed task status records in Redis.
 
-Task services should communicate by queue. They should avoid direct calls to
-parsers, vector stores, or public manager handlers.
+The task manager should communicate through Redpanda topics and Redis status
+keys only. It should avoid direct calls to parsers, vector stores, project
+internals, or public manager handlers. Retries, leases, attempt counts, backoff,
+and dead-letter behavior are out of scope for the current phase.
 
 ### Retrieval Service
 
@@ -190,7 +224,7 @@ integration, ranking, and retrieval-time storage access.
 
 Ideal responsibilities:
 
-- Consume prepared indexing commands from ingestion or task services.
+- Consume task-manager-issued indexing/search/delete commands.
 - Generate dense embeddings and sparse representations.
 - Enrich chunks with retrieval metadata.
 - Upsert vectors and payloads into Qdrant or another retrieval backend.
@@ -377,58 +411,40 @@ Delete response:
 ```mermaid
 flowchart LR
     client[Clients]
-    manager["Manager Service<br/>public API and routing"]
-    project["Project Service<br/>config, scope, policy"]
-    memory["Memory Service<br/>future agent memory"]
-    workflow["Workflow Log Service<br/>audit and lifecycle logs"]
+    manager["Manager Service<br/>auth and public API"]
+    project["Project Domain Service<br/>project config, scope, policy"]
+    memory["Memory Domain Service<br/>future agent memory"]
+    workflow["Workflow Logging Service<br/>audit and lifecycle logs"]
+    taskManager["Task Manager Service<br/>lifecycle, fan-out/fan-in, status"]
+    redis[(Redis Task Status<br/>task_id -> status, TTL)]
 
-    ingestQueue[(ingestion.requests)]
-    taskService["Task Services<br/>batch, crawl, fan-out"]
-    taskQueue[(ingestion.tasks)]
-    ingest["Ingestion Workers<br/>fetch, parse, normalize, chunk"]
-    indexQueue[(retrieval.index.requests)]
-    retrieval["Retrieval Service<br/>index, search, delete"]
-    eventQueue[(ingestion.events / retrieval.index.events)]
+    redpanda[(Redpanda Broker)]
 
-    projectDb[(Project DB)]
-    ingestDb[(Ingestion Job DB)]
-    rawStore[(Raw Artifact Storage)]
-    vectorDb[(Vector / Lexical Indexes)]
-    cache[(Retrieval Cache)]
-    workflowDb[(Workflow Log DB)]
-    objectStore[(Raw Document Backup)]
+    ingest["Ingestion Helper Nodes<br/>fetch, parse, normalize, chunk"]
+    retrieval["Retrieval Helper Nodes<br/>index, search, delete"]
+    storage["Storage Helper Nodes<br/>raw/object/db operations"]
+    otherHelpers["Other Helper Nodes"]
 
     client -->|public requests| manager
-    manager -->|sync config and scope| project
-    project --> projectDb
-
-    manager -->|async ingest command| ingestQueue
-    ingestQueue --> taskService
-    taskService --> taskQueue
-    taskQueue --> ingest
-    ingest --> ingestDb
-    ingest --> rawStore
-    ingest -->|prepared chunks| indexQueue
-    ingest -->|lifecycle events| eventQueue
-
-    indexQueue --> retrieval
-    manager -->|sync search/delete| retrieval
-    retrieval --> vectorDb
-    retrieval --> cache
-    retrieval --> objectStore
-    retrieval -->|index/cache events| eventQueue
-
-    eventQueue --> workflow
-    workflow --> workflowDb
-
-    manager -->|future memory operations| memory
-    manager -->|audit/status reads| workflow
+    manager <--> redpanda
+    project <--> redpanda
+    workflow <--> redpanda
+    memory <--> redpanda
+    taskManager <--> redpanda
+    ingest <--> redpanda
+    retrieval <--> redpanda
+    storage <--> redpanda
+    otherHelpers <--> redpanda
+    taskManager --> redis
+    manager --> redis
 ```
 
-The graph shows the intended system boundary. Solid arrows represent ownership
-or calls at the architecture level; queue nodes represent asynchronous handoff
-points. The manager is the public coordinator, queues absorb variable-latency
-work, and each service writes only to storage it owns.
+The graph shows the intended system boundary. Every server-to-server message
+goes through Redpanda. The direct exceptions shown are client-to-manager public
+API traffic and manager-to-Redis status lookup. Task manager writes Redis task
+status by `task_id`, and completed task keys expire by TTL. Storage, database,
+cache, Qdrant, and placement state are accessed through their own service/node
+boundaries and are intentionally not drawn as direct cross-node links.
 
 ### Transition Diagram
 
@@ -491,71 +507,71 @@ record both successful and failed work.
 ```text
 clients
   -> manager_service
-       -> project_service                 synchronous config/scope reads
-       -> ingestion task queue             async ingest commands
-       -> retrieval_service                synchronous search/delete/status reads
-       -> memory_service                   future memory operations
-       -> workflow_log_service             status/audit reads
+       -> Redpanda task intake
+            -> task_manager_service
+                 -> Redpanda domain command topics
+                      -> project_service, workflow_log_service, memory_service, other domain services
+                 -> Redpanda helper command topics
+                      -> ingestion workers, retrieval workers, storage nodes, other helper nodes
+                 -> Redis task status by task_id
 
-ingestion task queue
-  -> task services
-       -> specialized ingestion queues
-            -> ingestion workers
-                 -> raw storage service
-                 -> ingestion job store
-                 -> indexing queue
-                 -> workflow event queue
+domain result topics
+  -> task_manager_service
+       -> helper command topics
+            -> helper result topics
+                 -> task_manager_service
+                      -> Redis task status and final-result topics
 
-indexing queue
-  -> retrieval_service indexing workers
-       -> embedding providers
-       -> sparse encoders
-       -> vector database service
-       -> retrieval cache
-       -> raw document backup storage
-
-workflow event queue
+service event topics
   -> workflow_log_service
        -> workflow log database
 ```
 
-The manager coordinates the request lifecycle, but it does not perform the work.
-Long-running work moves through queues. Service workers claim tasks, update
-durable status, publish events, and write to their owned stores.
+The manager authenticates and accepts public requests, but it does not perform
+the work or directly call/trigger domain/helper services. Work moves through
+Redpanda topics. The task manager consumes manager task intake events, triggers
+domain task servers, consumes domain plans/info, dispatches helper commands,
+aggregates lifecycle/results, and writes task status to Redis. Domain services
+gather service-specific information, helper nodes execute concrete work, and
+each service writes to its owned stores.
 
 ## Communication Rules
 
 ### Synchronous Communication
 
-Use synchronous calls for bounded, low-latency operations:
+Use synchronous calls only for bounded public or operational surfaces:
 
-- manager to project service for project config, scope, and policy resolution
-- manager to retrieval service for search
-- manager to ingestion service for job status
-- manager to workflow log service for audit queries
-- manager to service health endpoints
+- client to manager public API
+- manager to Redis task-status lookup by `task_id`
+- service health endpoints
+- local process lifecycle checks
 
 Synchronous calls should have explicit timeouts, typed errors, and correlation
-IDs. They should not hide long-running work.
+IDs. They should not hide long-running work or bypass the broker-first service
+flow.
 
 ### Asynchronous Communication
 
-Use queues for work that can take variable time or needs backpressure:
+Use Redpanda topics for work that can take variable time or needs backpressure:
 
-- ingestion requests
-- batch task expansion
-- website crawl tasks
-- file parsing tasks
-- indexing requests
+- manager-authenticated task intake requests
+- task-manager-issued domain commands
+- domain service info/planning responses
+- task-manager-issued helper commands for ingestion, storage, retrieval,
+  indexing, and other nodes
+- helper results
+- task lifecycle, fan-out/fan-in, status, and final result messages
 - lifecycle events
 - cache invalidation events
-- retry and dead-letter workflows
+
+Retries, leases, attempt counts, backoff, and dead-letter handling are outside
+the current broker scope.
 
 Queue messages should use a consistent envelope:
 
 ```json
 {
-  "topic": "ingestion.requests",
+  "topic": "task.intake",
   "key": "project:user:document",
   "headers": {
     "correlation_id": "trace id",
@@ -566,14 +582,12 @@ Queue messages should use a consistent envelope:
 }
 ```
 
-The ideal queue implementation should support:
+The current broker phase should support:
 
 - bounded worker concurrency
 - durable messages in production
 - at-least-once delivery
 - idempotent consumers
-- retries with maximum attempts
-- dead-letter topics
 - per-topic metrics
 - correlation IDs across all messages
 - backpressure when downstream services are unhealthy
@@ -584,71 +598,93 @@ Recommended topic names:
 
 | Topic | Producer | Consumer | Purpose |
 | --- | --- | --- | --- |
-| `ingestion.requests` | manager service | task service or ingestion service | Accept document ingestion commands. |
-| `ingestion.tasks` | task service | ingestion workers | Fan out source-specific ingest work. |
-| `ingestion.events` | ingestion service | workflow log service | Record ingest lifecycle changes. |
-| `retrieval.index.requests` | ingestion service | retrieval indexing workers | Index prepared chunks. |
-| `retrieval.index.events` | retrieval service | workflow log or manager | Report indexing progress. |
-| `retrieval.cache.events` | retrieval service or manager | retrieval cache workers | Invalidate or refresh retrieval caches. |
-| `dead_letter` | queue broker | operators or repair workers | Store exhausted failed messages. |
+| `task.intake` | manager service | task manager | Deliver authenticated public requests after auth/validation. |
+| `project.commands` | task manager | project service | Trigger project-document domain planning/info lookup. |
+| `project.results` | project service | task manager | Return project plan, scope, policy, and helper-work intent. |
+| `workflow_log.commands` | task manager or services through broker | workflow log service | Deliver workflow-log requests and lifecycle events. |
+| `task.events` | domain services and helpers | task manager | Report task lifecycle and helper results. |
+| `task.results` | task manager | broker observers | Publish final result events when needed. |
+| `ingestion.commands` | task manager | ingestion helpers | Fetch, parse, normalize, and chunk source material. |
+| `ingestion.results` | ingestion helpers | task manager through broker | Publish prepared chunks and ingestion status. |
+| `retrieval.commands` | task manager | retrieval helpers | Execute search, delete, raw lookup, or index work. |
+| `retrieval.results` | retrieval helpers | task manager through broker | Publish retrieval/index/delete results. |
+| `storage.commands` | task manager | storage helpers | Store/read/delete raw or service-owned artifacts. |
+| `storage.results` | storage helpers | task manager through broker | Publish storage operation results. |
 
 ## Main Data Flow
 
 ### Ingestion Flow
 
 1. Client sends an ingest request to the manager.
-2. Manager validates the request and resolves project policy from the project
-   service.
-3. Manager creates a correlation ID and job ID.
-4. Manager publishes an ingest command to `ingestion.requests`.
-5. Manager returns an accepted response with the job ID.
-6. A task service optionally decomposes the request into source-specific tasks.
-7. Ingestion workers fetch, parse, normalize, and chunk content.
-8. Ingestion service stores job state and raw artifacts as needed.
-9. Ingestion service publishes prepared chunks to `retrieval.index.requests`.
+2. Manager validates the request, creates correlation/task IDs, publishes a
+   task intake event, and returns the task ID.
+3. Task manager records accepted/running status in Redis and dispatches a
+   project-domain command through Redpanda.
+4. Project service resolves project policy, scope, and placement intent, then
+   publishes a project plan/info result.
+5. Task manager consumes the project result and dispatches ingestion/storage
+   helper commands through Redpanda.
+6. Ingestion workers fetch, parse, normalize, and chunk content.
+7. Ingestion service stores job state and raw artifacts as needed.
+8. Ingestion service publishes prepared chunks/status results.
+9. Task manager consumes ingestion results and dispatches retrieval index work.
 10. Retrieval indexing workers embed and upsert chunks into the retrieval store.
 11. Retrieval service writes index status and invalidates affected caches.
-12. Ingestion and retrieval services publish lifecycle events.
+12. Task manager aggregates results, updates Redis, and publishes final results.
 13. Workflow log service consumes events and stores audit records.
 
 ### Retrieval Flow
 
 1. Client sends a search request to the manager.
-2. Manager validates the request and resolves project scope.
-3. Manager forwards the search command to the retrieval service.
-4. Retrieval service checks cache when enabled.
-5. Retrieval service embeds the query and executes dense, sparse, or hybrid
+2. Manager validates the request, creates correlation/task IDs, publishes a
+   task intake event, and returns the task ID or current status.
+3. Task manager dispatches a project-domain command through Redpanda.
+4. Project service resolves project scope/filter intent and publishes a
+   project plan/info result.
+5. Task manager consumes the project result and dispatches retrieval helper
+   work through Redpanda.
+6. Retrieval service checks cache when enabled.
+7. Retrieval service embeds the query and executes dense, sparse, or hybrid
    search.
-6. Retrieval service applies filters, ranking, and optional reranking.
-7. Retrieval service returns normalized results to the manager.
-8. Manager returns public search results to the client.
+8. Retrieval service applies filters, ranking, and optional reranking.
+9. Retrieval service publishes normalized results to the broker.
+10. Task manager aggregates the result, updates Redis, and publishes final task
+    results when needed.
+11. Manager serves client status/result checks by reading Redis by `task_id`.
 
 ### Delete Flow
 
 1. Client sends a delete request to the manager.
-2. Manager validates authorization and resolves project scope.
-3. Manager sends the delete command to the retrieval service.
-4. Retrieval service deletes vector payloads, lexical records, cache entries,
-   and raw backups according to policy.
-5. Retrieval service publishes lifecycle or cache events.
-6. Manager returns the delete result.
+2. Manager validates authorization, creates correlation/task IDs, publishes a
+   task intake event, and returns the task ID.
+3. Task manager dispatches a project-domain command through Redpanda.
+4. Project service resolves delete scope/policy and publishes a project
+   plan/info result.
+5. Task manager dispatches retrieval/storage delete commands through Redpanda.
+6. Retrieval/storage helpers delete vector payloads, lexical records, cache
+   entries, and raw backups according to policy.
+7. Helpers publish results; task manager aggregates them, updates Redis, and
+   publishes final task results when needed.
 
 ## Boundary Stakes
 
 These are the architectural stakes that should remain stable as the project
 evolves.
 
-### The Manager Is a Router, Not a Worker
+### The Manager Is An Auth Gate, Not A Dispatcher
 
-The manager should make routing decisions and coordinate responses. If it starts
-parsing documents, embedding text, or writing retrieval storage directly, service
+The manager should authenticate, validate, create request envelopes, publish
+task intake messages, and read Redis task status by `task_id`. If it starts
+triggering project/domain task servers, dispatching helper work, parsing
+documents, embedding text, or writing retrieval storage directly, service
 boundaries have collapsed.
 
-### Queues Are the Async Backbone
+### Redpanda Is the Async Backbone
 
 Ingestion and indexing are naturally variable-latency workflows. They should be
-queue-backed so the system can absorb bursts, retry failures, and scale workers
-without changing public APIs.
+Redpanda-backed so the system can absorb bursts and scale workers without
+changing public APIs. Retry, lease, attempt-count, backoff, and dead-letter
+semantics are intentionally deferred.
 
 ### Services Own Their State
 
@@ -658,13 +694,13 @@ typed APIs or queue contracts.
 
 ### Contracts Must Be Transport-Neutral
 
-The system may start with local clients and SQLite queues, then move to gRPC,
-HTTP, Kafka, Redpanda, Postgres, or cloud storage. Domain contracts should not
-depend on one transport implementation.
+The system should use public APIs for synchronous calls and Redpanda for
+runtime asynchronous messaging in both local and production. Domain contracts
+should not depend on one client implementation.
 
 ### Consumers Must Be Idempotent
 
-Production queues should assume at-least-once delivery. Ingestion, indexing,
+Redpanda consumers should assume at-least-once delivery. Ingestion, indexing,
 delete, and event consumers must tolerate duplicate messages by using stable job
 IDs, document IDs, content hashes, and idempotency keys.
 
@@ -688,11 +724,11 @@ The ideal architecture is reached when:
 - Each service can run independently with its own server entry point.
 - The manager can route all public operations without importing service
   internals.
-- Ingestion and indexing work through durable queues.
+- Ingestion and indexing work through Redpanda topics.
 - Job status survives process restarts.
 - Retrieval search and delete work through retrieval-service APIs only.
 - Workflow events are consumed by a separate workflow log service.
 - Service contracts are documented and covered by tests.
-- Local development can run the full stack with replaceable local backends.
-- Production deployment can replace local queues and stores without changing
-  service business logic.
+- Local development can run the full stack as independent local servers.
+- Production deployment uses the same service code and broker contracts as
+  local, with only addresses, credentials, ports, and paths changed by config.

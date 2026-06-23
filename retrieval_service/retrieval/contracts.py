@@ -133,6 +133,7 @@ class RetrievalSearchCommand:
     retrieval_config: dict[str, Any] = field(default_factory=dict)
     retrieval_filter: Any = None
     cache_key: str = ""
+    placement_plan: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_payload(
@@ -153,6 +154,7 @@ class RetrievalSearchCommand:
             retrieval_config=_mapping(request_payload.get("retrieval_config")),
             retrieval_filter=_retrieval_filter(request_payload.get("retrieval_filter")),
             cache_key=str(request_payload.get("cache_key", "")),
+            placement_plan=_mapping(request_payload.get("placement_plan")),
         )
 
     def request_payload(self) -> dict[str, Any]:
@@ -163,6 +165,7 @@ class RetrievalSearchCommand:
             "collection_name": self.collection_name,
             "retrieval_config": dict(self.retrieval_config),
             "cache_key": self.cache_key,
+            "placement_plan": dict(self.placement_plan),
         }
         if self.retrieval_filter is not None:
             payload["retrieval_filter"] = _filter_payload(self.retrieval_filter)
@@ -190,6 +193,7 @@ class RetrievalSearchCommand:
             retrieval_config=dict(self.retrieval_config),
             retrieval_filter=self.retrieval_filter,
             cache_key=self.cache_key,
+            placement_plan=dict(self.placement_plan),
         )
 
 
@@ -204,6 +208,7 @@ class RetrievalDeleteDocumentCommand:
     doc_id: str
     collection_name: str
     response_topic: str = ""
+    placement_plan: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_payload(
@@ -221,6 +226,7 @@ class RetrievalDeleteDocumentCommand:
             kb_id=str(request_payload.get("kb_id", "")),
             doc_id=str(request_payload.get("doc_id", "")),
             collection_name=str(request_payload.get("collection_name", "")),
+            placement_plan=_mapping(request_payload.get("placement_plan")),
         )
 
     def request_payload(self) -> dict[str, Any]:
@@ -230,6 +236,7 @@ class RetrievalDeleteDocumentCommand:
             "kb_id": self.kb_id,
             "doc_id": self.doc_id,
             "collection_name": self.collection_name,
+            "placement_plan": dict(self.placement_plan),
         }
 
     def validate(self) -> None:
@@ -252,6 +259,7 @@ class RetrievalDeleteDocumentCommand:
             kb_id=self.kb_id,
             doc_id=self.doc_id,
             collection_name=self.collection_name,
+            placement_plan=dict(self.placement_plan),
         )
 
 

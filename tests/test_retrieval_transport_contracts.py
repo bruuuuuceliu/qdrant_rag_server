@@ -31,6 +31,10 @@ class RetrievalTransportContractsTest(unittest.TestCase):
                     "retrieval_config": {"top_k": 3},
                     "retrieval_filter": retrieval_filter,
                     "cache_key": "cache-1",
+                    "placement_plan": {
+                        "placement_version": 4,
+                        "targets": [{"shard_id": "retrieval-01"}],
+                    },
                 },
             },
             fallback_request_id="fallback",
@@ -48,6 +52,7 @@ class RetrievalTransportContractsTest(unittest.TestCase):
         self.assertEqual(request.retrieval_config, {"top_k": 3})
         self.assertIs(request.retrieval_filter, retrieval_filter)
         self.assertEqual(request.cache_key, "cache-1")
+        self.assertEqual(request.placement_plan["placement_version"], 4)
 
     def test_search_command_accepts_direct_payload(self) -> None:
         retrieval_filter = _Filter(project_id="p1", allowed_user_ids=("u1",))
@@ -144,6 +149,10 @@ class RetrievalTransportContractsTest(unittest.TestCase):
                     "kb_id": "kb",
                     "doc_id": "d1",
                     "collection_name": "rag_p1_v1",
+                    "placement_plan": {
+                        "placement_version": 5,
+                        "targets": [{"shard_id": "retrieval-02"}],
+                    },
                 },
             },
             fallback_request_id="fallback",
@@ -157,6 +166,7 @@ class RetrievalTransportContractsTest(unittest.TestCase):
         self.assertEqual(request.kb_id, "kb")
         self.assertEqual(request.doc_id, "d1")
         self.assertEqual(request.collection_name, "rag_p1_v1")
+        self.assertEqual(request.placement_plan["placement_version"], 5)
 
     def test_delete_command_validates_required_fields(self) -> None:
         command = RetrievalDeleteDocumentCommand.from_payload(

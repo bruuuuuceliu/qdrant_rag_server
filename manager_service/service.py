@@ -1,53 +1,57 @@
-"""Thin manager facade over service-client boundaries."""
+"""Thin manager facade over the project-service task boundary."""
 
 from __future__ import annotations
 
-import asyncio
-import uuid
+from dataclasses import dataclass, field
+import inspect
 from typing import Any
 
-from manager_service.clients import (
-    IngestionClient,
-    ProjectDocumentClient,
-    ProjectDocumentIngestionClient,
-    ProjectDocumentRetrievalClient,
-    RetrievalClient,
-)
-from manager_service.errors import ManagerIngestFailedError, ManagerIngestTimeoutError
+from manager_service.clients import ProjectDocumentClient
 from manager_service.routing import DataType, ManagerRouter, Operation, RouteRequest
-from shared.queue import QueueBroker, QueueMessage
+
+
+@dataclass(frozen=True, slots=True)
+class ManagerRequestContext:
+    """Auth/customer context forwarded by manager without owning policy."""
+
+    request_id: str = ""
+    auth_context: dict[str, Any] = field(default_factory=dict)
+    customer_context: dict[str, Any] = field(default_factory=dict)
+    placement_hint: dict[str, Any] = field(default_factory=dict)
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "auth_context": dict(self.auth_context),
+            "customer_context": dict(self.customer_context),
+            "placement_hint": dict(self.placement_hint),
+        }
 
 
 class ManagerService:
-    """Coordinates public operations while service extraction is in progress."""
+    """Coordinates public operations through service-owned boundaries."""
 
     def __init__(
         self,
         *,
-        project_documents: ProjectDocumentClient | None = None,
-        ingestion: IngestionClient | None = None,
-        retrieval: RetrievalClient | None = None,
-        ingest_queue: QueueBroker | None = None,
+        project_documents: ProjectDocumentClient,
         ingest_topic: str = "ingestion.requests",
         ingest_response_timeout: float = 30.0,
         router: ManagerRouter | None = None,
     ) -> None:
-        if project_documents is not None:
-            ingestion = ingestion or ProjectDocumentIngestionClient(project_documents)
-            retrieval = retrieval or ProjectDocumentRetrievalClient(project_documents)
-        if ingestion is None:
-            raise ValueError("ManagerService requires an ingestion client")
-        if retrieval is None:
-            raise ValueError("ManagerService requires a retrieval client")
+        if project_documents is None:
+            raise ValueError("ManagerService requires a project-document client")
         self._project_documents = project_documents
-        self._ingestion = ingestion
-        self._retrieval = retrieval
-        self._ingest_queue = ingest_queue
         self._ingest_topic = ingest_topic
         self._ingest_response_timeout = ingest_response_timeout
         self._router = router or ManagerRouter()
 
-    async def ingest(self, request: Any) -> Any:
+    async def ingest(
+        self,
+        request: Any,
+        *,
+        context: ManagerRequestContext | None = None,
+    ) -> Any:
         route = self._router.route(
             RouteRequest(
                 operation=Operation.INGEST,
@@ -59,11 +63,14 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
-        if self._ingest_queue is None:
-            return await self._ingestion.ingest(request)
-        return await self._queue_ingest(request)
+        return await _project_ingest(self._project_documents, request, context=context)
 
-    async def search(self, request: Any) -> Any:
+    async def search(
+        self,
+        request: Any,
+        *,
+        context: ManagerRequestContext | None = None,
+    ) -> Any:
         route = self._router.route(
             RouteRequest(
                 operation=Operation.SEARCH,
@@ -74,13 +81,14 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
-        return await self._retrieval.search(request)
+        return await _project_search(self._project_documents, request, context=context)
 
     async def ingest_status(
         self,
         job_id: str,
         *,
         data_type: str = DataType.PROJECT_DOCUMENT,
+        context: ManagerRequestContext | None = None,
     ) -> Any:
         route = self._router.route(
             RouteRequest(
@@ -90,9 +98,18 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
-        return await self._ingestion.ingest_status(job_id)
+        return await _project_ingest_status(
+            self._project_documents,
+            job_id,
+            context=context,
+        )
 
-    async def delete(self, request: Any) -> Any:
+    async def delete(
+        self,
+        request: Any,
+        *,
+        context: ManagerRequestContext | None = None,
+    ) -> Any:
         route = self._router.route(
             RouteRequest(
                 operation=Operation.DELETE,
@@ -104,41 +121,11 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
-        return await self._retrieval.delete_document(request)
-
-    async def _queue_ingest(self, request: Any) -> Any:
-        request_id = str(uuid.uuid4())
-        response_topic = f"{self._ingest_topic}.responses.{request_id}"
-        await self._ingest_queue.publish(
-            QueueMessage(
-                topic=self._ingest_topic,
-                key=request_id,
-                payload={
-                    "request_id": request_id,
-                    "response_topic": response_topic,
-                    "request": _ingest_request_payload(request),
-                },
-                headers={"correlation_id": request_id},
-            )
-        )
-        try:
-            response = await asyncio.wait_for(
-                self._ingest_queue.consume(response_topic),
-                timeout=self._ingest_response_timeout,
-            )
-        except TimeoutError as exc:
-            raise ManagerIngestTimeoutError(
-                request_id=request_id,
-                timeout=self._ingest_response_timeout,
-            ) from exc
-        task_done = getattr(self._ingest_queue, "task_done", None)
-        if task_done is not None:
-            task_done(response_topic)
-        if response.payload.get("ok"):
-            return _ingest_result_from_payload(response.payload.get("result"))
-        raise ManagerIngestFailedError(
-            str(_error_message(response.payload.get("error"))),
-            request_id=request_id,
+        return await _call_project(
+            self._project_documents,
+            "delete_document",
+            request,
+            context=context,
         )
 
 
@@ -158,53 +145,69 @@ def _request_str(request: Any, field: str) -> str:
     return str(getattr(request, field, ""))
 
 
-def _ingest_request_payload(request: Any) -> dict[str, Any]:
-    if isinstance(request, dict):
-        return dict(request)
-    raw_text = getattr(request, "raw_text", None)
-    raw_content = getattr(request, "raw_content", None)
-    payload = {
-        "project_id": str(getattr(request, "project_id", "")),
-        "user_id": str(getattr(request, "user_id", "")),
-        "kb_id": str(getattr(request, "kb_id", "")),
-        "doc_id": str(getattr(request, "doc_id", "")),
-        "source_uri": str(getattr(request, "source_uri", "")),
-        "content_type": str(getattr(request, "content_type", "")),
-        "metadata": dict(getattr(request, "metadata", {}) or {}),
-    }
-    if raw_text is not None:
-        payload["raw_text"] = raw_text
-    if raw_content is not None:
-        payload["raw_content"] = raw_content
-    return payload
+async def _project_ingest(
+    project_documents: ProjectDocumentClient,
+    request: Any,
+    *,
+    context: ManagerRequestContext | None = None,
+) -> Any:
+    start_task = getattr(project_documents, "start_document_ingest_task", None)
+    if start_task is not None:
+        return await _call_project_method(start_task, request, context=context)
+    return await _call_project_method(project_documents.ingest, request, context=context)
 
 
-def _ingest_result_from_payload(payload: Any) -> Any:
-    """Build a transport-neutral result from a queue response payload.
+async def _project_search(
+    project_documents: ProjectDocumentClient,
+    request: Any,
+    *,
+    context: ManagerRequestContext | None = None,
+) -> Any:
+    search_documents = getattr(project_documents, "search_documents", None)
+    if search_documents is not None:
+        return await _call_project_method(search_documents, request, context=context)
+    return await _call_project_method(project_documents.search, request, context=context)
 
-    Uses only shared-contract types so that the manager never imports
-    project_service or retrieval_service domain schemas.
-    """
-    if not isinstance(payload, dict):
-        return payload
-    from shared.contracts import IngestJobResult, JobStatus
 
-    raw_status = str(payload.get("status", "pending"))
-    try:
-        status = JobStatus(raw_status)
-    except ValueError:
-        status = JobStatus.PENDING
+async def _project_ingest_status(
+    project_documents: ProjectDocumentClient,
+    job_id: str,
+    *,
+    context: ManagerRequestContext | None = None,
+) -> Any:
+    get_status = getattr(project_documents, "get_document_task_status", None)
+    if get_status is not None:
+        return await _call_project_method(get_status, job_id, context=context)
+    return await _call_project_method(project_documents.ingest_status, job_id, context=context)
 
-    return IngestJobResult(
-        job_id=str(payload.get("job_id") or payload.get("request_id", "")),
-        status=status,
-        doc_id=str(payload.get("doc_id", "")),
-        project_id=str(payload.get("project_id", "")),
-        error=str(payload.get("error", "")),
+
+async def _call_project(
+    project_documents: ProjectDocumentClient,
+    method_name: str,
+    *args: Any,
+    context: ManagerRequestContext | None = None,
+) -> Any:
+    method = getattr(project_documents, method_name)
+    return await _call_project_method(method, *args, context=context)
+
+
+async def _call_project_method(
+    method: Any,
+    *args: Any,
+    context: ManagerRequestContext | None = None,
+) -> Any:
+    if context is None:
+        return await method(*args)
+    if _accepts_context(method):
+        return await method(*args, context=context.to_payload())
+    return await method(*args)
+
+
+def _accepts_context(method: Any) -> bool:
+    signature = inspect.signature(method)
+    if "context" in signature.parameters:
+        return True
+    return any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
     )
-
-
-def _error_message(error_payload: Any) -> str:
-    if isinstance(error_payload, dict):
-        return str(error_payload.get("message", error_payload.get("error", "ingest failed")))
-    return str(error_payload or "ingest failed")

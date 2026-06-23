@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from retrieval_service.indexing import create_app
 from shared.queue import LocalQueueBroker, QueueMessage
@@ -67,6 +68,20 @@ class RetrievalIndexAppTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.topic, "custom.index")
         self.assertIsNone(app.consumer)
         await app.shutdown()
+
+    async def test_shutdown_delegates_to_indexing_service(self) -> None:
+        indexing_service = _FakeIndexingService()
+        indexing_service.shutdown = AsyncMock()
+        app = await create_app(
+            queue=LocalQueueBroker(),
+            indexing_service=indexing_service,
+            enabled=False,
+            topic="custom.index",
+        )
+
+        await app.shutdown()
+
+        indexing_service.shutdown.assert_awaited_once()
 
 
 class _FakeIndexingService:

@@ -1,7 +1,7 @@
 """Showcase dense, BM25, and hybrid retrieval through the manager boundary.
 
-Uses ManagerService with a local queue broker, project-document client,
-and bare engine search delegation — the same boundary the manager uses.
+Uses ManagerService with a project-document client and bare engine search
+delegation for mode-specific comparisons.
 
 Setup:
 1. Install dependencies: ``python -m pip install -e ".[sparse]"``
@@ -20,6 +20,10 @@ Setup:
 
 The showcase uses ``RAG_MULTI_SHOWCASE_*`` environment variables and defaults
 to collection version ``hybrid_v1``.
+
+Placement note: this script creates and prints a local placement plan, but live
+retrieval/index execution still uses the configured single Qdrant endpoint.
+Multi-database execution is design-only for now.
 """
 
 from __future__ import annotations
@@ -51,13 +55,20 @@ from project_service.gateway import (  # noqa: E402
     SearchPlan,
     SearchRequest,
 )
+from project_service.planning import ProjectPlanningService  # noqa: E402
 from project_service.rag import RagEngine  # noqa: E402
 from project_service.schemas import ProjectConfig  # noqa: E402
 from retrieval_service.embedding import EmbeddingProviderFactory  # noqa: E402
+from retrieval_service.placement import (  # noqa: E402
+    InMemoryPlacementRepository,
+    InMemoryRetrievalShardRepository,
+    PlacementResolver,
+    RetrievalShard,
+    RoutingPolicy,
+)
 from retrieval_service.services.bm25 import QdrantSparseBM25Index  # noqa: E402
 from retrieval_service.services.sparse_encoder import FastEmbedSparseTextEncoder  # noqa: E402
 from retrieval_service.services.vector_store import QdrantStore  # noqa: E402
-from shared.queue import LocalQueueBroker  # noqa: E402
 
 load_dotenv(Path(__file__).with_name(".env"))
 
@@ -176,29 +187,37 @@ async def main() -> None:
         sparse_encoder=sparse_encoder,
         ingest_worker_count=1,
     )
+    placement_resolver, routing_policy = _build_showcase_placement(
+        qdrant_host=os.getenv("RAG_QDRANT_HOST", "localhost"),
+        qdrant_port=int(os.getenv("RAG_QDRANT_PORT", "6333")),
+    )
+    planning = ProjectPlanningService(
+        gateway=gateway,
+        placement_resolver=placement_resolver,
+        routing_policy=routing_policy,
+    )
 
     project_client: ProjectDocumentClient = LocalProjectServiceClient(
         gateway=gateway,
         engine=engine,
+        planning=planning,
     )
+    placement_preview = await planning.plan_search(
+        SearchRequest(
+            project_id=project_id,
+            user_id=user_id,
+            query="placement preview",
+            topic_id="showcase",
+            kb_ids=(kb_id,),
+        )
+    )
+    print(f"Placement preview: {placement_preview.placement_plan}")
 
-    broker = LocalQueueBroker(maxsize=10)
     manager = ManagerService(
         project_documents=project_client,
-        ingest_queue=broker,
         ingest_topic="ingestion.requests",
-        ingest_response_timeout=30.0,
         router=ManagerRouter(ingest_topic="ingestion.requests"),
     )
-
-    from ingestion_service.server.consumer import IngestionRequestConsumer
-    consumer = IngestionRequestConsumer(
-        queue=broker,
-        project_documents=project_client,
-        topic="ingestion.requests",
-    )
-    consumer.start()
-    await asyncio.sleep(0.05)
 
     try:
         # --- Ingest through the manager (hybrid mode) -----------------------
@@ -208,6 +227,7 @@ async def main() -> None:
                 user_id=user_id,
                 kb_id=kb_id,
                 doc_id=doc_id,
+                topic_id="showcase",
                 source_uri="https://example.com/retrieval-methods",
                 content_type="text/plain",
                 raw_text=FULL_DOCUMENT,
@@ -218,7 +238,7 @@ async def main() -> None:
         )
         print(f"Ingested {doc_id} → job_id={ingest_result.job_id} status={ingest_result.status}")
 
-        # Wait for background processing
+        # Wait for background indexing
         await asyncio.sleep(0.5)
 
         # Check final status via the manager
@@ -244,7 +264,13 @@ async def main() -> None:
                 collection_version=collection_version,
                 mode=mode,
             )
-            search_request = SearchRequest(project_id, user_id, query, (kb_id,))
+            search_request = SearchRequest(
+                project_id=project_id,
+                user_id=user_id,
+                query=query,
+                topic_id="showcase",
+                kb_ids=(kb_id,),
+            )
             scope = await adapter.build_query_scope(search_request)
             retrieval_filter = await adapter.build_retrieval_filter(scope)
             result = await engine.search(
@@ -256,7 +282,6 @@ async def main() -> None:
                 print(f"  {chunk['chunk_id']} score={score:.4f}: {chunk['text']}")
 
     finally:
-        await consumer.stop()
         await engine.shutdown()
         await embedding.shutdown()
         if bm25_index is not None:
@@ -271,6 +296,26 @@ class _FakeResolver:
     async def resolve(self, project_id: str) -> object:
         del project_id
         return self._adapter
+
+
+def _build_showcase_placement(
+    *,
+    qdrant_host: str,
+    qdrant_port: int,
+) -> tuple[PlacementResolver, RoutingPolicy]:
+    resolver = PlacementResolver(
+        shard_repository=InMemoryRetrievalShardRepository(
+            [
+                RetrievalShard(
+                    shard_id="local-qdrant",
+                    cluster_id="local",
+                    qdrant_endpoint=f"http://{qdrant_host}:{qdrant_port}",
+                )
+            ]
+        ),
+        placement_repository=InMemoryPlacementRepository(),
+    )
+    return resolver, RoutingPolicy(project_id="*", routing_mode="project_single")
 
 
 def _make_config(

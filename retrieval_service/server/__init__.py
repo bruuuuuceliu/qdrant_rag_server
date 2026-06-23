@@ -19,6 +19,10 @@ from retrieval_service.server.queue import (
     RetrievalApiQueueConsumer,
     RetrievalApiQueueTimeoutError,
 )
+from retrieval_service.server.worker import (
+    RetrievalHttpServerContext,
+    create_worker_server,
+)
 
 __all__ = [
     "RetrievalApiQueueClient",
@@ -30,8 +34,10 @@ __all__ = [
     "RetrievalHttpApp",
     "RetrievalHttpRequest",
     "RetrievalHttpResponse",
+    "RetrievalHttpServerContext",
     "create_app",
     "create_http_app",
     "create_queue_app",
+    "create_worker_server",
     "serve_http",
 ]

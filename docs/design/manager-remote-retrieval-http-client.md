@@ -1,6 +1,6 @@
 # Manager Remote Retrieval HTTP Client
 
-Status: draft.
+Status: accepted.
 
 ## Requirement
 

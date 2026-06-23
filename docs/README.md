@@ -5,7 +5,7 @@ This project is a minimal, extensible information retrieval service. It can supp
 ## Read First
 
 - [Architecture](architecture.md): component boundaries and replaceable parts.
-- [Service Boundaries](service-boundaries.md): manager, project, ingestion, retrieval, and future service ownership.
+- [Service Boundaries](service-boundaries.md): manager/auth, domain services, helper nodes, task manager, and broker ownership.
 - [Ideal System Boundary](boundary.md): target multi-service architecture, inputs, outputs, queues, and ownership stakes.
 - [Contracts](contracts.md): manager routing and queue message contracts.
 - [Implementation Roadmap](implementation-roadmap.md): iteration targets and migration guardrails.
@@ -13,10 +13,23 @@ This project is a minimal, extensible information retrieval service. It can supp
 - [Section Design Index](design/section-design-index.md): accepted development loop sections and status docs.
 - [Document handling module design](design/document-handling-module.md): proposed URL/file parsing and chunking architecture.
 - [Examples](../examples/README.md): local startup and first ingest/search calls.
+- [Configuration Profiles](../configs/README.md): local/production config modules, env files, and override order.
 
 ## Design Position
 
-The service should stay small:
+The project is being realigned to a strict independent-server design:
+
+- Each server or worker lives in its own independent workspace.
+- Runtime service work communicates through Redpanda topics; public APIs are
+  limited to auth/status/health style boundaries.
+- Services do not import another service's internals.
+- Shared code contains contracts, schemas, protocol clients, and generic
+  utilities only.
+- Configs and tests are separated by service under `configs/` and `tests/`.
+- Local and production use the same code paths; only addresses, credentials,
+  ports, and paths differ.
+
+The service surface should stay small:
 
 - Core: ingest, retrieve, delete, status, cache invalidation, and optional raw backup.
 - Optional: reranking, generation, object storage, version management.

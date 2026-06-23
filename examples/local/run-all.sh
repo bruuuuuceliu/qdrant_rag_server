@@ -9,9 +9,11 @@ STATE_FILE="${RUNTIME_DIR}/state.env"
 MANAGER_PID_FILE="${RUNTIME_DIR}/manager.pid"
 PROJECT_SERVICE_PID_FILE="${RUNTIME_DIR}/project-service.pid"
 INGESTION_WORKER_PID_FILE="${RUNTIME_DIR}/ingestion-worker.pid"
+RETRIEVAL_INDEX_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-index-worker.pid"
+RETRIEVAL_HTTP_PID_FILE="${RUNTIME_DIR}/retrieval-http.pid"
 QDRANT_CID_FILE="${RUNTIME_DIR}/qdrant.cid"
 QDRANT_LOG_PID_FILE="${RUNTIME_DIR}/qdrant-log.pid"
-ENV_FILE="${RAG_LOCAL_ENV_FILE:-${SCRIPT_DIR}/local.env}"
+ENV_FILE="${RAG_LOCAL_ENV_FILE:-${ROOT_DIR}/configs/local.env}"
 
 INIT_PROJECT=0
 RESET_FIRST=0
@@ -19,11 +21,14 @@ START_QDRANT=auto
 FOREGROUND=0
 START_SERVER=1
 EXTERNAL_INGESTION=0
+EXTERNAL_RETRIEVAL_INDEX=0
+EXTERNAL_RETRIEVAL_HTTP=0
 EXTERNAL_PROJECT_SERVICE=0
 PROJECT_ID="${RAG_EXAMPLE_PROJECT_ID:-demo}"
 PROJECT_TYPE="${RAG_EXAMPLE_PROJECT_TYPE:-website}"
 QDRANT_CONTAINER="${RAG_QDRANT_CONTAINER:-qdrant-rag-local}"
 QDRANT_VOLUME="${RAG_QDRANT_VOLUME:-qdrant-rag-local-data}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
 usage() {
   cat <<'EOF'
@@ -41,8 +46,10 @@ Options:
   --foreground                   Run manager in the foreground after setup.
   --no-server                    Run setup/init only; do not start services.
   --external-ingestion           Start ingestion worker as a separate process.
+  --external-retrieval-index     Start retrieval index worker as a separate process.
+  --external-retrieval-http      Start retrieval HTTP API as a separate process and use manager HTTP mode.
   --external-project-service     Start project/RAG service as a separate process.
-  --split-services               Shortcut for --external-project-service --external-ingestion.
+  --split-services               Shortcut for external project, ingestion, and retrieval index workers.
   --env-file PATH                Source extra env vars before starting.
   --project-id VALUE             Project ID for --init. Default: demo.
   --project-type VALUE           Project type for --init. Default: website.
@@ -87,6 +94,14 @@ while [[ $# -gt 0 ]]; do
       EXTERNAL_INGESTION=1
       shift
       ;;
+    --external-retrieval-index)
+      EXTERNAL_RETRIEVAL_INDEX=1
+      shift
+      ;;
+    --external-retrieval-http)
+      EXTERNAL_RETRIEVAL_HTTP=1
+      shift
+      ;;
     --external-project-service)
       EXTERNAL_PROJECT_SERVICE=1
       shift
@@ -94,6 +109,7 @@ while [[ $# -gt 0 ]]; do
     --split-services)
       EXTERNAL_PROJECT_SERVICE=1
       EXTERNAL_INGESTION=1
+      EXTERNAL_RETRIEVAL_INDEX=1
       shift
       ;;
     --env-file)
@@ -164,16 +180,27 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 export RAG_LOCAL_DATA_DIR="${RAG_LOCAL_DATA_DIR:-${SCRIPT_DIR}/.data}"
+export RAG_CONFIG_PROFILE="${RAG_CONFIG_PROFILE:-local}"
 export RAG_CONFIG_DB_PATH="${RAG_CONFIG_DB_PATH:-${RAG_LOCAL_DATA_DIR}/config.db}"
 export RAG_RESPONSE_CACHE_DB_PATH="${RAG_RESPONSE_CACHE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/response_cache.db}"
 export RAG_INGEST_JOB_DB_PATH="${RAG_INGEST_JOB_DB_PATH:-${RAG_LOCAL_DATA_DIR}/ingestion_jobs.db}"
 export WORKFLOW_LOG_DB_PATH="${WORKFLOW_LOG_DB_PATH:-${RAG_LOCAL_DATA_DIR}/workflow_log.db}"
 export RAG_OBJECT_STORAGE_BASE_PATH="${RAG_OBJECT_STORAGE_BASE_PATH:-${RAG_LOCAL_DATA_DIR}/raw_storage}"
+export RETRIEVAL_PLACEMENT_ENABLED="${RETRIEVAL_PLACEMENT_ENABLED:-true}"
+export RETRIEVAL_PLACEMENT_DB_PATH="${RETRIEVAL_PLACEMENT_DB_PATH:-${RAG_LOCAL_DATA_DIR}/placement.db}"
+export RETRIEVAL_PLACEMENT_ROUTING_MODE="${RETRIEVAL_PLACEMENT_ROUTING_MODE:-project_single}"
+export RETRIEVAL_PLACEMENT_BUCKET_COUNT="${RETRIEVAL_PLACEMENT_BUCKET_COUNT:-1}"
+export RETRIEVAL_PLACEMENT_REPLICATION_FACTOR="${RETRIEVAL_PLACEMENT_REPLICATION_FACTOR:-1}"
+export RETRIEVAL_PLACEMENT_SHARD_ID="${RETRIEVAL_PLACEMENT_SHARD_ID:-local-qdrant}"
+export RETRIEVAL_PLACEMENT_CLUSTER_ID="${RETRIEVAL_PLACEMENT_CLUSTER_ID:-local}"
 export RAG_GRPC_PORT="${RAG_GRPC_PORT:-50051}"
 export RAG_PROJECT_GRPC_PORT="${RAG_PROJECT_GRPC_PORT:-50052}"
 export RAG_QDRANT_HOST="${RAG_QDRANT_HOST:-localhost}"
 export RAG_QDRANT_PORT="${RAG_QDRANT_PORT:-6333}"
 export RAG_QDRANT_GRPC_PORT="${RAG_QDRANT_GRPC_PORT:-6334}"
+export RETRIEVAL_HTTP_HOST="${RETRIEVAL_HTTP_HOST:-127.0.0.1}"
+export RETRIEVAL_HTTP_PORT="${RETRIEVAL_HTTP_PORT:-8081}"
+export RETRIEVAL_HTTP_READ_TIMEOUT="${RETRIEVAL_HTTP_READ_TIMEOUT:-5.0}"
 export RAG_MAX_PER_PROJECT="${RAG_MAX_PER_PROJECT:-20}"
 export RAG_MAX_PER_USER="${RAG_MAX_PER_USER:-5}"
 export RAG_MAX_CONCURRENT_SEARCHES="${RAG_MAX_CONCURRENT_SEARCHES:-32}"
@@ -192,12 +219,24 @@ export MANAGER_QUEUE_BROKER="${MANAGER_QUEUE_BROKER:-local}"
 export MANAGER_QUEUE_DB_PATH="${MANAGER_QUEUE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/ingestion_queue.db}"
 export MANAGER_PROJECT_CLIENT_MODE="${MANAGER_PROJECT_CLIENT_MODE:-local}"
 export MANAGER_PROJECT_GRPC_TARGET="${MANAGER_PROJECT_GRPC_TARGET:-localhost:${RAG_PROJECT_GRPC_PORT}}"
+export MANAGER_RETRIEVAL_CLIENT_MODE="${MANAGER_RETRIEVAL_CLIENT_MODE:-local}"
+export MANAGER_RETRIEVAL_HTTP_BASE_URL="${MANAGER_RETRIEVAL_HTTP_BASE_URL:-http://${RETRIEVAL_HTTP_HOST}:${RETRIEVAL_HTTP_PORT}}"
+export MANAGER_RETRIEVAL_HTTP_TIMEOUT="${MANAGER_RETRIEVAL_HTTP_TIMEOUT:-30}"
 export INGESTION_QUEUE_BROKER="${INGESTION_QUEUE_BROKER:-sqlite}"
 export INGESTION_QUEUE_DB_PATH="${INGESTION_QUEUE_DB_PATH:-${MANAGER_QUEUE_DB_PATH}}"
 export INGESTION_REQUEST_TOPIC="${INGESTION_REQUEST_TOPIC:-${MANAGER_INGEST_TOPIC}}"
 export INGESTION_QUEUE_MAXSIZE="${INGESTION_QUEUE_MAXSIZE:-${MANAGER_LOCAL_QUEUE_MAXSIZE}}"
-export INGESTION_PROJECT_CLIENT_MODE="${INGESTION_PROJECT_CLIENT_MODE:-local}"
-export INGESTION_PROJECT_GRPC_TARGET="${INGESTION_PROJECT_GRPC_TARGET:-${MANAGER_PROJECT_GRPC_TARGET}}"
+export INGESTION_RETRIEVAL_INDEX_ENABLED="${INGESTION_RETRIEVAL_INDEX_ENABLED:-true}"
+export INGESTION_RETRIEVAL_INDEX_TOPIC="${INGESTION_RETRIEVAL_INDEX_TOPIC:-retrieval.index.requests}"
+export INGESTION_RETRIEVAL_INDEX_QUEUE_BROKER="${INGESTION_RETRIEVAL_INDEX_QUEUE_BROKER:-sqlite}"
+export INGESTION_RETRIEVAL_INDEX_QUEUE_DB_PATH="${INGESTION_RETRIEVAL_INDEX_QUEUE_DB_PATH:-${MANAGER_QUEUE_DB_PATH}}"
+export INGESTION_RETRIEVAL_INDEX_QUEUE_MAXSIZE="${INGESTION_RETRIEVAL_INDEX_QUEUE_MAXSIZE:-${MANAGER_LOCAL_QUEUE_MAXSIZE}}"
+export INGESTION_RETRIEVAL_INDEX_RESPONSE_TIMEOUT="${INGESTION_RETRIEVAL_INDEX_RESPONSE_TIMEOUT:-30}"
+export RETRIEVAL_INDEX_WORKER_ENABLED="${RETRIEVAL_INDEX_WORKER_ENABLED:-true}"
+export RETRIEVAL_INDEX_REQUEST_TOPIC="${RETRIEVAL_INDEX_REQUEST_TOPIC:-retrieval.index.requests}"
+export RETRIEVAL_INDEX_QUEUE_BROKER="${RETRIEVAL_INDEX_QUEUE_BROKER:-sqlite}"
+export RETRIEVAL_INDEX_QUEUE_DB_PATH="${RETRIEVAL_INDEX_QUEUE_DB_PATH:-${MANAGER_QUEUE_DB_PATH}}"
+export RETRIEVAL_INDEX_QUEUE_MAXSIZE="${RETRIEVAL_INDEX_QUEUE_MAXSIZE:-${MANAGER_LOCAL_QUEUE_MAXSIZE}}"
 export RAG_EMBEDDING_PROVIDER="${RAG_EMBEDDING_PROVIDER:-local}"
 export RAG_EMBEDDING_MODEL="${RAG_EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}"
 export RAG_EMBEDDING_DEVICE="${RAG_EMBEDDING_DEVICE:-cpu}"
@@ -226,10 +265,35 @@ normalize_proxy_env() {
 
 normalize_proxy_env
 
+validate_mode_combination() {
+  if [[ "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 && "$EXTERNAL_PROJECT_SERVICE" -eq 1 ]]; then
+    cat >&2 <<'EOF'
+Unsupported local runner mode: --external-retrieval-http requires manager project planning to stay local.
+
+Do not combine --external-retrieval-http with --external-project-service or --split-services yet.
+Project config/scope APIs must be extracted before remote project planning can drive remote retrieval HTTP execution.
+EOF
+    exit 2
+  fi
+}
+
+validate_mode_combination
+
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN=python3
+  else
+    echo "Python runtime not found. Set PYTHON_BIN or install python/python3." >&2
+    exit 1
+  fi
+fi
+export PYTHON_BIN
+
 mkdir -p "$RUNTIME_DIR" "$LOG_DIR" "$RAG_LOCAL_DATA_DIR" "$RAG_OBJECT_STORAGE_BASE_PATH"
 
 if [[ "$RESET_FIRST" -eq 1 ]]; then
   "${SCRIPT_DIR}/stop-all.sh" --clean || true
+  mkdir -p "$RUNTIME_DIR" "$LOG_DIR" "$RAG_LOCAL_DATA_DIR" "$RAG_OBJECT_STORAGE_BASE_PATH"
 fi
 
 cd "$ROOT_DIR"
@@ -241,6 +305,7 @@ is_qdrant_reachable() {
 
 start_qdrant_if_needed() {
   local qdrant_log="${LOG_DIR}/qdrant.log"
+  mkdir -p "$(dirname "$qdrant_log")"
   : > "$qdrant_log"
   if [[ "$START_QDRANT" == "no" ]]; then
     echo "Qdrant startup disabled by --no-qdrant." >> "$qdrant_log"
@@ -258,6 +323,18 @@ start_qdrant_if_needed() {
     fi
     echo "Warning: Qdrant is not reachable and Docker was not found." >&2
     echo "Start Qdrant yourself or rerun with Docker available." >&2
+    return 0
+  fi
+
+  if ! docker info >/dev/null 2>&1; then
+    if [[ "$START_QDRANT" == "yes" ]]; then
+      echo "Docker is installed but the daemon is not accessible." >&2
+      echo "Check Docker is running and that this user can access /var/run/docker.sock." >&2
+      exit 1
+    fi
+    echo "Warning: Qdrant is not reachable and Docker is not accessible." >&2
+    echo "Start Qdrant yourself or rerun after Docker access is fixed." >&2
+    echo "Docker daemon was not accessible; Qdrant was not started." >> "$qdrant_log"
     return 0
   fi
 
@@ -302,7 +379,7 @@ start_qdrant_log_collector() {
 }
 
 check_runtime_dependencies() {
-  python - <<'PY'
+  "$PYTHON_BIN" - <<'PY'
 import importlib.util
 import os
 import sys
@@ -338,8 +415,21 @@ validate_provider_config() {
   esac
 }
 
+validate_runtime_config() {
+  "$PYTHON_BIN" - <<'PY'
+import os
+
+from configs.config import load_settings
+from configs.validation import validate_settings_or_raise
+
+profile = os.environ.get("RAG_CONFIG_PROFILE", "local")
+settings = load_settings(profile=profile)
+validate_settings_or_raise(settings, profile=profile)
+PY
+}
+
 init_project_config() {
-  PROJECT_ID="$PROJECT_ID" PROJECT_TYPE="$PROJECT_TYPE" python - <<'PY'
+  PROJECT_ID="$PROJECT_ID" PROJECT_TYPE="$PROJECT_TYPE" "$PYTHON_BIN" - <<'PY'
 import asyncio
 import os
 from pathlib import Path
@@ -378,6 +468,45 @@ is_pid_alive() {
   [[ -n "${1:-}" ]] && kill -0 "$1" >/dev/null 2>&1
 }
 
+is_tcp_port_open() {
+  local host="$1"
+  local port="$2"
+  "$PYTHON_BIN" - "$host" "$port" <<'PY' >/dev/null 2>&1
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+with socket.create_connection((host, port), timeout=0.5):
+    pass
+PY
+}
+
+wait_for_service_port() {
+  local label="$1"
+  local pid="$2"
+  local host="$3"
+  local port="$4"
+  local log_file="$5"
+  local timeout_seconds="${6:-90}"
+  local elapsed=0
+  while [[ "$elapsed" -lt "$timeout_seconds" ]]; do
+    if ! is_pid_alive "$pid"; then
+      echo "${label} failed to stay running. Log follows:" >&2
+      sed -n '1,200p' "$log_file" >&2 || true
+      return 1
+    fi
+    if is_tcp_port_open "$host" "$port"; then
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  echo "${label} did not open ${host}:${port} within ${timeout_seconds}s. Log follows:" >&2
+  sed -n '1,200p' "$log_file" >&2 || true
+  return 1
+}
+
 ensure_not_already_running() {
   if [[ -f "$MANAGER_PID_FILE" ]]; then
     local old_pid
@@ -396,6 +525,24 @@ ensure_not_already_running() {
       exit 1
     fi
     rm -f "$INGESTION_WORKER_PID_FILE"
+  fi
+  if [[ -f "$RETRIEVAL_INDEX_WORKER_PID_FILE" ]]; then
+    local old_index_pid
+    old_index_pid="$(cat "$RETRIEVAL_INDEX_WORKER_PID_FILE" 2>/dev/null || true)"
+    if is_pid_alive "$old_index_pid"; then
+      echo "Retrieval index worker is already running with PID ${old_index_pid}. Use examples/local/stop-all.sh first." >&2
+      exit 1
+    fi
+    rm -f "$RETRIEVAL_INDEX_WORKER_PID_FILE"
+  fi
+  if [[ -f "$RETRIEVAL_HTTP_PID_FILE" ]]; then
+    local old_retrieval_http_pid
+    old_retrieval_http_pid="$(cat "$RETRIEVAL_HTTP_PID_FILE" 2>/dev/null || true)"
+    if is_pid_alive "$old_retrieval_http_pid"; then
+      echo "Retrieval HTTP server is already running with PID ${old_retrieval_http_pid}. Use examples/local/stop-all.sh first." >&2
+      exit 1
+    fi
+    rm -f "$RETRIEVAL_HTTP_PID_FILE"
   fi
   if [[ -f "$PROJECT_SERVICE_PID_FILE" ]]; then
     local old_project_pid
@@ -420,6 +567,8 @@ RAG_QDRANT_PORT=${RAG_QDRANT_PORT}
 RAG_QDRANT_GRPC_PORT=${RAG_QDRANT_GRPC_PORT}
 QDRANT_CONTAINER=${QDRANT_CONTAINER}
 QDRANT_VOLUME=${QDRANT_VOLUME}
+RETRIEVAL_INDEX_REQUEST_TOPIC=${RETRIEVAL_INDEX_REQUEST_TOPIC}
+RETRIEVAL_HTTP_PORT=${RETRIEVAL_HTTP_PORT}
 EOF
 }
 
@@ -427,16 +576,13 @@ start_project_service_background() {
   local project_log="${LOG_DIR}/project-service.log"
   : > "$project_log"
   if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c 'RAG_GRPC_PORT="$1" exec python -m project_service.server.app' _ "$RAG_PROJECT_GRPC_PORT" > "$project_log" 2>&1 &
+    setsid bash -c 'RAG_GRPC_PORT="$1" exec "$PYTHON_BIN" -m project_service.server.app' _ "$RAG_PROJECT_GRPC_PORT" > "$project_log" 2>&1 &
   else
-    RAG_GRPC_PORT="$RAG_PROJECT_GRPC_PORT" python -m project_service.server.app > "$project_log" 2>&1 &
+    RAG_GRPC_PORT="$RAG_PROJECT_GRPC_PORT" "$PYTHON_BIN" -m project_service.server.app > "$project_log" 2>&1 &
   fi
   local pid=$!
   echo "$pid" > "$PROJECT_SERVICE_PID_FILE"
-  sleep 2
-  if ! is_pid_alive "$pid"; then
-    echo "Project service failed to stay running. Log follows:" >&2
-    sed -n '1,160p' "$project_log" >&2 || true
+  if ! wait_for_service_port "Project service" "$pid" "127.0.0.1" "$RAG_PROJECT_GRPC_PORT" "$project_log" 120; then
     rm -f "$PROJECT_SERVICE_PID_FILE"
     exit 1
   fi
@@ -447,9 +593,9 @@ start_ingestion_worker_background() {
   local worker_log="${LOG_DIR}/ingestion-worker.log"
   : > "$worker_log"
   if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c 'exec python -m ingestion_service.server.worker' > "$worker_log" 2>&1 &
+    setsid bash -c 'exec "$PYTHON_BIN" -m ingestion_service.server.worker' > "$worker_log" 2>&1 &
   else
-    python -m ingestion_service.server.worker > "$worker_log" 2>&1 &
+    "$PYTHON_BIN" -m ingestion_service.server.worker > "$worker_log" 2>&1 &
   fi
   local pid=$!
   echo "$pid" > "$INGESTION_WORKER_PID_FILE"
@@ -463,40 +609,87 @@ start_ingestion_worker_background() {
   echo "Ingestion worker server started with PID ${pid}. Log: ${worker_log}"
 }
 
+start_retrieval_index_worker_background() {
+  local worker_log="${LOG_DIR}/retrieval-index-worker.log"
+  : > "$worker_log"
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -c 'exec "$PYTHON_BIN" -m retrieval_service.indexing.worker' > "$worker_log" 2>&1 &
+  else
+    "$PYTHON_BIN" -m retrieval_service.indexing.worker > "$worker_log" 2>&1 &
+  fi
+  local pid=$!
+  echo "$pid" > "$RETRIEVAL_INDEX_WORKER_PID_FILE"
+  sleep 2
+  if ! is_pid_alive "$pid"; then
+    echo "Retrieval index worker failed to stay running. Log follows:" >&2
+    sed -n '1,160p' "$worker_log" >&2 || true
+    rm -f "$RETRIEVAL_INDEX_WORKER_PID_FILE"
+    exit 1
+  fi
+  echo "Retrieval index worker started with PID ${pid}. Log: ${worker_log}"
+}
+
+start_retrieval_http_background() {
+  local retrieval_log="${LOG_DIR}/retrieval-http.log"
+  : > "$retrieval_log"
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -c 'exec "$PYTHON_BIN" -m retrieval_service.server.worker' > "$retrieval_log" 2>&1 &
+  else
+    "$PYTHON_BIN" -m retrieval_service.server.worker > "$retrieval_log" 2>&1 &
+  fi
+  local pid=$!
+  echo "$pid" > "$RETRIEVAL_HTTP_PID_FILE"
+  if ! wait_for_service_port "Retrieval HTTP server" "$pid" "${RETRIEVAL_HTTP_HOST:-127.0.0.1}" "${RETRIEVAL_HTTP_PORT:-8081}" "$retrieval_log" 120; then
+    rm -f "$RETRIEVAL_HTTP_PID_FILE"
+    exit 1
+  fi
+  echo "Retrieval HTTP server started with PID ${pid}. Log: ${retrieval_log}"
+}
+
 start_manager_background() {
   local manager_log="${LOG_DIR}/manager.log"
   : > "$manager_log"
   if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c 'exec python -m manager_service.server.app' > "$manager_log" 2>&1 &
+    setsid bash -c 'exec "$PYTHON_BIN" -m local_runtime.manager_app' > "$manager_log" 2>&1 &
   else
-    python -m manager_service.server.app > "$manager_log" 2>&1 &
+    "$PYTHON_BIN" -m local_runtime.manager_app > "$manager_log" 2>&1 &
   fi
   local pid=$!
   echo "$pid" > "$MANAGER_PID_FILE"
-  sleep 2
-  if ! is_pid_alive "$pid"; then
-    echo "Manager failed to stay running. Log follows:" >&2
-    sed -n '1,160p' "$manager_log" >&2 || true
+  if ! wait_for_service_port "Manager" "$pid" "127.0.0.1" "$RAG_GRPC_PORT" "$manager_log" 120; then
     rm -f "$MANAGER_PID_FILE"
     exit 1
   fi
   echo "Manager gRPC server started with PID ${pid}. Log: ${manager_log}"
 }
 
+if [[ "$EXTERNAL_PROJECT_SERVICE" -eq 1 ]]; then
+  export MANAGER_PROJECT_CLIENT_MODE=grpc
+  export MANAGER_PROJECT_GRPC_TARGET="localhost:${RAG_PROJECT_GRPC_PORT}"
+fi
+if [[ "$EXTERNAL_INGESTION" -eq 1 ]]; then
+  export MANAGER_INGESTION_WORKER_MODE=external
+  export MANAGER_QUEUE_BROKER=sqlite
+  export INGESTION_QUEUE_BROKER=sqlite
+fi
+if [[ "$EXTERNAL_RETRIEVAL_INDEX" -eq 1 ]]; then
+  export INGESTION_RETRIEVAL_INDEX_ENABLED=true
+  export INGESTION_RETRIEVAL_INDEX_QUEUE_BROKER=sqlite
+  export INGESTION_RETRIEVAL_INDEX_QUEUE_DB_PATH="${RETRIEVAL_INDEX_QUEUE_DB_PATH}"
+  export INGESTION_RETRIEVAL_INDEX_TOPIC="${RETRIEVAL_INDEX_REQUEST_TOPIC}"
+  export INGESTION_RETRIEVAL_INDEX_RESPONSE_TIMEOUT="${INGESTION_RETRIEVAL_INDEX_RESPONSE_TIMEOUT:-30}"
+  export RETRIEVAL_INDEX_QUEUE_BROKER=sqlite
+fi
+if [[ "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 ]]; then
+  export MANAGER_RETRIEVAL_CLIENT_MODE=http
+  export MANAGER_RETRIEVAL_HTTP_BASE_URL="http://${RETRIEVAL_HTTP_HOST:-127.0.0.1}:${RETRIEVAL_HTTP_PORT:-8081}"
+fi
+
+validate_provider_config
+validate_runtime_config
+
 if [[ "$START_SERVER" -eq 1 ]]; then
-  if [[ "$EXTERNAL_PROJECT_SERVICE" -eq 1 ]]; then
-    export MANAGER_PROJECT_CLIENT_MODE=grpc
-    export MANAGER_PROJECT_GRPC_TARGET="localhost:${RAG_PROJECT_GRPC_PORT}"
-    export INGESTION_PROJECT_CLIENT_MODE=grpc
-    export INGESTION_PROJECT_GRPC_TARGET="${MANAGER_PROJECT_GRPC_TARGET}"
-  fi
-  if [[ "$EXTERNAL_INGESTION" -eq 1 ]]; then
-    export MANAGER_INGESTION_WORKER_MODE=external
-    export MANAGER_QUEUE_BROKER=sqlite
-    export INGESTION_QUEUE_BROKER=sqlite
-  fi
   start_qdrant_if_needed
-  validate_provider_config
   check_runtime_dependencies
   ensure_not_already_running
 fi
@@ -513,16 +706,24 @@ Local RAG service settings:
   project_type:        ${PROJECT_TYPE}
   runtime_dir:         ${RUNTIME_DIR}
   data_dir:            ${RAG_LOCAL_DATA_DIR}
+  config_profile:      ${RAG_CONFIG_PROFILE}
   config_db:           ${RAG_CONFIG_DB_PATH}
   response_cache_db:   ${RAG_RESPONSE_CACHE_DB_PATH}
   ingest_jobs_db:      ${RAG_INGEST_JOB_DB_PATH}
   workflow_log_db:     ${WORKFLOW_LOG_DB_PATH}
+  placement_db:        ${RETRIEVAL_PLACEMENT_DB_PATH}
+  placement_mode:      ${RETRIEVAL_PLACEMENT_ROUTING_MODE}
   grpc_port:           ${RAG_GRPC_PORT}
   project_grpc_port:   ${RAG_PROJECT_GRPC_PORT}
   qdrant:              ${RAG_QDRANT_HOST}:${RAG_QDRANT_PORT}
   ingestion_mode:      ${MANAGER_INGESTION_WORKER_MODE}
   queue_broker:        ${MANAGER_QUEUE_BROKER}
   queue_db:            ${MANAGER_QUEUE_DB_PATH}
+  retrieval_index:     ${RETRIEVAL_INDEX_REQUEST_TOPIC}
+  retrieval_index_db:  ${RETRIEVAL_INDEX_QUEUE_DB_PATH}
+  ingestion_index_pub: ${INGESTION_RETRIEVAL_INDEX_ENABLED}
+  retrieval_http:      ${RETRIEVAL_HTTP_HOST:-127.0.0.1}:${RETRIEVAL_HTTP_PORT:-8081}
+  retrieval_mode:      ${MANAGER_RETRIEVAL_CLIENT_MODE:-local}
   project_client_mode: ${MANAGER_PROJECT_CLIENT_MODE}
   project_target:      ${MANAGER_PROJECT_GRPC_TARGET}
   embedding_provider:  ${RAG_EMBEDDING_PROVIDER}
@@ -542,11 +743,17 @@ if [[ "$FOREGROUND" -eq 1 ]]; then
   if [[ "$EXTERNAL_INGESTION" -eq 1 ]]; then
     start_ingestion_worker_background
   fi
+  if [[ "$EXTERNAL_RETRIEVAL_INDEX" -eq 1 ]]; then
+    start_retrieval_index_worker_background
+  fi
+  if [[ "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 ]]; then
+    start_retrieval_http_background
+  fi
   manager_log="${LOG_DIR}/manager.log"
   : > "$manager_log"
   echo "Starting manager in foreground. Log: ${manager_log}"
   echo "Press Ctrl-C to stop; then run examples/local/stop-all.sh for cleanup."
-  exec python -m manager_service.server.app 2>&1 | tee -a "$manager_log"
+  exec "$PYTHON_BIN" -m local_runtime.manager_app 2>&1 | tee -a "$manager_log"
 fi
 
 if [[ "$EXTERNAL_PROJECT_SERVICE" -eq 1 ]]; then
@@ -554,6 +761,12 @@ if [[ "$EXTERNAL_PROJECT_SERVICE" -eq 1 ]]; then
 fi
 if [[ "$EXTERNAL_INGESTION" -eq 1 ]]; then
   start_ingestion_worker_background
+fi
+if [[ "$EXTERNAL_RETRIEVAL_INDEX" -eq 1 ]]; then
+  start_retrieval_index_worker_background
+fi
+if [[ "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 ]]; then
+  start_retrieval_http_background
 fi
 start_manager_background
 echo "Stop everything with: examples/local/stop-all.sh"

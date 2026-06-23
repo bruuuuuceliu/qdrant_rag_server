@@ -5,6 +5,10 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock
 
+from project_service.capabilities import (
+    CompatibilityIngestionCapability,
+    CompatibilityRetrievalCapability,
+)
 from project_service.client import (
     LocalProjectServiceClient,
     ProjectPlannedRetrievalApiClient,
@@ -12,6 +16,7 @@ from project_service.client import (
     RemoteProjectServiceClient,
 )
 from project_service.gateway.requests import IngestRequest, SearchRequest
+from project_service.planning import ProjectPlanningService
 from project_service.schemas import IngestResult, SearchResult
 from retrieval_service.core.schemas import JobStatus
 
@@ -34,11 +39,10 @@ class LocalProjectServiceClientTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "scheduled")
         gateway.prepare_ingest.assert_awaited_once_with(request)
-        engine.schedule_ingest.assert_awaited_once_with("ingest-plan")
+        engine.schedule_ingest.assert_awaited_once_with(gateway.ingest_plan)
 
     async def test_search_prepares_plan_then_searches_engine(self) -> None:
         gateway = _Gateway()
-        gateway.prepare_search.return_value = "search-plan"
         engine = _Engine()
         client = LocalProjectServiceClient(gateway=gateway, engine=engine)
         request = SearchRequest(project_id="p1", user_id="u1", query="hello")
@@ -47,7 +51,24 @@ class LocalProjectServiceClientTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "search-result")
         gateway.prepare_search.assert_awaited_once_with(request)
-        engine.search.assert_awaited_once_with("search-plan")
+        engine.search.assert_awaited_once_with(gateway.search_plan)
+
+    async def test_search_can_use_retrieval_executor(self) -> None:
+        gateway = _Gateway()
+        engine = _Engine()
+        retrieval_executor = _RetrievalExecutor()
+        client = LocalProjectServiceClient(
+            gateway=gateway,
+            engine=engine,
+            retrieval_executor=retrieval_executor,
+        )
+
+        result = await client.search(SearchRequest(project_id="p1", user_id="u1", query="hello"))
+
+        self.assertEqual(result, "retrieval-search")
+        gateway.prepare_search.assert_awaited_once()
+        retrieval_executor.search_documents.assert_awaited_once()
+        engine.search.assert_not_awaited()
 
     async def test_accepts_mapping_requests_at_client_boundary(self) -> None:
         gateway = _Gateway()
@@ -123,6 +144,105 @@ class LocalProjectServiceClientTest(unittest.IsolatedAsyncioTestCase):
             doc_id="d1",
         )
 
+    async def test_delete_can_use_retrieval_executor(self) -> None:
+        gateway = _Gateway()
+        engine = _Engine()
+        retrieval_executor = _RetrievalExecutor()
+        client = LocalProjectServiceClient(
+            gateway=gateway,
+            engine=engine,
+            retrieval_executor=retrieval_executor,
+        )
+
+        result = await client.delete_document(
+            {
+                "project_id": "p1",
+                "user_id": "u1",
+                "kb_id": "kb",
+                "doc_id": "d1",
+            }
+        )
+
+        self.assertEqual(result, "retrieval-deleted")
+        retrieval_executor.delete_project_document.assert_awaited_once()
+        engine.delete_document.assert_not_awaited()
+
+    async def test_can_use_typed_capability_clients(self) -> None:
+        gateway = _Gateway()
+        engine = _Engine()
+        ingestion = _ProjectIngestionCapability()
+        retrieval = _ProjectRetrievalCapability()
+        client = LocalProjectServiceClient(
+            gateway=gateway,
+            engine=engine,
+            ingestion=ingestion,
+            retrieval=retrieval,
+        )
+
+        ingest_result = await client.ingest(
+            IngestRequest(
+                project_id="p1",
+                user_id="u1",
+                kb_id="kb",
+                doc_id="d1",
+                source_uri="memory://d1",
+                content_type="text/plain",
+            )
+        )
+        search_result = await client.search(
+            SearchRequest(project_id="p1", user_id="u1", query="hello")
+        )
+        status_result = await client.ingest_status("job1")
+        delete_result = await client.delete_document(
+            {"project_id": "p1", "user_id": "u1", "kb_id": "kb", "doc_id": "d1"}
+        )
+
+        self.assertEqual(ingest_result, "capability-scheduled")
+        self.assertEqual(search_result, "capability-search")
+        self.assertEqual(status_result, "capability-status:job1")
+        self.assertEqual(delete_result, "capability-deleted")
+        ingestion.start_ingest.assert_awaited_once()
+        ingestion.get_status.assert_awaited_once_with("job1")
+        retrieval.search.assert_awaited_once()
+        retrieval.delete_document.assert_awaited_once()
+        engine.schedule_ingest.assert_not_awaited()
+        engine.search.assert_not_awaited()
+        engine.get_ingest_status.assert_not_awaited()
+        engine.delete_document.assert_not_awaited()
+
+
+class CompatibilityCapabilityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_ingestion_adapter_wraps_engine_methods(self) -> None:
+        engine = _Engine()
+        plan = _ProjectPlan(raw_plan="raw-plan")
+        adapter = CompatibilityIngestionCapability(engine)
+
+        ingest_result = await adapter.start_ingest(plan)
+        status_result = await adapter.get_status("job1")
+
+        self.assertEqual(ingest_result, "scheduled")
+        self.assertEqual(status_result, "status:job1")
+        engine.schedule_ingest.assert_awaited_once_with("raw-plan")
+        engine.get_ingest_status.assert_awaited_once_with("job1")
+
+    async def test_retrieval_adapter_wraps_engine_methods(self) -> None:
+        engine = _Engine()
+        plan = _ProjectPlan(raw_plan=_RawDeletePlan())
+        adapter = CompatibilityRetrievalCapability(engine)
+
+        search_result = await adapter.search(plan)
+        delete_result = await adapter.delete_document(plan)
+
+        self.assertEqual(search_result, "search-result")
+        self.assertEqual(delete_result, "deleted")
+        engine.search.assert_awaited_once_with(plan.raw_plan)
+        engine.delete_document.assert_awaited_once_with(
+            config=plan.raw_plan.config,
+            user_id="u1",
+            kb_id="kb",
+            doc_id="d1",
+        )
+
 
 class ProjectPlannedRetrievalClientTest(unittest.IsolatedAsyncioTestCase):
     async def test_search_prepares_plan_then_uses_retrieval_service(self) -> None:
@@ -163,7 +283,7 @@ class ProjectPlannedRetrievalApiClientTest(unittest.IsolatedAsyncioTestCase):
         gateway = _Gateway()
         retrieval_api = _RetrievalApi()
         client = ProjectPlannedRetrievalApiClient(
-            gateway=gateway,
+            planning=ProjectPlanningService(gateway=gateway),
             retrieval_api=retrieval_api,
         )
 
@@ -192,7 +312,7 @@ class ProjectPlannedRetrievalApiClientTest(unittest.IsolatedAsyncioTestCase):
         gateway = _Gateway()
         retrieval_api = _RetrievalApi()
         client = ProjectPlannedRetrievalApiClient(
-            gateway=gateway,
+            planning=ProjectPlanningService(gateway=gateway),
             retrieval_api=retrieval_api,
         )
 
@@ -210,7 +330,7 @@ class ProjectPlannedRetrievalApiClientTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_retrieval_api_response_raises_runtime_error(self) -> None:
         client = ProjectPlannedRetrievalApiClient(
-            gateway=_Gateway(),
+            planning=ProjectPlanningService(gateway=_Gateway()),
             retrieval_api=_RetrievalApi(
                 search_response={
                     "request_id": "req",
@@ -328,6 +448,17 @@ class _Stub:
 
 class _Gateway:
     def __init__(self) -> None:
+        self.ingest_plan = _IngestPlan(
+            request=IngestRequest(
+                project_id="p1",
+                user_id="u1",
+                kb_id="kb",
+                doc_id="d1",
+                source_uri="memory://d1",
+                content_type="text/plain",
+            ),
+            config=_Config(),
+        )
         self.search_plan = _SearchPlan(
             request=_SearchRequest(project_id="p1", user_id="u1", query="hello"),
             config=_Config(),
@@ -341,7 +472,7 @@ class _Gateway:
             ),
             config=_Config(),
         )
-        self.prepare_ingest = AsyncMock(return_value="ingest-plan")
+        self.prepare_ingest = AsyncMock(return_value=self.ingest_plan)
         self.prepare_search = AsyncMock(return_value=self.search_plan)
         self.prepare_delete = AsyncMock(return_value=self.delete_plan)
 
@@ -352,6 +483,36 @@ class _Engine:
         self.search = AsyncMock(return_value="search-result")
         self.get_ingest_status = AsyncMock(return_value="status:job1")
         self.delete_document = AsyncMock(return_value="deleted")
+
+
+class _RetrievalExecutor:
+    def __init__(self) -> None:
+        self.search_documents = AsyncMock(return_value="retrieval-search")
+        self.delete_project_document = AsyncMock(return_value="retrieval-deleted")
+
+
+class _ProjectIngestionCapability:
+    def __init__(self) -> None:
+        self.start_ingest = AsyncMock(return_value="capability-scheduled")
+        self.get_status = AsyncMock(return_value="capability-status:job1")
+
+
+class _ProjectRetrievalCapability:
+    def __init__(self) -> None:
+        self.search = AsyncMock(return_value="capability-search")
+        self.delete_document = AsyncMock(return_value="capability-deleted")
+
+
+class _ProjectPlan:
+    def __init__(self, *, raw_plan: object) -> None:
+        self.raw_plan = raw_plan
+        self.user_id = "u1"
+        self.kb_id = "kb"
+        self.doc_id = "d1"
+
+
+class _RawDeletePlan:
+    config = object()
 
 
 class _RetrievalService:
@@ -427,6 +588,7 @@ class _Config:
     project_id = "p1"
     collection_name = "rag_p1_v1"
     retrieval_config = {"top_k": 1, "candidate_count": 3}
+    chunker_config = {"chunk_size": 1000}
 
 
 class _SearchPlan:
@@ -438,6 +600,12 @@ class _SearchPlan:
 
 class _DeletePlan:
     def __init__(self, *, request: _DeleteRequest, config: _Config) -> None:
+        self.request = request
+        self.config = config
+
+
+class _IngestPlan:
+    def __init__(self, *, request: IngestRequest, config: _Config) -> None:
         self.request = request
         self.config = config
 

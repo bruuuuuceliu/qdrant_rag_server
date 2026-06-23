@@ -2,26 +2,36 @@
 
 This guide shows the shortest practical path to start the RAG platform and try ingest/search.
 
-The project is now a multi-service RAG platform with a **manager service** at the edge routing requests to ingestion, retrieval, project, and workflow-log services. The manager coordinates work through typed service clients and async queue contracts.
+The project is now a multi-service RAG platform with a **manager service** at the edge routing project-document requests to the **project service** task boundary. Project service plans the work, attaches placement metadata, and uses ingestion/retrieval capabilities behind typed service clients and async queue contracts.
 
 ## Architecture
 
 ```
-Client → ManagerService → ManagerRouter → ProjectDocumentClient
-       ↓                       ↓
-  [ingestion_service]   [retrieval_service]
-  [project_service]     [workflow_log_service]
-  [memory_service]      [shared contracts & queue]
+Client → ManagerService → ProjectDocumentClient/project_service
+                         ↓
+                  [project planning]
+                         ↓
+        [ingestion_service] → [retrieval_service]
+                         ↓
+                 [workflow_log_service]
+                         ↓
+                [shared contracts & queue]
 ```
 
 The `ManagerRouter` decides routing based on `operation` + `data_type`:
 
 | operation | data_type | target |
 |-----------|-----------|--------|
-| ingest | project_document | ingestion_service |
-| search | project_document | retrieval_service |
-| delete | project_document | retrieval_service |
-| status | project_document | ingestion_service |
+| ingest | project_document | project_service |
+| search | project_document | project_service |
+| delete | project_document | project_service |
+| status | project_document | project_service |
+
+Local placement status: project planning now creates and forwards
+`placement_plan` payloads backed by a SQLite placement registry. The current
+local runtime still executes against the configured single Qdrant endpoint;
+multi-database/Qdrant execution is documented design work and is not enabled in
+the showcase scripts yet.
 
 ## One-Line Local Start
 
@@ -36,8 +46,8 @@ This command:
 - stores local data under `examples/local/.data`
 - starts Qdrant with Docker when needed and available
 - initializes a demo project config when `--init` is provided
-- starts the manager-owned gRPC app via `python -m manager_service.server.app`
-- composes the project service, ingestion consumer, local queue, and workflow-log app behind the manager
+- starts the temporary local compatibility app via `python -m local_runtime.manager_app`
+- composes the project service, ingestion consumer, local queue, placement registry, retrieval service, and workflow-log app outside the manager service package
 
 Stop local services with:
 
@@ -96,6 +106,8 @@ For local development, use `/tmp` paths:
 ```bash
 export RAG_CONFIG_DB_PATH=/tmp/qdrant_rag/config.db
 export RAG_RESPONSE_CACHE_DB_PATH=/tmp/qdrant_rag/response_cache.db
+export RETRIEVAL_PLACEMENT_DB_PATH=/tmp/qdrant_rag/placement.db
+export RETRIEVAL_PLACEMENT_ROUTING_MODE=project_single
 export RAG_GRPC_PORT=50051
 export RAG_QDRANT_HOST=localhost
 export RAG_QDRANT_PORT=6333
@@ -141,10 +153,10 @@ PY
 ## 5. Start The Server
 
 ```bash
-python -m manager_service.server.app
+python -m local_runtime.manager_app
 ```
 
-On first start, the embedding model may take time to download/load. The manager app boots the manager, project service, ingestion consumer, and workflow log app behind a single gRPC entry point.
+On first start, the embedding model may take time to download/load. The local runtime app boots the manager, project service, ingestion consumer, and workflow log app behind a temporary compatibility entry point.
 
 ## 6. Ingest A Small Document
 
@@ -242,6 +254,7 @@ python -m examples.unites.rag_insertion_retrieval
 This showcase:
 
 - Creates a manager with a local queue broker and project client
+- Uses the project planning boundary, including placement-plan propagation
 - Ingests documents through the manager routing boundary
 - Searches through the manager
 
@@ -255,7 +268,7 @@ python -m examples.unites.ingestion
 
 ### Multi-Retrieval Showcase
 
-Ingests a full document in hybrid mode and compares dense, BM25, and hybrid search:
+Ingests a full document in hybrid mode and compares dense, BM25, and hybrid search against the current single-Qdrant local runtime:
 
 ```bash
 python -m examples.unites.rag_multi_retrieval_showcase

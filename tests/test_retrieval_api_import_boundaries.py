@@ -15,6 +15,7 @@ GUARDED_FILES = (
     ROOT / "retrieval_service" / "server" / "app.py",
     ROOT / "retrieval_service" / "server" / "http.py",
     ROOT / "retrieval_service" / "server" / "queue.py",
+    ROOT / "retrieval_service" / "server" / "worker.py",
 )
 
 FORBIDDEN_PREFIXES = (

@@ -20,6 +20,7 @@ class RetrievalIndexCommand:
     chunks: list[BaseChunk]
     payloads: list[BaseChunkPayload]
     retrieval_config: dict[str, Any] = field(default_factory=dict)
+    placement_plan: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_payload(
@@ -46,6 +47,7 @@ class RetrievalIndexCommand:
             chunks=chunks,
             payloads=payloads,
             retrieval_config=dict(payload.get("retrieval_config", {}) or {}),
+            placement_plan=dict(payload.get("placement_plan", {}) or {}),
         )
 
     def to_index_request(self) -> IndexChunksRequest:
@@ -55,6 +57,7 @@ class RetrievalIndexCommand:
             payloads=self.payloads,
             retrieval_config=dict(self.retrieval_config),
             job_id=self.job_id,
+            placement_plan=dict(self.placement_plan),
         )
 
 

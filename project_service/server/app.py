@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import sys
 from dataclasses import dataclass
+from typing import Any
 
 from configs import AppSettings, load_settings
+from project_service.planning import ProjectPlanningService
 
 
 @dataclass(slots=True)
@@ -30,6 +32,8 @@ class AppContext:
     health_checker: object
     openrouter_client: object | None
     server: object
+    placement_resolver: object | None = None
+    routing_policy: object | None = None
 
     async def shutdown(self) -> None:
         await self.server.stop(grace=5)
@@ -49,6 +53,7 @@ async def create_app(
     settings: AppSettings | None = None,
     *,
     start_server: bool = True,
+    retrieval_executor: object | None = None,
 ) -> AppContext:
     settings = settings or load_settings()
 
@@ -177,7 +182,18 @@ async def create_app(
         object_storage=object_storage,
         version_manager=version_manager,
     )
-    project_client = LocalProjectServiceClient(gateway=gateway, engine=engine)
+    placement_resolver, routing_policy = _build_local_placement(settings)
+
+    project_client = LocalProjectServiceClient(
+        gateway=gateway,
+        engine=engine,
+        retrieval_executor=retrieval_executor,
+        planning=ProjectPlanningService(
+            gateway=gateway,
+            placement_resolver=placement_resolver,
+            routing_policy=routing_policy,
+        ),
+    )
     health_checker = HealthChecker(
         qdrant_store=qdrant_store,
         embed_fn=embedding_provider,
@@ -215,6 +231,8 @@ async def create_app(
         reranker=reranker,
         object_storage=object_storage,
         version_manager=version_manager,
+        placement_resolver=placement_resolver,
+        routing_policy=routing_policy,
     )
 
 
@@ -254,6 +272,45 @@ def _build_llm_provider(settings: AppSettings, *, factory: type) -> object | Non
         default_model=settings.generation_model,
         default_max_tokens=settings.generation_max_tokens,
         default_temperature=settings.generation_temperature,
+    )
+
+
+def _build_local_placement(settings: AppSettings) -> tuple[Any | None, Any | None]:
+    if not settings.retrieval_placement_enabled:
+        return None, None
+
+    from retrieval_service.placement import (
+        PlacementResolver,
+        RetrievalShard,
+        RoutingPolicy,
+        SQLitePlacementRegistry,
+    )
+
+    registry = SQLitePlacementRegistry(settings.retrieval_placement_db_path)
+    registry.initialize()
+    qdrant_endpoint = settings.qdrant_url or f"http://{settings.qdrant_host}:{settings.qdrant_port}"
+    registry.upsert(
+        RetrievalShard(
+            shard_id=settings.retrieval_placement_shard_id,
+            cluster_id=settings.retrieval_placement_cluster_id,
+            qdrant_endpoint=qdrant_endpoint,
+        )
+    )
+    policy = RoutingPolicy(
+        project_id="*",
+        routing_mode=settings.retrieval_placement_routing_mode,
+        bucket_count=settings.retrieval_placement_bucket_count,
+        replication_factor=settings.retrieval_placement_replication_factor,
+    )
+    registry.save_policy(policy)
+    return (
+        PlacementResolver(
+            shard_repository=registry,
+            placement_repository=registry,
+            policy_repository=registry,
+            default_policy=policy,
+        ),
+        None,
     )
 
 

@@ -8,6 +8,8 @@ STATE_FILE="${RUNTIME_DIR}/state.env"
 MANAGER_PID_FILE="${RUNTIME_DIR}/manager.pid"
 PROJECT_SERVICE_PID_FILE="${RUNTIME_DIR}/project-service.pid"
 INGESTION_WORKER_PID_FILE="${RUNTIME_DIR}/ingestion-worker.pid"
+RETRIEVAL_INDEX_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-index-worker.pid"
+RETRIEVAL_HTTP_PID_FILE="${RUNTIME_DIR}/retrieval-http.pid"
 QDRANT_CID_FILE="${RUNTIME_DIR}/qdrant.cid"
 QDRANT_LOG_PID_FILE="${RUNTIME_DIR}/qdrant-log.pid"
 
@@ -150,9 +152,11 @@ stop_pid_file() {
 
 fallback_stop_python_services() {
   local patterns=(
-    "python -m manager_service.server.app"
+    "python -m local_runtime.manager_app"
     "python manager_service/server/app.py"
     "python -m ingestion_service.server.worker"
+    "python -m retrieval_service.indexing.worker"
+    "python -m retrieval_service.server.worker"
     "python -m project_service.server.app"
     "python project_service/server/app.py"
     "python -m server.app"
@@ -180,7 +184,7 @@ fallback_stop_port_listener() {
       [[ -z "$pid" || "$pid" == "$$" ]] && continue
       command_line="$(ps -p "$pid" -o args= 2>/dev/null || true)"
       case "$command_line" in
-        *manager_service.server.app*|*project_service.server.app*|*server.app*)
+        *local_runtime.manager_app*|*project_service.server.app*|*server.app*)
           stop_pid "$pid" "gRPC listener on port ${port}"
           ;;
       esac
@@ -204,6 +208,8 @@ stop_qdrant() {
 }
 
 stop_pid_file "$INGESTION_WORKER_PID_FILE" "ingestion worker"
+stop_pid_file "$RETRIEVAL_INDEX_WORKER_PID_FILE" "retrieval index worker"
+stop_pid_file "$RETRIEVAL_HTTP_PID_FILE" "retrieval HTTP server"
 stop_pid_file "$MANAGER_PID_FILE" "manager"
 stop_pid_file "$PROJECT_SERVICE_PID_FILE" "project service"
 stop_pid_file "$QDRANT_LOG_PID_FILE" "Qdrant log collector"

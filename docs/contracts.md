@@ -15,7 +15,7 @@ Inputs:
 - `data_type`: `project_document`, `agent_memory`, or `workflow_log`
 - optional project/user/KB identifiers
 
-Output:
+Compatibility output:
 
 - `target_service`
 - whether the route is executable now
@@ -23,12 +23,24 @@ Output:
 - queue topic when applicable
 - reason for reserved routes
 
-## Local Service Clients
+Target output:
+
+- authenticated task intake envelope
+- `correlation_id` and `task_id`
+- operation and `data_type`
+- tenant/project/user/KB identifiers needed by the task manager
+
+In the target runtime, the manager does not publish directly to project,
+workflow, ingestion, retrieval, or storage topics. It publishes task intake
+messages only. The task manager consumes those messages and dispatches domain
+task server commands through Redpanda.
+
+## Service Clients
 
 Manager dispatch now uses service-specific manager-facing protocols in
 `manager_service.clients`.
 
-Current local adapters:
+Current compatibility/local adapters:
 
 - `manager_service.clients.ProjectDocumentIngestionClient`: compatibility
   adapter from `ProjectDocumentClient` to `IngestionClient`
@@ -43,13 +55,40 @@ Current local adapters:
   planning and local engine execution for `ingest`, `search`, `delete_document`,
   and `ingest_status`
 
-This is intentionally an in-process compatibility client. Future gRPC or
-queue-backed clients should keep the same manager-facing methods so routing
-logic does not depend on transport details.
+These adapters are migration scaffolding. Target runtime manager code should
+publish task intake messages to Redpanda and read Redis task status by
+`task_id`; it should not call project/domain/helper service clients directly.
+The task manager owns domain and helper command publication.
 
-## Queue Messages
+## Placement Metadata
 
-The local queue contract lives in `shared.queue`.
+Project planning can attach an optional `placement_plan` mapping to ingest,
+search, delete, and index work. The plan is created from the local placement
+resolver and persisted placement registry. It identifies routing keys,
+placement version, and target shard IDs.
+
+Current local runtime status:
+
+- `placement_plan` is produced by project planning when placement is enabled.
+- Retrieval search/delete and retrieval-index command contracts preserve it.
+- Queued ingestion forwards it to retrieval indexing through message metadata.
+- Retrieval indexing resolves placement targets to Qdrant stores and writes the
+  primary plus configured replica targets.
+- Retrieval search groups targets by routing key, searches one target per group,
+  falls back from primary to replicas on target failure, and merges bucket hits
+  by score.
+- Retrieval delete resolves the same placement write set and removes dense and
+  sparse records from each target.
+- Search cache keys are namespaced by placement version, shard ID, and routing
+  key so placement changes do not reuse stale cache entries.
+- Routing policies and placement history are persisted with explicit
+  moving/stale/active rebalance states.
+- Migration/reindex orchestration and network broker semantics remain pending.
+
+## Broker Messages
+
+The message contract currently lives in `shared.queue`, but the runtime broker
+target is Redpanda for both local and production.
 
 Message shape:
 
@@ -62,25 +101,42 @@ QueueMessage(
 )
 ```
 
-The local backend is intentionally small and bounded. Future Kafka/Redpanda
-adapters should preserve the same topic/key/headers/payload semantics.
+Local/in-memory/SQLite queue backends are compatibility scaffolding. The
+Redpanda adapter should preserve the same topic/key/headers/payload semantics.
+
+## Target Broker Topics
+
+Target runtime topics are Redpanda topics. Names may be finalized during
+contract implementation, but ownership must follow this direction:
+
+| Topic family | Producer | Consumer | Purpose |
+| --- | --- | --- | --- |
+| task intake | manager service | task manager | Accepted public requests after auth/validation. |
+| domain commands | task manager | project/workflow/memory/other domain services | Trigger domain-specific planning or info lookup. |
+| domain results | domain services | task manager | Return scope, policy, plans, query/read results, or errors. |
+| helper commands | task manager | ingestion/retrieval/storage/other helper nodes | Execute concrete work. |
+| helper results | helper nodes | task manager | Return execution results and lifecycle events. |
+| task status/results | task manager | Redis and broker observers | Keep Redis current by `task_id` and publish final result events. |
 
 ## Ingestion Request Queue
 
-Queued ingest requests use the `ingestion.requests` topic.
+Queued ingest requests currently use the `ingestion.requests` topic.
+
+This is compatibility scaffolding. In the target runtime, ingestion commands are
+published by the task manager after project-domain planning, not by the public
+manager or by project service direct calls.
 
 The local `ingestion_service.server` consumer expects the message payload to be
 an ingest request mapping accepted by `project_service.gateway.IngestRequest`.
-It creates an ingestion job record when one is configured, then delegates to
-the project-document client boundary so future queue-backed manager dispatch can
-reuse the same request shape.
+It creates an ingestion-owned job record, runs the source through
+`IngestionService.process(...)`, records preparation metadata, and publishes
+prepared chunks to `retrieval.index.requests`. Successful queued ingestion is
+completed from the retrieval index worker response; compatibility
+project-document callback execution is no longer part of the ingestion path.
 
-When an ingestion preparation service is configured, the consumer also runs the
-source through `IngestionService.process(...)` before delegated compatibility
-execution and records preparation metadata on the ingestion job. The metadata is
-limited to durable audit fields such as content hash, handler name, prepared
-chunk count, raw content length, content type, and chunker versions; prepared
-chunk text is not stored in the job table.
+Preparation metadata is limited to durable audit fields such as content hash,
+handler name, prepared chunk count, raw content length, content type, and
+chunker versions; prepared chunk text is not stored in the job table.
 
 `IngestRequest` accepts first-class `raw_text` or `raw_content` fields for
 inline content. Legacy metadata keys `raw_text` and `raw_content` remain
@@ -93,6 +149,9 @@ The local manager app uses a request/response bridge:
 - response topic: `ingestion.requests.responses.<request_id>`
 - request payload: `{request_id, response_topic, request}`
 - response payload: `{request_id, ok, result, error}`
+
+When project planning provides `placement_plan`, queued ingestion carries it in
+request metadata and forwards it to the retrieval index queue.
 
 Ingestion service settings are loaded from `configs.ingestion`:
 
@@ -202,10 +261,11 @@ Current commands:
   transport payloads; mapping payloads are normalized into this spec at the
   retrieval boundary.
 - `RetrievalSearchCommand`: carries project/user/query, collection name,
-  retrieval config, retrieval filter, optional cache key, request ID, and
-  optional response topic.
+  retrieval config, retrieval filter, optional cache key, optional
+  `placement_plan`, request ID, and optional response topic.
 - `RetrievalDeleteDocumentCommand`: carries project/user/KB/doc identifiers,
-  collection name, request ID, and optional response topic.
+  collection name, optional `placement_plan`, request ID, and optional response
+  topic.
 - `RetrievalRawDocumentCommand`: carries project/user/doc identifiers, request
   ID, and optional response topic.
 
@@ -310,11 +370,12 @@ The queue payload is parsed by `RetrievalIndexCommand` in
 - `chunks`
 - `payloads`
 - `retrieval_config`
+- `placement_plan`
 - optional `response_topic`
 
 Prepared chunks are kept neutral. The queue layer does not own collection
-policy, retrieval configuration generation, or payload enrichment beyond
-transport serialization.
+policy, retrieval configuration generation, placement assignment, or payload
+enrichment beyond transport serialization.
 
 When the ingestion worker publishes to this queue, it must provide a non-empty
 `collection_name`; otherwise the request is rejected as a validation failure.

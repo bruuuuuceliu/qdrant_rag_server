@@ -24,23 +24,29 @@ class IngestionAppContext:
 async def create_app(
     *,
     queue: Any,
-    project_documents: Any,
-    jobs: Any | None = None,
-    ingestion_service: IngestionService | None = None,
-    retrieval_queue: Any | None = None,
+    jobs: Any,
+    ingestion_service: IngestionService,
+    retrieval_queue: Any,
     retrieval_index_topic: str = "retrieval.index.requests",
+    retrieval_index_response_timeout: float = 30.0,
     enabled: bool = True,
     topic: str = "ingestion.requests",
 ) -> IngestionAppContext:
     consumer: IngestionRequestConsumer | None = None
     if enabled:
+        if jobs is None:
+            raise ValueError("ingestion job repository is required")
+        if ingestion_service is None:
+            raise ValueError("ingestion service is required")
+        if retrieval_queue is None:
+            raise ValueError("retrieval index queue is required")
         consumer = IngestionRequestConsumer(
             queue=queue,
-            project_documents=project_documents,
             jobs=jobs,
             ingestion_service=ingestion_service,
             retrieval_queue=retrieval_queue,
             retrieval_index_topic=retrieval_index_topic,
+            retrieval_index_response_timeout=retrieval_index_response_timeout,
             topic=topic,
         )
         consumer.start()

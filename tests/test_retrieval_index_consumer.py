@@ -31,6 +31,10 @@ class RetrievalIndexCommandTest(unittest.TestCase):
                     }
                 ],
                 "retrieval_config": {"mode": "hybrid"},
+                "placement_plan": {
+                    "placement_version": 4,
+                    "targets": [{"shard_id": "retrieval-01"}],
+                },
             },
             fallback_request_id="fallback",
         )
@@ -41,6 +45,7 @@ class RetrievalIndexCommandTest(unittest.TestCase):
         self.assertEqual(command.chunks[0].chunk_id, "c1")
         self.assertEqual(command.payloads[0].payload_id, "c1")
         self.assertEqual(command.to_index_request().job_id, "job1")
+        self.assertEqual(command.to_index_request().placement_plan["placement_version"], 4)
 
     def test_rejects_missing_collection_name(self) -> None:
         with self.assertRaisesRegex(ValueError, "collection_name"):
