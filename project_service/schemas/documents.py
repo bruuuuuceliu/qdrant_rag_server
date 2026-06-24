@@ -22,7 +22,7 @@ class ProjectDocument:
     document_id: str = ""
     source_uri: str = ""
     content_type: str = "text/plain"
-    data_type: str = "project_document"
+    data_type: str = "document"
     content_hash: str = ""
     visibility: str = Visibility.PRIVATE
     embedding_version: str = ""
@@ -53,7 +53,7 @@ class ProjectChunk:
     chunk_index: int
     text: str
     document_id: str = ""
-    data_type: str = "project_document"
+    data_type: str = "document"
     content_hash: str = ""
     chunker_version: str = "v1"
     visibility: str = Visibility.PRIVATE
@@ -87,7 +87,7 @@ class ProjectChunkPayload:
     text: str
     payload_id: str = ""
     document_id: str = ""
-    data_type: str = "project_document"
+    data_type: str = "document"
     content_hash: str = ""
     embedding_version: str = ""
     chunker_version: str = "v1"

@@ -8,11 +8,19 @@ LOG_DIR="${RUNTIME_DIR}/logs"
 STATE_FILE="${RUNTIME_DIR}/state.env"
 MANAGER_PID_FILE="${RUNTIME_DIR}/manager.pid"
 PROJECT_SERVICE_PID_FILE="${RUNTIME_DIR}/project-service.pid"
+TASK_MANAGER_PID_FILE="${RUNTIME_DIR}/task-manager.pid"
+WORKFLOW_LOG_PID_FILE="${RUNTIME_DIR}/workflow-log.pid"
 INGESTION_WORKER_PID_FILE="${RUNTIME_DIR}/ingestion-worker.pid"
 RETRIEVAL_INDEX_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-index-worker.pid"
 RETRIEVAL_HTTP_PID_FILE="${RUNTIME_DIR}/retrieval-http.pid"
+RETRIEVAL_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-worker.pid"
+STORAGE_NODE_PID_FILE="${RUNTIME_DIR}/storage-node.pid"
+SQLITE_NODE_PID_FILE="${RUNTIME_DIR}/sqlite-node.pid"
+REDIS_STATUS_PID_FILE="${RUNTIME_DIR}/redis-status.pid"
 QDRANT_CID_FILE="${RUNTIME_DIR}/qdrant.cid"
 QDRANT_LOG_PID_FILE="${RUNTIME_DIR}/qdrant-log.pid"
+REDPANDA_CID_FILE="${RUNTIME_DIR}/redpanda.cid"
+REDIS_CID_FILE="${RUNTIME_DIR}/redis.cid"
 ENV_FILE="${RAG_LOCAL_ENV_FILE:-${ROOT_DIR}/configs/local.env}"
 
 INIT_PROJECT=0
@@ -20,14 +28,19 @@ RESET_FIRST=0
 START_QDRANT=auto
 FOREGROUND=0
 START_SERVER=1
+INFRA_ONLY=0
 EXTERNAL_INGESTION=0
 EXTERNAL_RETRIEVAL_INDEX=0
 EXTERNAL_RETRIEVAL_HTTP=0
 EXTERNAL_PROJECT_SERVICE=0
+BROKER_FIRST=1
+COMPAT_LOCAL=0
 PROJECT_ID="${RAG_EXAMPLE_PROJECT_ID:-demo}"
 PROJECT_TYPE="${RAG_EXAMPLE_PROJECT_TYPE:-website}"
 QDRANT_CONTAINER="${RAG_QDRANT_CONTAINER:-qdrant-rag-local}"
 QDRANT_VOLUME="${RAG_QDRANT_VOLUME:-qdrant-rag-local-data}"
+REDPANDA_CONTAINER="${RAG_REDPANDA_CONTAINER:-redpanda-rag-local}"
+REDIS_CONTAINER="${RAG_REDIS_CONTAINER:-redis-rag-local}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 usage() {
@@ -37,19 +50,22 @@ Usage:
 
 Starts the local multi-service composition:
   - Qdrant container, when Docker is available and Qdrant is not already reachable
-  - manager gRPC server
-  - project service, ingestion consumer, and workflow-log app composed behind manager
+  - manager, task manager, domain services, helper nodes, storage, and SQLite nodes
 
 Options:
   --init                         Initialize/seed local project config.
   --reset                        Stop existing local services before starting.
   --foreground                   Run manager in the foreground after setup.
   --no-server                    Run setup/init only; do not start services.
+  --infra-only                   Start/verify broker-first infrastructure and exit.
   --external-ingestion           Start ingestion worker as a separate process.
   --external-retrieval-index     Start retrieval index worker as a separate process.
   --external-retrieval-http      Start retrieval HTTP API as a separate process and use manager HTTP mode.
   --external-project-service     Start project/RAG service as a separate process.
   --split-services               Shortcut for external project, ingestion, and retrieval index workers.
+  --broker-first                 Configure broker-first topology settings for Redpanda, Redis,
+                                 task manager, domain services, helpers, storage, and SQLite nodes.
+  --compat-local                 Use the legacy embedded/local queue composition.
   --env-file PATH                Source extra env vars before starting.
   --project-id VALUE             Project ID for --init. Default: demo.
   --project-type VALUE           Project type for --init. Default: website.
@@ -61,6 +77,8 @@ Options:
   --qdrant                       Require/start local Docker Qdrant.
   --no-qdrant                    Do not try to start Qdrant.
   --qdrant-container VALUE       Docker container name. Default: qdrant-rag-local.
+  --redpanda-container VALUE     Docker container name. Default: redpanda-rag-local.
+  --redis-container VALUE        Docker container name. Default: redis-rag-local.
   --generation                   Enable optional generation client wiring.
   --help                         Show this help.
 
@@ -90,6 +108,13 @@ while [[ $# -gt 0 ]]; do
       START_SERVER=0
       shift
       ;;
+    --infra-only)
+      INFRA_ONLY=1
+      START_SERVER=1
+      BROKER_FIRST=1
+      START_QDRANT=no
+      shift
+      ;;
     --external-ingestion)
       EXTERNAL_INGESTION=1
       shift
@@ -110,6 +135,18 @@ while [[ $# -gt 0 ]]; do
       EXTERNAL_PROJECT_SERVICE=1
       EXTERNAL_INGESTION=1
       EXTERNAL_RETRIEVAL_INDEX=1
+      shift
+      ;;
+    --broker-first)
+      BROKER_FIRST=1
+      EXTERNAL_PROJECT_SERVICE=1
+      EXTERNAL_INGESTION=1
+      EXTERNAL_RETRIEVAL_INDEX=1
+      shift
+      ;;
+    --compat-local)
+      BROKER_FIRST=0
+      COMPAT_LOCAL=1
       shift
       ;;
     --env-file)
@@ -154,6 +191,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --qdrant-container)
       QDRANT_CONTAINER="${2:?--qdrant-container requires a value}"
+      shift 2
+      ;;
+    --redpanda-container)
+      REDPANDA_CONTAINER="${2:?--redpanda-container requires a value}"
+      shift 2
+      ;;
+    --redis-container)
+      REDIS_CONTAINER="${2:?--redis-container requires a value}"
       shift 2
       ;;
     --generation)
@@ -243,6 +288,74 @@ export RAG_EMBEDDING_DEVICE="${RAG_EMBEDDING_DEVICE:-cpu}"
 export RAG_EMBEDDING_DIMENSION="${RAG_EMBEDDING_DIMENSION:-768}"
 export RAG_EMBEDDING_BASE_URL="${RAG_EMBEDDING_BASE_URL:-https://openrouter.ai/api/v1/embeddings}"
 export RAG_GENERATION_ENABLED="${RAG_GENERATION_ENABLED:-false}"
+export BROKER_TYPE="${BROKER_TYPE:-redpanda}"
+export BROKER_BOOTSTRAP_SERVERS="${BROKER_BOOTSTRAP_SERVERS:-127.0.0.1:9092}"
+export BROKER_CLIENT_ID="${BROKER_CLIENT_ID:-qdrant-rag-local}"
+export BROKER_REQUEST_TIMEOUT_SECONDS="${BROKER_REQUEST_TIMEOUT_SECONDS:-30}"
+export BROKER_TOPIC_PREFIX="${BROKER_TOPIC_PREFIX:-}"
+export BROKER_TOPIC_PARTITIONS="${BROKER_TOPIC_PARTITIONS:-1}"
+export BROKER_LAG_TARGETS="${BROKER_LAG_TARGETS:-}"
+export MANAGER_TASK_INTAKE_TOPIC="${MANAGER_TASK_INTAKE_TOPIC:-task.intake}"
+export TASK_MANAGER_SERVICE_NAME="${TASK_MANAGER_SERVICE_NAME:-task_manager_service}"
+export TASK_MANAGER_TASK_INTAKE_TOPIC="${TASK_MANAGER_TASK_INTAKE_TOPIC:-${MANAGER_TASK_INTAKE_TOPIC}}"
+export REDIS_TASK_STATUS_URL="${REDIS_TASK_STATUS_URL:-redis://127.0.0.1:6379/0}"
+export REDIS_TASK_STATUS_KEY_PREFIX="${REDIS_TASK_STATUS_KEY_PREFIX:-task:}"
+export REDIS_TASK_COMPLETED_TTL_SECONDS="${REDIS_TASK_COMPLETED_TTL_SECONDS:-86400}"
+export STORAGE_NODE_ROOT="${STORAGE_NODE_ROOT:-${RAG_LOCAL_DATA_DIR}/storage_node}"
+export SQLITE_NODE_DATABASE_ROOT="${SQLITE_NODE_DATABASE_ROOT:-${RAG_LOCAL_DATA_DIR}/sqlite}"
+export TASK_MANAGER_STATE_DB_PATH="${TASK_MANAGER_STATE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/task_manager_state.db}"
+
+allocate_sqlite_databases() {
+  "$PYTHON_BIN" - <<'PY'
+import asyncio
+import os
+
+from sqlite_node import SQLiteNodeSettings, SQLiteNodeService
+
+
+DATABASES = (
+    ("project_service", "project_config", "project domain configuration", "RAG_CONFIG_DB_PATH"),
+    ("retrieval_service", "response_cache", "retrieval response cache", "RAG_RESPONSE_CACHE_DB_PATH"),
+    ("ingestion_service", "ingestion_jobs", "ingestion job metadata", "RAG_INGEST_JOB_DB_PATH"),
+    ("workflow_log_service", "workflow_log", "workflow audit log", "WORKFLOW_LOG_DB_PATH"),
+    ("retrieval_service", "retrieval_placement", "retrieval shard placement", "RETRIEVAL_PLACEMENT_DB_PATH"),
+    ("task_manager_service", "task_manager_state", "task-manager durable fan-in state", "TASK_MANAGER_STATE_DB_PATH"),
+)
+
+
+async def main() -> None:
+    settings = SQLiteNodeSettings.from_values(dict(os.environ))
+    service = SQLiteNodeService(database_root=settings.database_root)
+    await service.initialize()
+    for owner, database_name, purpose, env_name in DATABASES:
+        path = await service.allocate_database(
+            owner_service=owner,
+            database_name=database_name,
+            purpose=purpose,
+        )
+        await service.record_schema_version(
+            owner_service=owner,
+            database_name=database_name,
+            schema_name=database_name,
+            version=1,
+        )
+        await service.record_health_check(
+            owner_service=owner,
+            database_name=database_name,
+            ok=path.parent.exists(),
+        )
+        print(f"export {env_name}={path}")
+
+
+asyncio.run(main())
+PY
+}
+
+if [[ "$BROKER_FIRST" -eq 1 ]]; then
+  while IFS= read -r assignment; do
+    export "${assignment#export }"
+  done < <(allocate_sqlite_databases)
+fi
 
 normalize_proxy_env() {
   local name value fixed
@@ -266,6 +379,14 @@ normalize_proxy_env() {
 normalize_proxy_env
 
 validate_mode_combination() {
+  if [[ "$BROKER_FIRST" -eq 1 && "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 ]]; then
+    cat >&2 <<'EOF'
+Unsupported local runner mode: --external-retrieval-http is a compatibility option.
+
+Use --compat-local --external-retrieval-http for the legacy local composition.
+EOF
+    exit 2
+  fi
   if [[ "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 && "$EXTERNAL_PROJECT_SERVICE" -eq 1 ]]; then
     cat >&2 <<'EOF'
 Unsupported local runner mode: --external-retrieval-http requires manager project planning to stay local.
@@ -361,6 +482,79 @@ start_qdrant_if_needed() {
   echo "Warning: Qdrant container started but health check did not pass." >&2
 }
 
+start_redpanda_if_needed() {
+  if is_tcp_port_open "127.0.0.1" "9092"; then
+    echo "Redpanda already reachable at 127.0.0.1:9092."
+    return 0
+  fi
+  require_docker "Redpanda"
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$REDPANDA_CONTAINER"; then
+    docker start "$REDPANDA_CONTAINER" >/dev/null
+  else
+    docker run -d \
+      --name "$REDPANDA_CONTAINER" \
+      -p 9092:9092 \
+      -p 9644:9644 \
+      docker.redpanda.com/redpandadata/redpanda:latest \
+      redpanda start \
+      --overprovisioned \
+      --smp 1 \
+      --memory 1G \
+      --reserve-memory 0M \
+      --node-id 0 \
+      --check=false \
+      --kafka-addr 0.0.0.0:9092 \
+      --advertise-kafka-addr 127.0.0.1:9092 >/dev/null
+  fi
+  docker inspect --format '{{.Id}}' "$REDPANDA_CONTAINER" > "$REDPANDA_CID_FILE" 2>/dev/null || true
+  wait_for_tcp "Redpanda" "127.0.0.1" "9092" 90
+}
+
+start_redis_if_needed() {
+  if is_tcp_port_open "127.0.0.1" "6379"; then
+    echo "Redis already reachable at 127.0.0.1:6379."
+    return 0
+  fi
+  require_docker "Redis"
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$REDIS_CONTAINER"; then
+    docker start "$REDIS_CONTAINER" >/dev/null
+  else
+    docker run -d --name "$REDIS_CONTAINER" -p 6379:6379 redis:7-alpine >/dev/null
+  fi
+  docker inspect --format '{{.Id}}' "$REDIS_CONTAINER" > "$REDIS_CID_FILE" 2>/dev/null || true
+  wait_for_tcp "Redis" "127.0.0.1" "6379" 60
+}
+
+require_docker() {
+  local label="$1"
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker is required to start local ${label}." >&2
+    exit 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo "Docker is installed but the daemon is not accessible for local ${label}." >&2
+    exit 1
+  fi
+}
+
+wait_for_tcp() {
+  local label="$1"
+  local host="$2"
+  local port="$3"
+  local timeout_seconds="${4:-60}"
+  local elapsed=0
+  while [[ "$elapsed" -lt "$timeout_seconds" ]]; do
+    if is_tcp_port_open "$host" "$port"; then
+      echo "${label} reachable at ${host}:${port}."
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  echo "${label} did not open ${host}:${port} within ${timeout_seconds}s." >&2
+  exit 1
+}
+
 start_qdrant_log_collector() {
   local qdrant_log="$1"
   if ! command -v docker >/dev/null 2>&1; then
@@ -416,6 +610,9 @@ validate_provider_config() {
 }
 
 validate_runtime_config() {
+  if [[ "$BROKER_FIRST" -eq 1 ]]; then
+    return 0
+  fi
   "$PYTHON_BIN" - <<'PY'
 import os
 
@@ -553,6 +750,23 @@ ensure_not_already_running() {
     fi
     rm -f "$PROJECT_SERVICE_PID_FILE"
   fi
+  for pid_file in \
+    "$TASK_MANAGER_PID_FILE" \
+    "$WORKFLOW_LOG_PID_FILE" \
+    "$RETRIEVAL_WORKER_PID_FILE" \
+    "$STORAGE_NODE_PID_FILE" \
+    "$SQLITE_NODE_PID_FILE" \
+    "$REDIS_STATUS_PID_FILE"; do
+    if [[ -f "$pid_file" ]]; then
+      local old_pid
+      old_pid="$(cat "$pid_file" 2>/dev/null || true)"
+      if is_pid_alive "$old_pid"; then
+        echo "Service is already running with PID ${old_pid}. Use examples/local/stop-all.sh first." >&2
+        exit 1
+      fi
+      rm -f "$pid_file"
+    fi
+  done
 }
 
 write_state() {
@@ -567,9 +781,87 @@ RAG_QDRANT_PORT=${RAG_QDRANT_PORT}
 RAG_QDRANT_GRPC_PORT=${RAG_QDRANT_GRPC_PORT}
 QDRANT_CONTAINER=${QDRANT_CONTAINER}
 QDRANT_VOLUME=${QDRANT_VOLUME}
+REDPANDA_CONTAINER=${REDPANDA_CONTAINER}
+REDIS_CONTAINER=${REDIS_CONTAINER}
 RETRIEVAL_INDEX_REQUEST_TOPIC=${RETRIEVAL_INDEX_REQUEST_TOPIC}
 RETRIEVAL_HTTP_PORT=${RETRIEVAL_HTTP_PORT}
+BROKER_FIRST=${BROKER_FIRST}
+BROKER_TYPE=${BROKER_TYPE}
+BROKER_BOOTSTRAP_SERVERS=${BROKER_BOOTSTRAP_SERVERS}
+BROKER_CLIENT_ID=${BROKER_CLIENT_ID}
+BROKER_TOPIC_PREFIX=${BROKER_TOPIC_PREFIX}
+BROKER_LAG_TARGETS=${BROKER_LAG_TARGETS}
+MANAGER_TASK_INTAKE_TOPIC=${MANAGER_TASK_INTAKE_TOPIC}
+TASK_MANAGER_SERVICE_NAME=${TASK_MANAGER_SERVICE_NAME}
+TASK_MANAGER_TASK_INTAKE_TOPIC=${TASK_MANAGER_TASK_INTAKE_TOPIC}
+REDIS_TASK_STATUS_URL=${REDIS_TASK_STATUS_URL}
+REDIS_TASK_STATUS_KEY_PREFIX=${REDIS_TASK_STATUS_KEY_PREFIX}
+STORAGE_NODE_ROOT=${STORAGE_NODE_ROOT}
+SQLITE_NODE_DATABASE_ROOT=${SQLITE_NODE_DATABASE_ROOT}
+TASK_MANAGER_STATE_DB_PATH=${TASK_MANAGER_STATE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/task_manager_state.db}
 EOF
+}
+
+bootstrap_broker_topics() {
+  "$PYTHON_BIN" - <<'PY'
+import asyncio
+
+from broker_service import BrokerSettings, bootstrap_topics, broker_health, create_redpanda_admin
+
+
+async def main() -> None:
+    admin = create_redpanda_admin(BrokerSettings.from_values(dict(__import__("os").environ)))
+    await admin.start()
+    try:
+        await bootstrap_topics(admin)
+        health = await broker_health(admin)
+    finally:
+        await admin.stop()
+    if not health.get("ok"):
+        raise SystemExit(f"broker health failed: {health}")
+
+
+asyncio.run(main())
+PY
+}
+
+verify_redis_status() {
+  "$PYTHON_BIN" - <<'PY'
+import asyncio
+import os
+from uuid import uuid4
+
+from redis_status_node import RedisStatusSettings, RedisTaskStatusStore, TaskStatusRecord
+
+
+async def main() -> None:
+    settings = RedisStatusSettings.from_values(dict(os.environ))
+    store = RedisTaskStatusStore(settings=settings)
+    task_id = f"startup-{uuid4().hex}"
+    try:
+        if not await store.ping():
+            raise SystemExit("Redis ping returned false")
+        await store.set_status(TaskStatusRecord(task_id=task_id, status="completed"), ttl_seconds=60)
+        if await store.get_status(task_id) is None:
+            raise SystemExit("Redis task status readback failed")
+        ttl = await store.ttl(task_id)
+        if ttl <= 0:
+            raise SystemExit(f"Redis task status TTL was not set: {ttl}")
+    finally:
+        await store.client.aclose()
+
+
+asyncio.run(main())
+PY
+}
+
+verify_broker_first_readiness() {
+  local skip_qdrant="${1:-0}"
+  if [[ "$skip_qdrant" -eq 1 ]]; then
+    "$PYTHON_BIN" -m deployment.composition.readiness --skip-qdrant
+  else
+    "$PYTHON_BIN" -m deployment.composition.readiness
+  fi
 }
 
 start_project_service_background() {
@@ -587,6 +879,42 @@ start_project_service_background() {
     exit 1
   fi
   echo "Project/RAG gRPC service started with PID ${pid}. Log: ${project_log}"
+}
+
+start_module_background() {
+  local label="$1"
+  local module="$2"
+  local pid_file="$3"
+  local log_name="$4"
+  local worker_log="${LOG_DIR}/${log_name}.log"
+  : > "$worker_log"
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -c 'exec "$PYTHON_BIN" -m "$1"' _ "$module" > "$worker_log" 2>&1 &
+  else
+    "$PYTHON_BIN" -m "$module" > "$worker_log" 2>&1 &
+  fi
+  local pid=$!
+  echo "$pid" > "$pid_file"
+  sleep 2
+  if ! is_pid_alive "$pid"; then
+    echo "${label} failed to stay running. Log follows:" >&2
+    sed -n '1,160p' "$worker_log" >&2 || true
+    rm -f "$pid_file"
+    exit 1
+  fi
+  echo "${label} started with PID ${pid}. Log: ${worker_log}"
+}
+
+start_broker_first_background() {
+  start_module_background "Redis status node" "redis_status_node.worker" "$REDIS_STATUS_PID_FILE" "redis-status"
+  start_module_background "SQLite node" "sqlite_node.worker" "$SQLITE_NODE_PID_FILE" "sqlite-node"
+  start_module_background "Storage node" "storage_node.worker" "$STORAGE_NODE_PID_FILE" "storage-node"
+  start_module_background "Task manager" "task_manager_service.worker" "$TASK_MANAGER_PID_FILE" "task-manager"
+  start_module_background "Project domain service" "project_service.domain_app" "$PROJECT_SERVICE_PID_FILE" "project-service"
+  start_module_background "Workflow log service" "workflow_log_service.worker" "$WORKFLOW_LOG_PID_FILE" "workflow-log"
+  start_module_background "Ingestion helper" "ingestion_service.server.worker" "$INGESTION_WORKER_PID_FILE" "ingestion-worker"
+  start_module_background "Retrieval helper" "retrieval_service.server.worker" "$RETRIEVAL_WORKER_PID_FILE" "retrieval-worker"
+  start_module_background "Retrieval index helper" "retrieval_service.indexing.worker" "$RETRIEVAL_INDEX_WORKER_PID_FILE" "retrieval-index-worker"
 }
 
 start_ingestion_worker_background() {
@@ -685,11 +1013,34 @@ if [[ "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 ]]; then
   export MANAGER_RETRIEVAL_HTTP_BASE_URL="http://${RETRIEVAL_HTTP_HOST:-127.0.0.1}:${RETRIEVAL_HTTP_PORT:-8081}"
 fi
 
+if [[ "$BROKER_FIRST" -eq 1 ]]; then
+  export MANAGER_PROJECT_CLIENT_MODE=broker
+  export MANAGER_INGESTION_WORKER_MODE=external
+  export MANAGER_RETRIEVAL_CLIENT_MODE=broker
+  export MANAGER_QUEUE_BROKER=redpanda
+fi
+
 validate_provider_config
 validate_runtime_config
 
 if [[ "$START_SERVER" -eq 1 ]]; then
+  if [[ "$BROKER_FIRST" -eq 1 ]]; then
+    start_redpanda_if_needed
+    start_redis_if_needed
+    bootstrap_broker_topics
+    verify_redis_status
+    verify_broker_first_readiness 1
+  fi
+  if [[ "$INFRA_ONLY" -eq 1 ]]; then
+    write_state
+    echo "Broker-first infrastructure is ready."
+    echo "Run live smoke tests with: RAG_LIVE_INFRA=1 pytest -m live_infra tests/integration/test_live_infra_smoke.py"
+    exit 0
+  fi
   start_qdrant_if_needed
+  if [[ "$BROKER_FIRST" -eq 1 ]]; then
+    verify_broker_first_readiness 0
+  fi
   check_runtime_dependencies
   ensure_not_already_running
 fi
@@ -726,6 +1077,13 @@ Local RAG service settings:
   retrieval_mode:      ${MANAGER_RETRIEVAL_CLIENT_MODE:-local}
   project_client_mode: ${MANAGER_PROJECT_CLIENT_MODE}
   project_target:      ${MANAGER_PROJECT_GRPC_TARGET}
+  broker_first:        ${BROKER_FIRST}
+  broker:              ${BROKER_BOOTSTRAP_SERVERS}
+  task_intake_topic:   ${MANAGER_TASK_INTAKE_TOPIC}
+  task_manager:        ${TASK_MANAGER_SERVICE_NAME}
+  redis_status:        ${REDIS_TASK_STATUS_URL}
+  storage_node_root:   ${STORAGE_NODE_ROOT}
+  sqlite_node_root:    ${SQLITE_NODE_DATABASE_ROOT}
   embedding_provider:  ${RAG_EMBEDDING_PROVIDER}
   embedding_model:     ${RAG_EMBEDDING_MODEL}
   embedding_dimension: ${RAG_EMBEDDING_DIMENSION}
@@ -733,6 +1091,13 @@ EOF
 
 if [[ "$START_SERVER" -eq 0 ]]; then
   echo "Setup complete; services were not started because --no-server was set."
+  exit 0
+fi
+
+if [[ "$BROKER_FIRST" -eq 1 ]]; then
+  start_broker_first_background
+  start_module_background "Manager" "manager_service.worker" "$MANAGER_PID_FILE" "manager"
+  echo "Stop everything with: examples/local/stop-all.sh"
   exit 0
 fi
 

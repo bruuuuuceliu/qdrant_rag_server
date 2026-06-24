@@ -339,7 +339,6 @@ Run focused local runner checks:
 bash -n examples/local/run-all.sh
 bash -n examples/local/stop-all.sh
 examples/local/run-all.sh --no-server --no-qdrant --project-id smoke --project-type website
-pytest tests/test_local_runner.py -q
 ```
 
 Runtime files created by the local runner:

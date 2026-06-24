@@ -7,11 +7,19 @@ RUNTIME_DIR="${RAG_LOCAL_RUNTIME_DIR:-${ROOT_DIR}/.run}"
 STATE_FILE="${RUNTIME_DIR}/state.env"
 MANAGER_PID_FILE="${RUNTIME_DIR}/manager.pid"
 PROJECT_SERVICE_PID_FILE="${RUNTIME_DIR}/project-service.pid"
+TASK_MANAGER_PID_FILE="${RUNTIME_DIR}/task-manager.pid"
+WORKFLOW_LOG_PID_FILE="${RUNTIME_DIR}/workflow-log.pid"
 INGESTION_WORKER_PID_FILE="${RUNTIME_DIR}/ingestion-worker.pid"
 RETRIEVAL_INDEX_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-index-worker.pid"
 RETRIEVAL_HTTP_PID_FILE="${RUNTIME_DIR}/retrieval-http.pid"
+RETRIEVAL_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-worker.pid"
+STORAGE_NODE_PID_FILE="${RUNTIME_DIR}/storage-node.pid"
+SQLITE_NODE_PID_FILE="${RUNTIME_DIR}/sqlite-node.pid"
+REDIS_STATUS_PID_FILE="${RUNTIME_DIR}/redis-status.pid"
 QDRANT_CID_FILE="${RUNTIME_DIR}/qdrant.cid"
 QDRANT_LOG_PID_FILE="${RUNTIME_DIR}/qdrant-log.pid"
+REDPANDA_CID_FILE="${RUNTIME_DIR}/redpanda.cid"
+REDIS_CID_FILE="${RUNTIME_DIR}/redis.cid"
 
 CLEAN_RUNTIME=0
 CLEAN_DATA=0
@@ -21,6 +29,8 @@ GRPC_PORT="${RAG_GRPC_PORT:-50051}"
 PROJECT_GRPC_PORT="${RAG_PROJECT_GRPC_PORT:-50052}"
 QDRANT_CONTAINER="${RAG_QDRANT_CONTAINER:-qdrant-rag-local}"
 QDRANT_VOLUME="${RAG_QDRANT_VOLUME:-qdrant-rag-local-data}"
+REDPANDA_CONTAINER="${RAG_REDPANDA_CONTAINER:-redpanda-rag-local}"
+REDIS_CONTAINER="${RAG_REDIS_CONTAINER:-redis-rag-local}"
 RAG_LOCAL_DATA_DIR="${RAG_LOCAL_DATA_DIR:-${SCRIPT_DIR}/.data}"
 
 usage() {
@@ -37,6 +47,10 @@ Options:
   --no-docker           Do not stop/remove the local Qdrant container.
   --qdrant-container VALUE
                         Docker container name. Default: qdrant-rag-local.
+  --redpanda-container VALUE
+                        Docker container name. Default: redpanda-rag-local.
+  --redis-container VALUE
+                        Docker container name. Default: redis-rag-local.
   --grpc-port VALUE     Extra cleanup check for this gRPC port. Default: 50051.
   --project-grpc-port VALUE
                         Extra cleanup check for project gRPC port. Default: 50052.
@@ -66,6 +80,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --qdrant-container)
       QDRANT_CONTAINER="${2:?--qdrant-container requires a value}"
+      shift 2
+      ;;
+    --redpanda-container)
+      REDPANDA_CONTAINER="${2:?--redpanda-container requires a value}"
+      shift 2
+      ;;
+    --redis-container)
+      REDIS_CONTAINER="${2:?--redis-container requires a value}"
       shift 2
       ;;
     --grpc-port)
@@ -99,6 +121,8 @@ if [[ -f "$STATE_FILE" ]]; then
   PROJECT_GRPC_PORT="${RAG_PROJECT_GRPC_PORT:-$PROJECT_GRPC_PORT}"
   QDRANT_CONTAINER="${QDRANT_CONTAINER:-qdrant-rag-local}"
   QDRANT_VOLUME="${QDRANT_VOLUME:-qdrant-rag-local-data}"
+  REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-redpanda-rag-local}"
+  REDIS_CONTAINER="${REDIS_CONTAINER:-redis-rag-local}"
   RAG_LOCAL_DATA_DIR="${RAG_LOCAL_DATA_DIR:-${SCRIPT_DIR}/.data}"
 fi
 
@@ -153,10 +177,17 @@ stop_pid_file() {
 fallback_stop_python_services() {
   local patterns=(
     "python -m local_runtime.manager_app"
+    "python -m manager_service.worker"
+    "python -m task_manager_service.worker"
+    "python -m redis_status_node.worker"
+    "python -m sqlite_node.worker"
+    "python -m storage_node.worker"
+    "python -m workflow_log_service.worker"
     "python manager_service/server/app.py"
     "python -m ingestion_service.server.worker"
     "python -m retrieval_service.indexing.worker"
     "python -m retrieval_service.server.worker"
+    "python -m project_service.domain_app"
     "python -m project_service.server.app"
     "python project_service/server/app.py"
     "python -m server.app"
@@ -207,15 +238,41 @@ stop_qdrant() {
   rm -f "$QDRANT_CID_FILE"
 }
 
+stop_docker_container() {
+  local label="$1"
+  local container_name="$2"
+  local cid_file="$3"
+  if [[ "$STOP_DOCKER" -ne 1 ]] || ! command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+  local container="$container_name"
+  if [[ -f "$cid_file" ]]; then
+    container="$(cat "$cid_file" 2>/dev/null || echo "$container")"
+  fi
+  if [[ -n "$container" ]] && docker ps -a --format '{{.ID}} {{.Names}}' | grep -Eq "^${container}| ${container_name}$"; then
+    echo "Stopping ${label} container ${container_name}..."
+    docker rm -f "$container_name" >/dev/null 2>&1 || docker rm -f "$container" >/dev/null 2>&1 || true
+  fi
+  rm -f "$cid_file"
+}
+
 stop_pid_file "$INGESTION_WORKER_PID_FILE" "ingestion worker"
 stop_pid_file "$RETRIEVAL_INDEX_WORKER_PID_FILE" "retrieval index worker"
 stop_pid_file "$RETRIEVAL_HTTP_PID_FILE" "retrieval HTTP server"
+stop_pid_file "$RETRIEVAL_WORKER_PID_FILE" "retrieval worker"
+stop_pid_file "$STORAGE_NODE_PID_FILE" "storage node"
+stop_pid_file "$SQLITE_NODE_PID_FILE" "SQLite node"
+stop_pid_file "$REDIS_STATUS_PID_FILE" "Redis status node"
+stop_pid_file "$TASK_MANAGER_PID_FILE" "task manager"
+stop_pid_file "$WORKFLOW_LOG_PID_FILE" "workflow log service"
 stop_pid_file "$MANAGER_PID_FILE" "manager"
 stop_pid_file "$PROJECT_SERVICE_PID_FILE" "project service"
 stop_pid_file "$QDRANT_LOG_PID_FILE" "Qdrant log collector"
 fallback_stop_python_services
 fallback_stop_port_listener
 stop_qdrant
+stop_docker_container "Redpanda" "$REDPANDA_CONTAINER" "$REDPANDA_CID_FILE"
+stop_docker_container "Redis" "$REDIS_CONTAINER" "$REDIS_CID_FILE"
 
 if [[ "$CLEAN_RUNTIME" -eq 1 ]]; then
   rm -rf "$RUNTIME_DIR"

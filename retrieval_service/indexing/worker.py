@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from broker_service import BrokerSettings
 from configs import AppSettings, load_settings
 from configs.retrieval.config import (
     RetrievalIndexWorkerSettings,
@@ -15,6 +16,10 @@ from configs.retrieval.config import (
 from retrieval_service.embedding import EmbeddingProviderFactory
 from retrieval_service.indexing.app import RetrievalIndexAppContext
 from retrieval_service.indexing.app import create_app as create_index_app
+from retrieval_service.indexing.helper_app import (
+    RetrievalIndexHelperServerContext,
+    create_helper_app,
+)
 from retrieval_service.indexing.service import IndexingService
 from retrieval_service.placement import (
     PlacementStoreResolver,
@@ -25,11 +30,52 @@ from retrieval_service.services.bm25 import QdrantSparseBM25Index
 from retrieval_service.services.entities import LocalNerExtractor, NoopNerExtractor
 from retrieval_service.services.sparse_encoder import FastEmbedSparseTextEncoder
 from retrieval_service.services.vector_store import QdrantStore
+from shared.runtime_health import RuntimeHealth
 from shared.queue import LocalQueueBroker, QueueBroker, SQLiteQueueBroker
 
 
 @dataclass(slots=True)
 class RetrievalIndexWorkerServerContext:
+    helper_app: RetrievalIndexHelperServerContext
+    indexing_service: IndexingService
+    settings: RetrievalIndexWorkerSettings
+    embedding_provider: Any
+    qdrant_store: Any
+    bm25_index: Any | None
+    sparse_encoder: Any | None
+    ner_extractor: Any | None
+
+    async def shutdown(self) -> None:
+        await self.helper_app.stop()
+        if self.ner_extractor is not None:
+            shutdown_ner = getattr(self.ner_extractor, "shutdown", None)
+            if shutdown_ner is not None:
+                await shutdown_ner()
+        if self.bm25_index is not None:
+            close_bm25 = getattr(self.bm25_index, "close", None)
+            if close_bm25 is not None:
+                await close_bm25()
+        shutdown_embedding = getattr(self.embedding_provider, "shutdown", None)
+        if shutdown_embedding is not None:
+            await shutdown_embedding()
+        close_qdrant = getattr(self.qdrant_store, "close", None)
+        if close_qdrant is not None:
+            await close_qdrant()
+
+    async def health(self) -> RuntimeHealth:
+        return RuntimeHealth(
+            service=self.settings.service_name,
+            ready=True,
+            dependencies={
+                "indexing_service": self.indexing_service is not None,
+                "broker_helper": self.helper_app is not None,
+            },
+            details={"command_topic": self.settings.command_topic},
+        )
+
+
+@dataclass(slots=True)
+class RetrievalIndexQueueWorkerServerContext:
     index_app: RetrievalIndexAppContext
     queue: QueueBroker
     indexing_service: IndexingService
@@ -62,7 +108,7 @@ async def create_worker_server(
     settings: AppSettings | None = None,
     *,
     worker_settings: RetrievalIndexWorkerSettings | None = None,
-    queue: QueueBroker | None = None,
+    broker_settings: BrokerSettings | None = None,
     indexing_service: IndexingService | None = None,
     embedding_provider: Any | None = None,
     qdrant_store: Any | None = None,
@@ -74,7 +120,6 @@ async def create_worker_server(
     worker_settings = worker_settings or load_retrieval_index_worker_settings(
         dict(os.environ)
     )
-    queue = queue or _build_queue(worker_settings)
 
     if embedding_provider is None:
         embedding_provider = EmbeddingProviderFactory.create(
@@ -120,15 +165,14 @@ async def create_worker_server(
             ),
         )
 
-    index_app = await create_index_app(
-        queue=queue,
+    helper_app = create_helper_app(
         indexing_service=indexing_service,
-        enabled=worker_settings.enabled,
-        topic=worker_settings.request_topic,
+        broker_settings=broker_settings,
+        service_name=worker_settings.service_name,
+        command_topic=worker_settings.command_topic,
     )
     return RetrievalIndexWorkerServerContext(
-        index_app=index_app,
-        queue=queue,
+        helper_app=helper_app,
         indexing_service=indexing_service,
         settings=worker_settings,
         embedding_provider=embedding_provider,
@@ -139,8 +183,56 @@ async def create_worker_server(
     )
 
 
+async def create_queue_worker_server(
+    settings: AppSettings | None = None,
+    *,
+    worker_settings: RetrievalIndexWorkerSettings | None = None,
+    queue: QueueBroker | None = None,
+    indexing_service: IndexingService | None = None,
+    embedding_provider: Any | None = None,
+    qdrant_store: Any | None = None,
+    sparse_encoder: Any | None = None,
+    bm25_index: Any | None = None,
+    ner_extractor: Any | None = None,
+) -> RetrievalIndexQueueWorkerServerContext:
+    settings = settings or load_settings()
+    worker_settings = worker_settings or load_retrieval_index_worker_settings(
+        dict(os.environ)
+    )
+    queue = queue or _build_queue(worker_settings)
+
+    helper_context = await create_worker_server(
+        settings,
+        worker_settings=worker_settings,
+        indexing_service=indexing_service,
+        embedding_provider=embedding_provider,
+        qdrant_store=qdrant_store,
+        sparse_encoder=sparse_encoder,
+        bm25_index=bm25_index,
+        ner_extractor=ner_extractor,
+    )
+    index_app = await create_index_app(
+        queue=queue,
+        indexing_service=helper_context.indexing_service,
+        enabled=worker_settings.enabled,
+        topic=worker_settings.request_topic,
+    )
+    return RetrievalIndexQueueWorkerServerContext(
+        index_app=index_app,
+        queue=queue,
+        indexing_service=helper_context.indexing_service,
+        settings=helper_context.settings,
+        embedding_provider=helper_context.embedding_provider,
+        qdrant_store=helper_context.qdrant_store,
+        bm25_index=helper_context.bm25_index,
+        sparse_encoder=helper_context.sparse_encoder,
+        ner_extractor=helper_context.ner_extractor,
+    )
+
+
 async def serve_forever(settings: AppSettings | None = None) -> None:
     app = await create_worker_server(settings)
+    app.helper_app.start()
     try:
         while True:
             await asyncio.sleep(3600)

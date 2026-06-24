@@ -8,6 +8,7 @@ operational constraints.
 ## Implemented Areas
 
 - [Qdrant Sparse Retrieval](qdrant-sparse-retrieval.md)
+- [Broker-First Message Foundation](broker-first-message-foundation.md)
 - [Retrieval Runtime Configuration](retrieval-runtime-configuration.md)
 - [Sparse Retrieval Testing And Showcase](sparse-retrieval-testing-and-showcase.md)
 

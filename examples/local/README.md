@@ -1,11 +1,9 @@
 # Local Multi-Service Runner
 
-These scripts run the current local multi-service composition for development.
-The manager process owns the public gRPC server. By default it composes the
-project service and ingestion consumer in-process for a small local setup.
-For service-boundary development, `--split-services` starts project/RAG and
-ingestion worker processes separately. Qdrant runs as a separate local server
-when Docker is available.
+These scripts run the local broker-first multi-service composition for
+development. The default topology starts manager, task manager, project domain,
+workflow log, ingestion, retrieval, retrieval-index, storage, SQLite, Redis
+status, and Qdrant as separate processes when services are enabled.
 
 ## Start
 
@@ -18,9 +16,8 @@ Useful options:
 ```bash
 examples/local/run-all.sh --reset --init --grpc-port 50051
 examples/local/run-all.sh --init --embedding-provider openrouter
-examples/local/run-all.sh --reset --init --external-ingestion
-examples/local/run-all.sh --reset --init --split-services
-examples/local/run-all.sh --reset --init --external-retrieval-http
+examples/local/run-all.sh --compat-local --reset --init --split-services
+examples/local/run-all.sh --compat-local --reset --init --external-retrieval-http
 examples/local/run-all.sh --foreground --init
 examples/local/run-all.sh --init --no-server
 ```
@@ -29,24 +26,28 @@ examples/local/run-all.sh --init --no-server
 the loaded local config, writes `.run/state.env`, and prints the effective local
 service settings without starting Qdrant or Python services.
 
+`--compat-local` enables the older embedded/local queue composition for targeted
+migration tests.
+
 `--external-retrieval-http` currently keeps manager project planning local and
 only moves retrieval execution to the HTTP service. Do not combine it with
 `--external-project-service` or `--split-services` until project config/scope
 APIs are extracted.
 
-Split-service mode starts:
+Broker-first mode starts:
 
 - manager gRPC server on `RAG_GRPC_PORT`, default `50051`
-- project/RAG gRPC server on `RAG_PROJECT_GRPC_PORT`, default `50052`
-- ingestion worker server connected through the shared queue
-- retrieval index worker connected through the shared queue
-- retrieval HTTP server when `--external-retrieval-http` is set
+- task manager, project domain, workflow log, ingestion, retrieval,
+  retrieval-index, storage, SQLite, and Redis status worker processes
 - Qdrant, when needed and Docker is available
 
-In split-service mode, queued ingestion publishes prepared chunks to the
-retrieval index worker and waits for the index response before marking the
-ingestion job completed. The no-index compatibility path is still available
-when the retrieval index worker is not enabled.
+Before reporting broker-first startup success, the runner verifies Redpanda
+topics, Redis task-status TTL behavior, Qdrant reachability, storage root
+writes, and SQLite database allocation through
+`python -m deployment.composition.readiness`.
+
+Compatibility split-service mode still supports the older SQLite queue handoff
+for migration tests.
 
 Copy `configs/local.env.example` to `configs/local.env` to keep local overrides
 out of command arguments. `run-all.sh` reads `configs/local.env` by default;
@@ -89,8 +90,9 @@ local Qdrant container by name unless `--no-docker` is set.
   model from Hugging Face. In offline or restricted-network environments, either
   pre-cache `RAG_EMBEDDING_MODEL` locally or use a remote embedding provider with
   `RAG_EMBEDDING_API_KEY`.
-- `run-all.sh` waits for gRPC/HTTP ports before reporting services as started.
-  If startup times out, inspect `.run/logs/*.log`; common blockers are Docker
-  socket access, Qdrant not reachable, and embedding model downloads.
+- `run-all.sh` waits for compatibility gRPC/HTTP ports and uses the broker-first
+  readiness command for dependency checks. If startup times out, inspect
+  `.run/logs/*.log`; common blockers are Docker socket access, Qdrant not
+  reachable, and embedding model downloads.
 - Set `PYTHON_BIN=/path/to/python` when the desired interpreter is not named
   `python` on `PATH`; the runner falls back to `python3` when available.

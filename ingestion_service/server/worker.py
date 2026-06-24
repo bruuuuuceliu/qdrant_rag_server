@@ -7,60 +7,66 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from configs import AppSettings, load_settings
+from broker_service import BrokerSettings
 from configs.ingestion import IngestionSettings, load_ingestion_settings
 from ingestion_service.jobs import SQLiteIngestionJobRepository
+from ingestion_service.server.broker_runtime import BrokerIngestionApp
 from ingestion_service.server.app import IngestionAppContext, create_app as create_ingestion_app
+from ingestion_service.server.helper_app import IngestionHelperServerContext, create_helper_app
 from ingestion_service.service import IngestionService
+from shared.runtime_health import RuntimeHealth
 from shared.queue import LocalQueueBroker, QueueBroker, SQLiteQueueBroker
 
 
 @dataclass(slots=True)
 class IngestionWorkerServerContext:
-    ingestion_app: IngestionAppContext
-    queue: QueueBroker
+    ingestion_app: BrokerIngestionApp
+    helper_app: IngestionHelperServerContext
     ingestion_settings: IngestionSettings
 
     async def shutdown(self) -> None:
-        await self.ingestion_app.shutdown()
+        await self.helper_app.stop()
+
+    async def health(self) -> RuntimeHealth:
+        return RuntimeHealth(
+            service=self.ingestion_settings.service_name,
+            ready=True,
+            dependencies={"jobs": True, "broker_helper": self.helper_app is not None},
+            details={
+                "job_db_path": str(self.ingestion_settings.job_db_path),
+                "command_topic": self.ingestion_settings.command_topic,
+            },
+        )
 
 
 async def create_worker_server(
-    settings: AppSettings | None = None,
     *,
     ingestion_settings: IngestionSettings | None = None,
-    queue: QueueBroker | None = None,
-    retrieval_queue: QueueBroker | None = None,
+    broker_settings: BrokerSettings | None = None,
 ) -> IngestionWorkerServerContext:
     ingestion_settings = ingestion_settings or load_ingestion_settings(dict(os.environ))
-    queue = queue or _build_queue(ingestion_settings)
-    if retrieval_queue is None:
-        if not ingestion_settings.retrieval_index_enabled:
-            raise ValueError("INGESTION_RETRIEVAL_INDEX_ENABLED must be true")
-        retrieval_queue = _build_retrieval_queue(ingestion_settings)
     jobs = SQLiteIngestionJobRepository(ingestion_settings.job_db_path)
     await jobs.initialize()
-    ingestion_app = await create_ingestion_app(
-        queue=queue,
+    ingestion_app = BrokerIngestionApp(
         jobs=jobs,
         ingestion_service=IngestionService(),
-        retrieval_queue=retrieval_queue,
-        retrieval_index_topic=ingestion_settings.retrieval_index_topic,
-        retrieval_index_response_timeout=(
-            ingestion_settings.retrieval_index_response_timeout
-        ),
-        enabled=ingestion_settings.enabled,
-        topic=ingestion_settings.request_topic,
+    )
+    helper_app = create_helper_app(
+        app=ingestion_app,
+        broker_settings=broker_settings,
+        service_name=ingestion_settings.service_name,
+        command_topic=ingestion_settings.command_topic,
     )
     return IngestionWorkerServerContext(
         ingestion_app=ingestion_app,
-        queue=queue,
+        helper_app=helper_app,
         ingestion_settings=ingestion_settings,
     )
 
 
-async def serve_forever(settings: AppSettings | None = None) -> None:
-    app = await create_worker_server(settings)
+async def serve_forever() -> None:
+    app = await create_worker_server()
+    app.helper_app.start()
     try:
         while True:
             await asyncio.sleep(3600)
@@ -69,7 +75,7 @@ async def serve_forever(settings: AppSettings | None = None) -> None:
 
 
 def main() -> None:
-    asyncio.run(serve_forever(load_settings()))
+    asyncio.run(serve_forever())
 
 
 def _build_queue(settings: IngestionSettings) -> QueueBroker:

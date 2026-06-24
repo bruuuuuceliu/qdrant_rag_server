@@ -17,11 +17,12 @@ from manager_service.clients import ProjectDocumentClient
 from manager_service.routing import ManagerRouter
 from manager_service.server.grpc import serve_grpc as serve_manager_grpc
 from manager_service.service import ManagerService
+from shared.contracts import MessageProducer, TaskStatusStore
 
 
 @dataclass(slots=True)
 class ManagerAppContext:
-    project_client: ProjectDocumentClient
+    project_client: ProjectDocumentClient | None
     manager: ManagerService
     manager_settings: ManagerSettings
     manager_server: Any
@@ -41,23 +42,30 @@ async def create_app(
     settings: AppSettings | None = None,
     *,
     project_client: ProjectDocumentClient | None = None,
+    task_producer: MessageProducer | None = None,
+    task_status_store: TaskStatusStore | None = None,
+    allow_direct_project_client: bool = False,
     manager_settings: ManagerSettings | None = None,
     generation_engine: Any = None,
     health_checker: Any = None,
 ) -> ManagerAppContext:
     """Create the manager server with injected service clients."""
 
-    if project_client is None:
-        raise ValueError("manager server requires a project-document client")
+    if project_client is None and task_producer is None:
+        raise ValueError("manager server requires a project-document client or task producer")
     settings = settings or load_settings()
     manager_settings = manager_settings or load_manager_settings(dict(os.environ))
     manager = ManagerService(
         project_documents=project_client,
+        task_producer=task_producer,
+        task_status_store=task_status_store,
+        task_intake_topic=manager_settings.task_intake_topic,
         ingest_topic=manager_settings.ingest_topic,
         router=ManagerRouter(
             ingest_topic=manager_settings.ingest_topic,
             workflow_topic=manager_settings.workflow_topic,
         ),
+        allow_direct_project_client=allow_direct_project_client,
     )
     manager_server = await serve_manager_grpc(
         manager=manager,
@@ -77,8 +85,17 @@ async def serve_forever(
     settings: AppSettings | None = None,
     *,
     project_client: ProjectDocumentClient | None = None,
+    task_producer: MessageProducer | None = None,
+    task_status_store: TaskStatusStore | None = None,
+    manager_settings: ManagerSettings | None = None,
 ) -> None:
-    app = await create_app(settings, project_client=project_client)
+    app = await create_app(
+        settings,
+        project_client=project_client,
+        task_producer=task_producer,
+        task_status_store=task_status_store,
+        manager_settings=manager_settings,
+    )
     try:
         await app.server.wait_for_termination()
     finally:

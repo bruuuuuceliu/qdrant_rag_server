@@ -7,8 +7,14 @@ import os
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from broker_service import BrokerSettings
 from configs import AppSettings, load_settings
-from configs.retrieval.config import RetrievalHttpSettings, load_retrieval_http_settings
+from configs.retrieval.config import (
+    RetrievalHelperSettings,
+    RetrievalHttpSettings,
+    load_retrieval_helper_settings,
+    load_retrieval_http_settings,
+)
 from retrieval_service.embedding import EmbeddingProviderFactory
 from retrieval_service.health import MetricsCollector
 from retrieval_service.placement import PlacementStoreResolver, RetrievalShard, SQLitePlacementRegistry
@@ -16,6 +22,7 @@ from retrieval_service.retrieval.factory import ProjectRetrieverFactory
 from retrieval_service.retrieval.service import RetrievalService
 from retrieval_service.server.app import RetrievalApiServerContext
 from retrieval_service.server.app import create_app as create_api_app
+from retrieval_service.server.helper_app import RetrievalHelperServerContext, create_helper_app
 from retrieval_service.server.http import RetrievalHttpApp
 from retrieval_service.server.http import create_http_app, serve_http
 from retrieval_service.services.bm25 import BM25Retriever, QdrantSparseBM25Index
@@ -26,6 +33,7 @@ from retrieval_service.services.sparse_encoder import FastEmbedSparseTextEncoder
 from retrieval_service.services.vector_store import QdrantStore
 from retrieval_service.storage.filesystem import FilesystemObjectStorage
 from retrieval_service.storage.memory import MemoryObjectStorage
+from shared.runtime_health import RuntimeHealth
 
 
 ServeHttp = Callable[
@@ -75,7 +83,59 @@ class RetrievalHttpServerContext:
                 await close_qdrant()
 
 
+@dataclass(slots=True)
+class RetrievalWorkerServerContext:
+    api_app: RetrievalApiServerContext
+    helper_app: RetrievalHelperServerContext
+    helper_settings: RetrievalHelperSettings
+    retrieval_service: Any
+    owned: "OwnedRetrievalDependencies"
+
+    async def shutdown(self) -> None:
+        await self.helper_app.stop()
+        await _shutdown_owned(self.owned, self.api_app)
+
+    async def health(self) -> RuntimeHealth:
+        return RuntimeHealth(
+            service=self.helper_settings.service_name,
+            ready=True,
+            dependencies={
+                "retrieval_service": self.retrieval_service is not None,
+                "broker_helper": self.helper_app is not None,
+            },
+            details={"command_topic": self.helper_settings.command_topic},
+        )
+
+
 async def create_worker_server(
+    settings: AppSettings | None = None,
+    *,
+    helper_settings: RetrievalHelperSettings | None = None,
+    retrieval_service: Any | None = None,
+    broker_settings: BrokerSettings | None = None,
+) -> RetrievalWorkerServerContext:
+    settings = settings or load_settings()
+    helper_settings = helper_settings or load_retrieval_helper_settings(dict(os.environ))
+    owned = OwnedRetrievalDependencies()
+    if retrieval_service is None:
+        retrieval_service = await _build_retrieval_service(settings, owned=owned)
+    api_app = await create_api_app(retrieval_service=retrieval_service)
+    helper_app = create_helper_app(
+        api=api_app,
+        broker_settings=broker_settings,
+        service_name=helper_settings.service_name,
+        command_topic=helper_settings.command_topic,
+    )
+    return RetrievalWorkerServerContext(
+        api_app=api_app,
+        helper_app=helper_app,
+        helper_settings=helper_settings,
+        retrieval_service=retrieval_service,
+        owned=owned,
+    )
+
+
+async def create_http_worker_server(
     settings: AppSettings | None = None,
     *,
     http_settings: RetrievalHttpSettings | None = None,
@@ -85,7 +145,7 @@ async def create_worker_server(
 ) -> RetrievalHttpServerContext:
     settings = settings or load_settings()
     http_settings = http_settings or load_retrieval_http_settings(dict(os.environ))
-    owned = _OwnedRetrievalDependencies()
+    owned = OwnedRetrievalDependencies()
     if retrieval_service is None:
         retrieval_service = await _build_retrieval_service(settings, owned=owned)
     api_app = await create_api_app(retrieval_service=retrieval_service)
@@ -110,12 +170,10 @@ async def create_worker_server(
 
 async def serve_forever(settings: AppSettings | None = None) -> None:
     app = await create_worker_server(settings)
+    app.helper_app.start()
     try:
-        if app.http_server is None:
-            while True:
-                await asyncio.sleep(3600)
-        else:
-            await app.http_server.serve_forever()
+        while True:
+            await asyncio.sleep(3600)
     finally:
         await app.shutdown()
 
@@ -125,7 +183,7 @@ def main() -> None:
 
 
 @dataclass(slots=True)
-class _OwnedRetrievalDependencies:
+class OwnedRetrievalDependencies:
     embedding_provider: Any | None = None
     qdrant_store: Any | None = None
     bm25_index: Any | None = None
@@ -137,7 +195,7 @@ class _OwnedRetrievalDependencies:
 async def _build_retrieval_service(
     settings: AppSettings,
     *,
-    owned: _OwnedRetrievalDependencies,
+    owned: OwnedRetrievalDependencies,
 ) -> RetrievalService:
     embedding_provider = EmbeddingProviderFactory.create(
         settings.embedding_provider,
@@ -224,6 +282,29 @@ def _build_placement_store_resolver(
         shard_repository=registry,
         default_vector_size=settings.embedding_dimension,
     )
+
+
+async def _shutdown_owned(
+    owned: OwnedRetrievalDependencies,
+    api_app: RetrievalApiServerContext,
+) -> None:
+    await api_app.shutdown()
+    if owned.ner_extractor is not None:
+        shutdown_ner = getattr(owned.ner_extractor, "shutdown", None)
+        if shutdown_ner is not None:
+            await shutdown_ner()
+    if owned.bm25_index is not None:
+        close_bm25 = getattr(owned.bm25_index, "close", None)
+        if close_bm25 is not None:
+            await close_bm25()
+    if owned.embedding_provider is not None:
+        shutdown_embedding = getattr(owned.embedding_provider, "shutdown", None)
+        if shutdown_embedding is not None:
+            await shutdown_embedding()
+    if owned.qdrant_store is not None:
+        close_qdrant = getattr(owned.qdrant_store, "close", None)
+        if close_qdrant is not None:
+            await close_qdrant()
 
 
 if __name__ == "__main__":

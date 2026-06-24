@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from configs.config import get_bool_value, get_float_value, get_int_value, get_value
+from shared.contracts import TOPICS
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,10 +30,17 @@ class RetrievalHttpSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class RetrievalHelperSettings:
+    service_name: str = "retrieval_service"
+    command_topic: str = TOPICS.helper_retrieval_commands
+
+
+@dataclass(frozen=True, slots=True)
 class RetrievalIndexWorkerSettings:
     enabled: bool = True
     service_name: str = "retrieval_index_worker"
     request_topic: str = "retrieval.index.requests"
+    command_topic: str = TOPICS.helper_retrieval_index_commands
     queue_broker: str = "sqlite"
     queue_db_path: Path = Path("/var/lib/rag/ingestion_queue.db")
     queue_maxsize: int = 100
@@ -73,6 +81,17 @@ def load_retrieval_http_settings(values: dict[str, str]) -> RetrievalHttpSetting
     )
 
 
+def load_retrieval_helper_settings(values: dict[str, str]) -> RetrievalHelperSettings:
+    return RetrievalHelperSettings(
+        service_name=get_value(values, "RETRIEVAL_HELPER_SERVICE_NAME", "retrieval_service"),
+        command_topic=get_value(
+            values,
+            "RETRIEVAL_HELPER_COMMAND_TOPIC",
+            TOPICS.helper_retrieval_commands,
+        ),
+    )
+
+
 def load_retrieval_index_worker_settings(
     values: dict[str, str],
 ) -> RetrievalIndexWorkerSettings:
@@ -87,6 +106,11 @@ def load_retrieval_index_worker_settings(
             values,
             "RETRIEVAL_INDEX_REQUEST_TOPIC",
             "retrieval.index.requests",
+        ),
+        command_topic=get_value(
+            values,
+            "RETRIEVAL_INDEX_HELPER_COMMAND_TOPIC",
+            TOPICS.helper_retrieval_index_commands,
         ),
         queue_broker=get_value(values, "RETRIEVAL_INDEX_QUEUE_BROKER", "sqlite"),
         queue_db_path=Path(

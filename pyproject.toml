@@ -10,6 +10,8 @@ dependencies = [
     "sentence-transformers>=2.7",
     "httpx>=0.27",
     "python-dotenv>=1.0",
+    "aiokafka>=0.10",
+    "redis>=5",
 ]
 
 [project.optional-dependencies]
@@ -37,17 +39,26 @@ documents-docling = [
 
 [tool.setuptools.packages.find]
 include = [
+    "broker_service*",
     "configs*",
+    "deployment*",
     "ingestion_service*",
     "manager_service*",
     "memory_service*",
     "project_service*",
     "retrieval_service*",
+    "redis_status_node*",
     "server*",
     "shared*",
+    "sqlite_node*",
+    "storage_node*",
+    "task_manager_service*",
     "workflow_log_service*",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "live_infra: requires live Docker or externally configured Redpanda/Redis/Qdrant services",
+]

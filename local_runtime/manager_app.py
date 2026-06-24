@@ -186,6 +186,7 @@ async def create_app(
             ingest_topic=manager_settings.ingest_topic,
             workflow_topic=manager_settings.workflow_topic,
         ),
+        allow_direct_project_client=True,
     )
     manager_server = await serve_manager_grpc(
         manager=manager,

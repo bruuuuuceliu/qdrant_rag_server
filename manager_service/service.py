@@ -5,9 +5,26 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import inspect
 from typing import Any
+from uuid import uuid4
 
 from manager_service.clients import ProjectDocumentClient
 from manager_service.routing import DataType, ManagerRouter, Operation, RouteRequest
+from shared.contracts import MessageEnvelope, MessageProducer, MessageType, TOPICS, TaskIntakePayload
+from shared.contracts import TaskStatusStore
+
+
+@dataclass(frozen=True, slots=True)
+class ManagerTaskAccepted:
+    task_id: str
+    correlation_id: str
+    accepted: bool = True
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "accepted": self.accepted,
+            "task_id": self.task_id,
+            "correlation_id": self.correlation_id,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,14 +51,25 @@ class ManagerService:
     def __init__(
         self,
         *,
-        project_documents: ProjectDocumentClient,
+        project_documents: ProjectDocumentClient | None = None,
+        task_producer: MessageProducer | None = None,
+        task_status_store: TaskStatusStore | None = None,
+        task_intake_topic: str = TOPICS.task_intake,
         ingest_topic: str = "ingestion.requests",
         ingest_response_timeout: float = 30.0,
         router: ManagerRouter | None = None,
+        allow_direct_project_client: bool = False,
     ) -> None:
-        if project_documents is None:
-            raise ValueError("ManagerService requires a project-document client")
+        if task_producer is None and not allow_direct_project_client:
+            raise ValueError("ManagerService requires a task producer for broker-first runtime")
+        if task_producer is None and project_documents is None:
+            raise ValueError("direct project-document compatibility requires a project-document client")
+        if task_producer is not None and project_documents is not None and not allow_direct_project_client:
+            raise ValueError("project-document client is not allowed in broker-first runtime")
         self._project_documents = project_documents
+        self._task_producer = task_producer
+        self._task_status_store = task_status_store
+        self._task_intake_topic = task_intake_topic
         self._ingest_topic = ingest_topic
         self._ingest_response_timeout = ingest_response_timeout
         self._router = router or ManagerRouter()
@@ -63,6 +91,10 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
+        if self._task_producer is not None:
+            return await self._publish_task(Operation.INGEST, request, context=context)
+        if self._project_documents is None:
+            raise ValueError("project-document client is not configured")
         return await _project_ingest(self._project_documents, request, context=context)
 
     async def search(
@@ -81,6 +113,10 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
+        if self._task_producer is not None:
+            return await self._publish_task(Operation.SEARCH, request, context=context)
+        if self._project_documents is None:
+            raise ValueError("project-document client is not configured")
         return await _project_search(self._project_documents, request, context=context)
 
     async def ingest_status(
@@ -98,6 +134,12 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
+        if self._task_status_store is not None:
+            return await self._task_status_store.get_status(job_id)
+        if self._task_producer is not None:
+            raise ValueError("task status lookup is not configured")
+        if self._project_documents is None:
+            raise ValueError("task status lookup is not configured")
         return await _project_ingest_status(
             self._project_documents,
             job_id,
@@ -121,12 +163,42 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
+        if self._task_producer is not None:
+            return await self._publish_task(Operation.DELETE, request, context=context)
+        if self._project_documents is None:
+            raise ValueError("project-document client is not configured")
         return await _call_project(
             self._project_documents,
             "delete_document",
             request,
             context=context,
         )
+
+    async def _publish_task(
+        self,
+        operation: Operation,
+        request: Any,
+        *,
+        context: ManagerRequestContext | None = None,
+    ) -> ManagerTaskAccepted:
+        if self._task_producer is None:
+            raise ValueError("task producer is not configured")
+        correlation_id = context.request_id if context and context.request_id else uuid4().hex
+        task_id = _request_task_id(request) or uuid4().hex
+        envelope = MessageEnvelope.create(
+            producer="manager_service",
+            message_type=MessageType.REQUEST_ACCEPTED,
+            data_type=_data_type(request),
+            task_id=task_id,
+            correlation_id=correlation_id,
+            payload=TaskIntakePayload(
+                operation=operation.value,
+                request=_request_payload(request),
+                context=context.to_payload() if context is not None else {},
+            ).to_payload(),
+        )
+        await self._task_producer.publish(self._task_intake_topic, envelope, key=task_id)
+        return ManagerTaskAccepted(task_id=task_id, correlation_id=correlation_id)
 
 
 def _data_type(request: Any) -> str:
@@ -143,6 +215,26 @@ def _request_str(request: Any, field: str) -> str:
     if isinstance(request, dict):
         return str(request.get(field, ""))
     return str(getattr(request, field, ""))
+
+
+def _request_task_id(request: Any) -> str:
+    return _request_str(request, "task_id") or _request_str(request, "job_id")
+
+
+def _request_payload(request: Any) -> dict[str, Any]:
+    if isinstance(request, dict):
+        return dict(request)
+    if hasattr(request, "to_dict"):
+        value = request.to_dict()
+        return dict(value) if isinstance(value, dict) else {"value": value}
+    if hasattr(request, "__dict__"):
+        return dict(vars(request))
+    fields = {
+        name: getattr(request, name)
+        for name in ("project_id", "user_id", "kb_id", "doc_id", "query", "metadata")
+        if hasattr(request, name)
+    }
+    return fields or {"value": str(request)}
 
 
 async def _project_ingest(

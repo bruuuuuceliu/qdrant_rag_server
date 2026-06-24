@@ -27,7 +27,7 @@ from manager_service.routing import (
     RouteRequest,
     ServiceTarget,
 )
-from manager_service.service import ManagerRequestContext, ManagerService
+from manager_service.service import ManagerRequestContext, ManagerService, ManagerTaskAccepted
 
 __all__ = [
     "DataType",
@@ -40,6 +40,7 @@ __all__ = [
     "ManagerRequestContext",
     "ManagerService",
     "ManagerServiceError",
+    "ManagerTaskAccepted",
     "Operation",
     "ProjectDocumentClient",
     "ProjectDocumentIngestionClient",

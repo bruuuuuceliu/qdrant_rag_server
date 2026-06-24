@@ -8,7 +8,9 @@ This project is a minimal, extensible information retrieval service. It can supp
 - [Service Boundaries](service-boundaries.md): manager/auth, domain services, helper nodes, task manager, and broker ownership.
 - [Ideal System Boundary](boundary.md): target multi-service architecture, inputs, outputs, queues, and ownership stakes.
 - [Contracts](contracts.md): manager routing and queue message contracts.
+- [Development Rules](development.md): repository, design, code, test, review, and documentation workflow rules.
 - [Implementation Roadmap](implementation-roadmap.md): iteration targets and migration guardrails.
+- [Operations Runbook](operations.md): broker-first startup, readiness, and troubleshooting.
 - [Implementation Documentation](implementations/README.md): implemented subsystem details and verification notes.
 - [Section Design Index](design/section-design-index.md): accepted development loop sections and status docs.
 - [Document handling module design](design/document-handling-module.md): proposed URL/file parsing and chunking architecture.

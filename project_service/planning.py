@@ -49,6 +49,10 @@ class ProjectIngestPlan:
     user_id: str
     kb_id: str
     doc_id: str
+    source_uri: str
+    content_type: str
+    raw_text: str | None
+    raw_content: bytes | None
     collection_name: str
     retrieval_config: dict[str, Any]
     chunker_config: dict[str, Any]
@@ -117,6 +121,10 @@ class ProjectPlanningService:
             user_id=plan.request.user_id,
             kb_id=plan.request.kb_id,
             doc_id=plan.request.doc_id,
+            source_uri=plan.request.source_uri,
+            content_type=plan.request.content_type,
+            raw_text=plan.request.raw_text,
+            raw_content=plan.request.raw_content,
             collection_name=plan.config.collection_name,
             retrieval_config=dict(plan.config.retrieval_config),
             chunker_config=dict(plan.config.chunker_config),

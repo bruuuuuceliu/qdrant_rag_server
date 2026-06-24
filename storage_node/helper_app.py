@@ -1,0 +1,60 @@
+"""Storage helper broker server context."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+
+from broker_service import BrokerSettings, create_redpanda_bus
+from shared.contracts import MessageConsumer, MessageProducer, TOPICS
+from storage_node.domain_handler import StorageHelperHandler
+
+
+@dataclass(slots=True)
+class StorageHelperServerContext:
+    handler: StorageHelperHandler
+    consumer: MessageConsumer
+    command_topic: str = TOPICS.helper_storage_commands
+    _task: asyncio.Task[None] | None = field(default=None, init=False)
+
+    def start(self) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        if self._task is None:
+            return
+        self._task.cancel()
+        await asyncio.gather(self._task, return_exceptions=True)
+        self._task = None
+
+    async def run_once(self) -> None:
+        envelope = await self.consumer.consume(self.command_topic)
+        await self.handler.handle(envelope)
+
+    async def _run(self) -> None:
+        while True:
+            await self.run_once()
+
+
+def create_helper_app(
+    *,
+    storage: object,
+    broker_settings: BrokerSettings | None = None,
+    producer: MessageProducer | None = None,
+    consumer: MessageConsumer | None = None,
+    service_name: str = "storage_node",
+    command_topic: str = TOPICS.helper_storage_commands,
+) -> StorageHelperServerContext:
+    broker_settings = broker_settings or BrokerSettings()
+    producer = producer or create_redpanda_bus(broker_settings)
+    consumer = consumer or create_redpanda_bus(
+        broker_settings,
+        topic=command_topic,
+        group_id=service_name,
+    )
+    return StorageHelperServerContext(
+        handler=StorageHelperHandler(storage=storage, producer=producer),
+        consumer=consumer,
+        command_topic=command_topic,
+    )
