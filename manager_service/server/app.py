@@ -23,6 +23,8 @@ from shared.contracts import MessageProducer, TaskStatusStore
 @dataclass(slots=True)
 class ManagerAppContext:
     project_client: ProjectDocumentClient | None
+    task_producer: MessageProducer | None
+    task_status_store: TaskStatusStore | None
     manager: ManagerService
     manager_settings: ManagerSettings
     manager_server: Any
@@ -33,6 +35,12 @@ class ManagerAppContext:
 
     async def shutdown(self) -> None:
         await self.manager_server.stop(grace=5)
+        stop_task_producer = getattr(self.task_producer, "stop", None)
+        if stop_task_producer is not None:
+            await stop_task_producer()
+        close_status = getattr(getattr(self.task_status_store, "client", None), "aclose", None)
+        if close_status is not None:
+            await close_status()
         shutdown_project_client = getattr(self.project_client, "shutdown", None)
         if shutdown_project_client is not None:
             await shutdown_project_client()
@@ -55,6 +63,9 @@ async def create_app(
         raise ValueError("manager server requires a project-document client or task producer")
     settings = settings or load_settings()
     manager_settings = manager_settings or load_manager_settings(dict(os.environ))
+    start_task_producer = getattr(task_producer, "start", None)
+    if start_task_producer is not None:
+        await start_task_producer()
     manager = ManagerService(
         project_documents=project_client,
         task_producer=task_producer,
@@ -75,6 +86,8 @@ async def create_app(
     )
     return ManagerAppContext(
         project_client=project_client,
+        task_producer=task_producer,
+        task_status_store=task_status_store,
         manager=manager,
         manager_settings=manager_settings,
         manager_server=manager_server,

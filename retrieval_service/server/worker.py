@@ -33,6 +33,7 @@ from retrieval_service.services.sparse_encoder import FastEmbedSparseTextEncoder
 from retrieval_service.services.vector_store import QdrantStore
 from retrieval_service.storage.filesystem import FilesystemObjectStorage
 from retrieval_service.storage.memory import MemoryObjectStorage
+from shared.logging import configure_logging
 from shared.runtime_health import RuntimeHealth
 
 
@@ -170,7 +171,7 @@ async def create_http_worker_server(
 
 async def serve_forever(settings: AppSettings | None = None) -> None:
     app = await create_worker_server(settings)
-    app.helper_app.start()
+    await app.helper_app.start_runtime()
     try:
         while True:
             await asyncio.sleep(3600)
@@ -179,6 +180,7 @@ async def serve_forever(settings: AppSettings | None = None) -> None:
 
 
 def main() -> None:
+    configure_logging()
     asyncio.run(serve_forever(load_settings()))
 
 

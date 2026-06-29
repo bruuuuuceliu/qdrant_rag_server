@@ -20,11 +20,12 @@ from manager_service import (
     ServiceTarget,
 )
 from manager_service.service import ManagerService
+from manager_service.service import ManagerTaskAccepted
 from manager_service.server.grpc.server import ManagerRagServiceServicer
 from project_service.schemas import IngestResult, SearchResult
 from project_service.server.grpc.generated import retrieval_service_pb2
 from retrieval_service.core.schemas import JobStatus
-from shared.contracts import MessageEnvelope, TOPICS
+from shared.contracts import MessageEnvelope, MessageType, TOPICS
 from shared.contracts import TaskStatusRecord
 from shared.queue import QueueFullError
 
@@ -111,6 +112,14 @@ class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
         result = await manager.ingest(request)
 
         self.assertTrue(result.accepted)
+        self.assertEqual(
+            [published[0] for published in task_producer.published],
+            [
+                TOPICS.task_intake,
+                TOPICS.manager_request_accepted,
+                TOPICS.audit_events,
+            ],
+        )
         self.assertEqual(task_producer.published[0][0], TOPICS.task_intake)
         self.assertEqual(task_producer.published[0][2], result.task_id)
         envelope = task_producer.published[0][1]
@@ -118,6 +127,17 @@ class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(envelope.data_type, "project_document")
         self.assertEqual(envelope.payload["operation"], "ingest")
         self.assertEqual(envelope.payload["request"]["project_id"], "p1")
+        accepted = task_producer.published[1][1]
+        self.assertEqual(accepted.message_type, MessageType.REQUEST_ACCEPTED)
+        self.assertEqual(accepted.payload["status"], "accepted")
+        self.assertEqual(accepted.payload["request"]["doc_id"], "d1")
+        audit = task_producer.published[2][1]
+        self.assertEqual(audit.message_type, MessageType.AUDIT_EVENT)
+        self.assertEqual(audit.payload["event"], "manager.request.accepted")
+        self.assertEqual(audit.payload["job_id"], result.task_id)
+        self.assertEqual(audit.payload["project_id"], "p1")
+        self.assertEqual(audit.payload["doc_id"], "d1")
+        self.assertEqual(audit.payload["request"]["data_type"], "project_document")
 
     async def test_can_publish_search_task_intake_with_context(self) -> None:
         task_producer = _FakeTaskProducer()
@@ -297,6 +317,30 @@ class ManagerGrpcServicerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.ingest_request.source_uri, "file:///tmp/doc.pdf")
         self.assertEqual(manager.ingest_request.metadata["data_type"], "project_document")
 
+    async def test_ingest_maps_broker_first_task_acceptance_to_grpc_response(self) -> None:
+        manager = _FakeManager()
+        manager.ingest_result = ManagerTaskAccepted(
+            task_id="task-1",
+            correlation_id="corr-1",
+        )
+        servicer = ManagerRagServiceServicer(manager=manager)
+
+        response = await servicer.Ingest(
+            retrieval_service_pb2.IngestRequest(
+                project_id="p1",
+                user_id="u1",
+                kb_id="kb",
+                doc_id="d1",
+                source_uri="memory://d1",
+                content_type="text/plain",
+                metadata={"data_type": "project_document"},
+            ),
+            _FakeGrpcContext(),
+        )
+
+        self.assertEqual(response.job_id, "task-1")
+        self.assertEqual(response.status, "accepted")
+
     async def test_ingest_queue_full_maps_to_resource_exhausted(self) -> None:
         manager = _FakeManager()
         manager.ingest_error = QueueFullError("queue is full")
@@ -331,6 +375,74 @@ class ManagerGrpcServicerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, JobStatus.PENDING.value)
         self.assertEqual(response.doc_id, "d1")
         self.assertEqual(manager.status_job_id, "job1")
+
+    async def test_get_ingest_status_maps_task_status_record_to_grpc_response(self) -> None:
+        manager = _FakeManager()
+        manager.status_result = TaskStatusRecord(
+            task_id="task-1",
+            status="completed",
+            result={"doc_id": "doc-1"},
+        )
+        servicer = ManagerRagServiceServicer(manager=manager)
+
+        response = await servicer.GetIngestJobStatus(
+            retrieval_service_pb2.GetIngestJobStatusRequest(job_id="task-1"),
+            _FakeGrpcContext(),
+        )
+
+        self.assertEqual(response.job_id, "task-1")
+        self.assertEqual(response.status, "completed")
+        self.assertEqual(response.doc_id, "doc-1")
+
+    async def test_get_ingest_status_extracts_doc_id_from_helper_results(self) -> None:
+        manager = _FakeManager()
+        manager.status_result = TaskStatusRecord(
+            task_id="task-1",
+            status="completed",
+            result={
+                "helpers": {
+                    TOPICS.helper_ingestion_commands: {
+                        "index_request": {
+                            "chunks": [
+                                {
+                                    "document_id": "doc-from-chunk",
+                                    "text": "hello",
+                                }
+                            ],
+                        },
+                    },
+                },
+            },
+        )
+        servicer = ManagerRagServiceServicer(manager=manager)
+
+        response = await servicer.GetIngestJobStatus(
+            retrieval_service_pb2.GetIngestJobStatusRequest(job_id="task-1"),
+            _FakeGrpcContext(),
+        )
+
+        self.assertEqual(response.job_id, "task-1")
+        self.assertEqual(response.status, "completed")
+        self.assertEqual(response.doc_id, "doc-from-chunk")
+
+    async def test_get_ingest_status_maps_nested_task_error_to_grpc_response(self) -> None:
+        manager = _FakeManager()
+        manager.status_result = TaskStatusRecord(
+            task_id="task-1",
+            status="failed",
+            result={"doc_id": "doc-1", "error": "source scheme is not allowed"},
+        )
+        servicer = ManagerRagServiceServicer(manager=manager)
+
+        response = await servicer.GetIngestJobStatus(
+            retrieval_service_pb2.GetIngestJobStatusRequest(job_id="task-1"),
+            _FakeGrpcContext(),
+        )
+
+        self.assertEqual(response.job_id, "task-1")
+        self.assertEqual(response.status, "failed")
+        self.assertEqual(response.doc_id, "doc-1")
+        self.assertEqual(response.error, "source scheme is not allowed")
 
 
 class _Request:
@@ -380,6 +492,8 @@ class _FakeManager:
     ingest_request: object | None = None
     status_job_id: str | None = None
     ingest_error: Exception | None = None
+    ingest_result: object | None = None
+    status_result: object | None = None
 
     async def search(self, request: object) -> SearchResult:
         self.search_request = request
@@ -404,6 +518,8 @@ class _FakeManager:
         self.ingest_request = request
         if self.ingest_error is not None:
             raise self.ingest_error
+        if self.ingest_result is not None:
+            return self.ingest_result
         return IngestResult(
             job_id="job1",
             status=JobStatus.PENDING,
@@ -415,6 +531,8 @@ class _FakeManager:
 
     async def ingest_status(self, job_id: str) -> IngestResult:
         self.status_job_id = job_id
+        if self.status_result is not None:
+            return self.status_result
         return IngestResult(
             job_id=job_id,
             status=JobStatus.PENDING,

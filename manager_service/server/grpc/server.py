@@ -26,6 +26,7 @@ from manager_service.service import ManagerService
 from project_service.rag.engine import GenerationUnavailableError
 from project_service.server.grpc.generated import retrieval_service_pb2
 from project_service.server.grpc.generated import retrieval_service_pb2_grpc
+from shared.contracts import TaskStatus
 from retrieval_service.llm import OpenRouterClientError
 from shared.queue import QueueFullError
 
@@ -106,9 +107,12 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
         except Exception:
             logger.exception("manager ingest failed")
             await context.abort(grpc.StatusCode.INTERNAL, "internal error")
+        status = str(getattr(result, "status", "") or "")
+        if not status and bool(getattr(result, "accepted", False)):
+            status = TaskStatus.ACCEPTED.value
         return retrieval_service_pb2.IngestResponse(
-            job_id=str(getattr(result, "job_id", "")),
-            status=str(getattr(result, "status", "")),
+            job_id=_result_job_id(result),
+            status=status,
         )
 
     # -- Status -----------------------------------------------------------
@@ -127,11 +131,17 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, "internal error")
         if result is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "job not found")
+        result_payload = getattr(result, "result", {}) or {}
+        if not isinstance(result_payload, dict):
+            result_payload = {}
+        doc_id = str(getattr(result, "doc_id", "") or result_payload.get("doc_id", ""))
+        if not doc_id:
+            doc_id = _ingest_result_doc_id(result_payload)
         return retrieval_service_pb2.GetIngestJobStatusResponse(
-            job_id=str(getattr(result, "job_id", "")),
+            job_id=_result_job_id(result) or request.job_id,
             status=str(getattr(result, "status", "")),
-            error=getattr(result, "error", "") or "",
-            doc_id=getattr(result, "doc_id", "") or "",
+            error=str(getattr(result, "error", "") or result_payload.get("error", "")),
+            doc_id=doc_id,
         )
 
     # -- Generate (temporary compat pass-through) -------------------------
@@ -212,6 +222,37 @@ class _Namespace(SimpleNamespace):
     ManagerService reads fields via getattr, so a SimpleNamespace subclass
     suffices — no need to import project_service gateway request types.
     """
+
+
+def _result_job_id(result: Any) -> str:
+    return str(getattr(result, "job_id", "") or getattr(result, "task_id", ""))
+
+
+def _ingest_result_doc_id(result: dict[str, Any]) -> str:
+    helpers = result.get("helpers", {})
+    if not isinstance(helpers, dict):
+        return ""
+    for helper_result in helpers.values():
+        if not isinstance(helper_result, dict):
+            continue
+        for key in ("doc_id", "document_id"):
+            value = helper_result.get(key)
+            if value:
+                return str(value)
+        index_request = helper_result.get("index_request", {})
+        if isinstance(index_request, dict):
+            for collection_key in ("chunks", "payloads"):
+                values = index_request.get(collection_key, [])
+                if not isinstance(values, list):
+                    continue
+                for item in values:
+                    if not isinstance(item, dict):
+                        continue
+                    for key in ("document_id", "doc_id"):
+                        value = item.get(key)
+                        if value:
+                            return str(value)
+    return ""
 
 
 def _search_result_to_proto(result: Any) -> retrieval_service_pb2.SearchResponse:

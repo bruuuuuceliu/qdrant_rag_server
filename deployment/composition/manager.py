@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from broker_service import BrokerSettings, create_redpanda_bus
 from configs import AppSettings
 from configs.manager import ManagerSettings
@@ -16,7 +18,8 @@ async def create_manager_context(
     manager_settings: ManagerSettings | None = None,
 ) -> ManagerAppContext:
     manager_settings = manager_settings or ManagerSettings()
-    task_producer = create_redpanda_bus(broker_settings or BrokerSettings())
+    broker_settings = broker_settings or BrokerSettings.from_values(dict(os.environ))
+    task_producer = create_redpanda_bus(broker_settings)
     task_status_store = RedisTaskStatusStore(
         settings=RedisStatusSettings(
             url=manager_settings.task_status_url,
@@ -30,4 +33,3 @@ async def create_manager_context(
         task_status_store=task_status_store,
         manager_settings=manager_settings,
     )
-

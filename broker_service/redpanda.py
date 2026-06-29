@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from broker_service.config import BrokerSettings
 from shared.contracts import MessageEnvelope
+
+logger = logging.getLogger(__name__)
 
 
 class RedpandaDependencyError(RuntimeError):
@@ -55,8 +58,17 @@ class RedpandaProducer:
             self._producer = _build_kafka_producer(self.settings)
 
     async def publish(self, topic: str, envelope: MessageEnvelope, *, key: str = "") -> None:
+        configured_topic = self.settings.topic(topic)
+        logger.info(
+            "broker publish topic=%s task_id=%s message_type=%s producer=%s key=%s",
+            configured_topic,
+            envelope.task_id,
+            envelope.message_type,
+            envelope.producer,
+            key,
+        )
         await self._producer.send_and_wait(
-            self.settings.topic(topic),
+            configured_topic,
             value=encode_envelope(envelope),
             key=key.encode("utf-8") if key else None,
         )
@@ -103,7 +115,18 @@ class RedpandaConsumer:
 
     async def _consume_next(self) -> MessageEnvelope:
         async for message in self._consumer:
-            return decode_envelope(message.value)
+            envelope = decode_envelope(message.value)
+            logger.info(
+                "broker consume topic=%s partition=%s offset=%s group_id=%s task_id=%s message_type=%s producer=%s",
+                getattr(message, "topic", self.settings.topic(self.topic)),
+                getattr(message, "partition", ""),
+                getattr(message, "offset", ""),
+                self.group_id,
+                envelope.task_id,
+                envelope.message_type,
+                envelope.producer,
+            )
+            return envelope
         raise RuntimeError("consumer stopped before receiving a message")
 
     async def start(self) -> None:

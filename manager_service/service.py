@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import inspect
+import logging
 from typing import Any
 from uuid import uuid4
 
@@ -11,6 +12,8 @@ from manager_service.clients import ProjectDocumentClient
 from manager_service.routing import DataType, ManagerRouter, Operation, RouteRequest
 from shared.contracts import MessageEnvelope, MessageProducer, MessageType, TOPICS, TaskIntakePayload
 from shared.contracts import TaskStatusStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,20 +188,115 @@ class ManagerService:
             raise ValueError("task producer is not configured")
         correlation_id = context.request_id if context and context.request_id else uuid4().hex
         task_id = _request_task_id(request) or uuid4().hex
+        request_payload = _request_payload(request)
+        context_payload = context.to_payload() if context is not None else {}
+        data_type = _data_type(request)
         envelope = MessageEnvelope.create(
             producer="manager_service",
             message_type=MessageType.REQUEST_ACCEPTED,
-            data_type=_data_type(request),
+            data_type=data_type,
             task_id=task_id,
             correlation_id=correlation_id,
             payload=TaskIntakePayload(
                 operation=operation.value,
-                request=_request_payload(request),
-                context=context.to_payload() if context is not None else {},
+                request=request_payload,
+                context=context_payload,
             ).to_payload(),
         )
         await self._task_producer.publish(self._task_intake_topic, envelope, key=task_id)
+        await self._publish_manager_request_accepted(
+            operation=operation,
+            request=request_payload,
+            context=context_payload,
+            data_type=data_type,
+            task_id=task_id,
+            correlation_id=correlation_id,
+            source_message_id=envelope.message_id,
+        )
+        await self._publish_audit_event(
+            operation=operation,
+            request=request_payload,
+            context=context_payload,
+            data_type=data_type,
+            task_id=task_id,
+            correlation_id=correlation_id,
+            source_message_id=envelope.message_id,
+        )
+        logger.info(
+            "manager accepted task task_id=%s correlation_id=%s operation=%s data_type=%s topic=%s",
+            task_id,
+            correlation_id,
+            operation.value,
+            envelope.data_type,
+            self._task_intake_topic,
+        )
         return ManagerTaskAccepted(task_id=task_id, correlation_id=correlation_id)
+
+    async def _publish_manager_request_accepted(
+        self,
+        *,
+        operation: Operation,
+        request: dict[str, Any],
+        context: dict[str, Any],
+        data_type: str,
+        task_id: str,
+        correlation_id: str,
+        source_message_id: str,
+    ) -> None:
+        if self._task_producer is None:
+            raise ValueError("task producer is not configured")
+        event = MessageEnvelope.create(
+            producer="manager_service",
+            message_type=MessageType.REQUEST_ACCEPTED,
+            data_type=data_type,
+            task_id=task_id,
+            correlation_id=correlation_id,
+            payload={
+                "operation": operation.value,
+                "status": "accepted",
+                "request": _request_summary(request),
+                "context": _context_summary(context),
+                "source_message_id": source_message_id,
+            },
+        )
+        await self._task_producer.publish(TOPICS.manager_request_accepted, event, key=task_id)
+
+    async def _publish_audit_event(
+        self,
+        *,
+        operation: Operation,
+        request: dict[str, Any],
+        context: dict[str, Any],
+        data_type: str,
+        task_id: str,
+        correlation_id: str,
+        source_message_id: str,
+    ) -> None:
+        if self._task_producer is None:
+            raise ValueError("task producer is not configured")
+        request_summary = _request_summary(request)
+        event = MessageEnvelope.create(
+            producer="manager_service",
+            message_type=MessageType.AUDIT_EVENT,
+            data_type=data_type,
+            task_id=task_id,
+            correlation_id=correlation_id,
+            payload={
+                "event": "manager.request.accepted",
+                "operation": operation.value,
+                "status": "accepted",
+                "job_id": task_id,
+                "project_id": request_summary.get("project_id", ""),
+                "user_id": request_summary.get("user_id", ""),
+                "kb_id": request_summary.get("kb_id", ""),
+                "doc_id": request_summary.get("doc_id", ""),
+                "data_type": data_type,
+                "request": request_summary,
+                "context": _context_summary(context),
+                "source_message_id": source_message_id,
+            },
+        )
+        await self._task_producer.publish(TOPICS.audit_events, event, key=task_id)
 
 
 def _data_type(request: Any) -> str:
@@ -235,6 +333,41 @@ def _request_payload(request: Any) -> dict[str, Any]:
         if hasattr(request, name)
     }
     return fields or {"value": str(request)}
+
+
+def _request_summary(request: dict[str, Any]) -> dict[str, Any]:
+    fields = (
+        "project_id",
+        "user_id",
+        "kb_id",
+        "doc_id",
+        "source_uri",
+        "content_type",
+        "task_id",
+        "job_id",
+    )
+    summary = {
+        field: str(request[field])
+        for field in fields
+        if request.get(field) is not None and str(request.get(field, "")).strip()
+    }
+    metadata = request.get("metadata", {})
+    if isinstance(metadata, dict):
+        data_type = metadata.get("data_type")
+        if data_type is not None and str(data_type).strip():
+            summary["data_type"] = str(data_type)
+    return summary
+
+
+def _context_summary(context: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for field in ("request_id", "auth_context", "customer_context", "placement_hint"):
+        value = context.get(field)
+        if isinstance(value, dict):
+            summary[field] = dict(value)
+        elif value is not None and str(value).strip():
+            summary[field] = str(value)
+    return summary
 
 
 async def _project_ingest(

@@ -20,6 +20,8 @@ examples/local/run-all.sh --compat-local --reset --init --split-services
 examples/local/run-all.sh --compat-local --reset --init --external-retrieval-http
 examples/local/run-all.sh --foreground --init
 examples/local/run-all.sh --init --no-server
+examples/local/run-all.sh --infra-only
+examples/local/run-all.sh --no-ui
 ```
 
 `--no-server` is a dry-run/setup mode: it resolves local env defaults, validates
@@ -39,12 +41,35 @@ Broker-first mode starts:
 - manager gRPC server on `RAG_GRPC_PORT`, default `50051`
 - task manager, project domain, workflow log, ingestion, retrieval,
   retrieval-index, storage, SQLite, and Redis status worker processes
+- Redpanda by default, or Apache Kafka with `--broker kafka`
 - Qdrant, when needed and Docker is available
 
-Before reporting broker-first startup success, the runner verifies Redpanda
+Before reporting broker-first startup success, the runner verifies broker
 topics, Redis task-status TTL behavior, Qdrant reachability, storage root
 writes, and SQLite database allocation through
 `python -m deployment.composition.readiness`.
+
+Broker selection:
+
+```bash
+examples/local/run-all.sh --infra-only
+examples/local/run-all.sh --infra-only --broker kafka
+```
+
+Both modes use Docker and expose the broker on `127.0.0.1:9092`.
+
+Local visualization UIs are started by default in broker-first mode:
+
+```bash
+examples/local/run-all.sh --infra-only
+```
+
+- Redpanda Console: `http://127.0.0.1:8088`
+- Redis Insight: `http://127.0.0.1:5540`
+
+Use `--no-ui`, `--no-redpanda-console`, or `--no-redis-insight` to skip UI
+containers. Redis Insight still requires adding the local Redis database in the
+UI with host `127.0.0.1` and port `6379`.
 
 Compatibility split-service mode still supports the older SQLite queue handoff
 for migration tests.
@@ -67,8 +92,8 @@ examples/local/stop-all.sh --clean --clean-data
 ```
 
 `stop-all.sh` first uses PID/container state from `.run`, then falls back to
-matching known service module commands and configured gRPC ports. It removes the
-local Qdrant container by name unless `--no-docker` is set.
+matching known service module commands and configured gRPC ports. It also
+removes local Docker infra containers by recorded ID or configured name.
 
 ## Runtime Files
 
@@ -80,7 +105,7 @@ local Qdrant container by name unless `--no-docker` is set.
 - Qdrant log, when managed by Docker: `.run/logs/qdrant.log`
 - PID/state files: `.run/`
 - SQLite/object-storage data, including placement registry:
-  `examples/local/.data/`
+  `.run/data/`
 
 ## Notes
 

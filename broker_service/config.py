@@ -17,7 +17,7 @@ class BrokerSettings:
     @classmethod
     def from_values(cls, values: dict[str, str]) -> BrokerSettings:
         settings = cls(
-            broker_type=values.get("BROKER_TYPE", "redpanda"),
+            broker_type=values.get("BROKER_TYPE", "redpanda").strip().lower(),
             bootstrap_servers=values.get("BROKER_BOOTSTRAP_SERVERS", "127.0.0.1:9092"),
             client_id=values.get("BROKER_CLIENT_ID", "qdrant-rag-local"),
             request_timeout_seconds=float(values.get("BROKER_REQUEST_TIMEOUT_SECONDS", "30")),
@@ -28,8 +28,8 @@ class BrokerSettings:
         return settings
 
     def validate(self) -> None:
-        if self.broker_type != "redpanda":
-            raise ValueError("BROKER_TYPE must be redpanda")
+        if self.broker_type not in {"redpanda", "kafka"}:
+            raise ValueError("BROKER_TYPE must be one of: redpanda, kafka")
         if not self.bootstrap_servers.strip():
             raise ValueError("BROKER_BOOTSTRAP_SERVERS must be nonblank")
         if not self.client_id.strip():

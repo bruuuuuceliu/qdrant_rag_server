@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 
 from deployment.composition.task_manager import create_task_manager_context
+from shared.logging import configure_logging
 
 
 async def serve_forever() -> None:
     context = create_task_manager_context()
-    context.start()
+    await context.start_runtime()
     try:
         while True:
             await asyncio.sleep(3600)
@@ -18,6 +19,7 @@ async def serve_forever() -> None:
 
 
 def main() -> None:
+    configure_logging()
     asyncio.run(serve_forever())
 
 

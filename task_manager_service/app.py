@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from broker_service import BrokerSettings, create_redpanda_bus
 from shared.contracts import TOPICS
 from shared.contracts import TaskStatusStore
@@ -34,7 +36,7 @@ def create_app(
     state_repository: TaskStateRepository | None = None,
 ) -> TaskManagerServerContext:
     settings = settings or TaskManagerSettings()
-    broker_settings = broker_settings or BrokerSettings()
+    broker_settings = broker_settings or BrokerSettings.from_values(dict(os.environ))
     producer_bus = create_redpanda_bus(broker_settings)
     intake_bus = create_redpanda_bus(
         broker_settings,

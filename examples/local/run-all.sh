@@ -20,7 +20,10 @@ REDIS_STATUS_PID_FILE="${RUNTIME_DIR}/redis-status.pid"
 QDRANT_CID_FILE="${RUNTIME_DIR}/qdrant.cid"
 QDRANT_LOG_PID_FILE="${RUNTIME_DIR}/qdrant-log.pid"
 REDPANDA_CID_FILE="${RUNTIME_DIR}/redpanda.cid"
+KAFKA_CID_FILE="${RUNTIME_DIR}/kafka.cid"
 REDIS_CID_FILE="${RUNTIME_DIR}/redis.cid"
+REDPANDA_CONSOLE_CID_FILE="${RUNTIME_DIR}/redpanda-console.cid"
+REDIS_INSIGHT_CID_FILE="${RUNTIME_DIR}/redis-insight.cid"
 ENV_FILE="${RAG_LOCAL_ENV_FILE:-${ROOT_DIR}/configs/local.env}"
 
 INIT_PROJECT=0
@@ -35,12 +38,19 @@ EXTERNAL_RETRIEVAL_HTTP=0
 EXTERNAL_PROJECT_SERVICE=0
 BROKER_FIRST=1
 COMPAT_LOCAL=0
+START_REDPANDA_CONSOLE=1
+START_REDIS_INSIGHT=1
+BROKER_TYPE_ARG=""
 PROJECT_ID="${RAG_EXAMPLE_PROJECT_ID:-demo}"
 PROJECT_TYPE="${RAG_EXAMPLE_PROJECT_TYPE:-website}"
 QDRANT_CONTAINER="${RAG_QDRANT_CONTAINER:-qdrant-rag-local}"
 QDRANT_VOLUME="${RAG_QDRANT_VOLUME:-qdrant-rag-local-data}"
 REDPANDA_CONTAINER="${RAG_REDPANDA_CONTAINER:-redpanda-rag-local}"
+KAFKA_CONTAINER="${RAG_KAFKA_CONTAINER:-kafka-rag-local}"
 REDIS_CONTAINER="${RAG_REDIS_CONTAINER:-redis-rag-local}"
+REDPANDA_CONSOLE_CONTAINER="${RAG_REDPANDA_CONSOLE_CONTAINER:-redpanda-console-rag-local}"
+REDIS_INSIGHT_CONTAINER="${RAG_REDIS_INSIGHT_CONTAINER:-redis-insight-rag-local}"
+REDIS_INSIGHT_VOLUME="${RAG_REDIS_INSIGHT_VOLUME:-redis-insight-rag-local-data}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 usage() {
@@ -63,8 +73,15 @@ Options:
   --external-retrieval-http      Start retrieval HTTP API as a separate process and use manager HTTP mode.
   --external-project-service     Start project/RAG service as a separate process.
   --split-services               Shortcut for external project, ingestion, and retrieval index workers.
-  --broker-first                 Configure broker-first topology settings for Redpanda, Redis,
+  --broker-first                 Configure broker-first topology settings for the Docker broker,
                                  task manager, domain services, helpers, storage, and SQLite nodes.
+  --broker VALUE                 Local Docker broker to use: redpanda or kafka. Default: redpanda.
+  --ui                           Start local broker and Redis visualization UIs. Enabled by default.
+  --no-ui                        Do not start local visualization UIs.
+  --redpanda-console             Start Redpanda Console for broker topics/messages. Enabled by default.
+  --no-redpanda-console          Do not start Redpanda Console.
+  --redis-insight                Start Redis Insight for Redis task-status keys. Enabled by default.
+  --no-redis-insight             Do not start Redis Insight.
   --compat-local                 Use the legacy embedded/local queue composition.
   --env-file PATH                Source extra env vars before starting.
   --project-id VALUE             Project ID for --init. Default: demo.
@@ -78,7 +95,12 @@ Options:
   --no-qdrant                    Do not try to start Qdrant.
   --qdrant-container VALUE       Docker container name. Default: qdrant-rag-local.
   --redpanda-container VALUE     Docker container name. Default: redpanda-rag-local.
+  --kafka-container VALUE        Docker container name. Default: kafka-rag-local.
   --redis-container VALUE        Docker container name. Default: redis-rag-local.
+  --redpanda-console-container VALUE
+                                 Docker container name. Default: redpanda-console-rag-local.
+  --redis-insight-container VALUE
+                                 Docker container name. Default: redis-insight-rag-local.
   --generation                   Enable optional generation client wiring.
   --help                         Show this help.
 
@@ -144,6 +166,36 @@ while [[ $# -gt 0 ]]; do
       EXTERNAL_RETRIEVAL_INDEX=1
       shift
       ;;
+    --broker)
+      BROKER_TYPE_ARG="${2:?--broker requires a value}"
+      shift 2
+      ;;
+    --ui)
+      START_REDPANDA_CONSOLE=1
+      START_REDIS_INSIGHT=1
+      shift
+      ;;
+    --no-ui)
+      START_REDPANDA_CONSOLE=0
+      START_REDIS_INSIGHT=0
+      shift
+      ;;
+    --redpanda-console)
+      START_REDPANDA_CONSOLE=1
+      shift
+      ;;
+    --no-redpanda-console)
+      START_REDPANDA_CONSOLE=0
+      shift
+      ;;
+    --redis-insight)
+      START_REDIS_INSIGHT=1
+      shift
+      ;;
+    --no-redis-insight)
+      START_REDIS_INSIGHT=0
+      shift
+      ;;
     --compat-local)
       BROKER_FIRST=0
       COMPAT_LOCAL=1
@@ -197,8 +249,20 @@ while [[ $# -gt 0 ]]; do
       REDPANDA_CONTAINER="${2:?--redpanda-container requires a value}"
       shift 2
       ;;
+    --kafka-container)
+      KAFKA_CONTAINER="${2:?--kafka-container requires a value}"
+      shift 2
+      ;;
     --redis-container)
       REDIS_CONTAINER="${2:?--redis-container requires a value}"
+      shift 2
+      ;;
+    --redpanda-console-container)
+      REDPANDA_CONSOLE_CONTAINER="${2:?--redpanda-console-container requires a value}"
+      shift 2
+      ;;
+    --redis-insight-container)
+      REDIS_INSIGHT_CONTAINER="${2:?--redis-insight-container requires a value}"
       shift 2
       ;;
     --generation)
@@ -223,12 +287,17 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
   set +a
 fi
+if [[ -n "$BROKER_TYPE_ARG" ]]; then
+  export BROKER_TYPE="$BROKER_TYPE_ARG"
+fi
 
-export RAG_LOCAL_DATA_DIR="${RAG_LOCAL_DATA_DIR:-${SCRIPT_DIR}/.data}"
+export RAG_LOCAL_DATA_DIR="${RAG_LOCAL_DATA_DIR:-${RUNTIME_DIR}/data}"
 export RAG_CONFIG_PROFILE="${RAG_CONFIG_PROFILE:-local}"
 export RAG_CONFIG_DB_PATH="${RAG_CONFIG_DB_PATH:-${RAG_LOCAL_DATA_DIR}/config.db}"
+export PROJECT_CONFIG_DB_PATH="${PROJECT_CONFIG_DB_PATH:-${RAG_CONFIG_DB_PATH}}"
 export RAG_RESPONSE_CACHE_DB_PATH="${RAG_RESPONSE_CACHE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/response_cache.db}"
 export RAG_INGEST_JOB_DB_PATH="${RAG_INGEST_JOB_DB_PATH:-${RAG_LOCAL_DATA_DIR}/ingestion_jobs.db}"
+export INGESTION_JOB_DB_PATH="${INGESTION_JOB_DB_PATH:-${RAG_INGEST_JOB_DB_PATH}}"
 export WORKFLOW_LOG_DB_PATH="${WORKFLOW_LOG_DB_PATH:-${RAG_LOCAL_DATA_DIR}/workflow_log.db}"
 export RAG_OBJECT_STORAGE_BASE_PATH="${RAG_OBJECT_STORAGE_BASE_PATH:-${RAG_LOCAL_DATA_DIR}/raw_storage}"
 export RETRIEVAL_PLACEMENT_ENABLED="${RETRIEVAL_PLACEMENT_ENABLED:-true}"
@@ -288,13 +357,18 @@ export RAG_EMBEDDING_DEVICE="${RAG_EMBEDDING_DEVICE:-cpu}"
 export RAG_EMBEDDING_DIMENSION="${RAG_EMBEDDING_DIMENSION:-768}"
 export RAG_EMBEDDING_BASE_URL="${RAG_EMBEDDING_BASE_URL:-https://openrouter.ai/api/v1/embeddings}"
 export RAG_GENERATION_ENABLED="${RAG_GENERATION_ENABLED:-false}"
-export BROKER_TYPE="${BROKER_TYPE:-redpanda}"
+BROKER_TYPE="$(printf '%s' "${BROKER_TYPE:-redpanda}" | tr '[:upper:]' '[:lower:]')"
+export BROKER_TYPE
 export BROKER_BOOTSTRAP_SERVERS="${BROKER_BOOTSTRAP_SERVERS:-127.0.0.1:9092}"
 export BROKER_CLIENT_ID="${BROKER_CLIENT_ID:-qdrant-rag-local}"
 export BROKER_REQUEST_TIMEOUT_SECONDS="${BROKER_REQUEST_TIMEOUT_SECONDS:-30}"
 export BROKER_TOPIC_PREFIX="${BROKER_TOPIC_PREFIX:-}"
 export BROKER_TOPIC_PARTITIONS="${BROKER_TOPIC_PARTITIONS:-1}"
 export BROKER_LAG_TARGETS="${BROKER_LAG_TARGETS:-}"
+export REDPANDA_CONSOLE_PORT="${REDPANDA_CONSOLE_PORT:-8088}"
+export REDIS_INSIGHT_PORT="${REDIS_INSIGHT_PORT:-5540}"
+export BROKER_FIRST
+export INFRA_ONLY
 export MANAGER_TASK_INTAKE_TOPIC="${MANAGER_TASK_INTAKE_TOPIC:-task.intake}"
 export TASK_MANAGER_SERVICE_NAME="${TASK_MANAGER_SERVICE_NAME:-task_manager_service}"
 export TASK_MANAGER_TASK_INTAKE_TOPIC="${TASK_MANAGER_TASK_INTAKE_TOPIC:-${MANAGER_TASK_INTAKE_TOPIC}}"
@@ -355,6 +429,8 @@ if [[ "$BROKER_FIRST" -eq 1 ]]; then
   while IFS= read -r assignment; do
     export "${assignment#export }"
   done < <(allocate_sqlite_databases)
+  export PROJECT_CONFIG_DB_PATH="$RAG_CONFIG_DB_PATH"
+  export INGESTION_JOB_DB_PATH="$RAG_INGEST_JOB_DB_PATH"
 fi
 
 normalize_proxy_env() {
@@ -379,6 +455,14 @@ normalize_proxy_env() {
 normalize_proxy_env
 
 validate_mode_combination() {
+  case "$BROKER_TYPE" in
+    redpanda|kafka)
+      ;;
+    *)
+      echo "BROKER_TYPE must be one of: redpanda, kafka." >&2
+      exit 2
+      ;;
+  esac
   if [[ "$BROKER_FIRST" -eq 1 && "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 ]]; then
     cat >&2 <<'EOF'
 Unsupported local runner mode: --external-retrieval-http is a compatibility option.
@@ -510,6 +594,46 @@ start_redpanda_if_needed() {
   wait_for_tcp "Redpanda" "127.0.0.1" "9092" 90
 }
 
+start_kafka_if_needed() {
+  if is_tcp_port_open "127.0.0.1" "9092"; then
+    echo "Kafka already reachable at 127.0.0.1:9092."
+    return 0
+  fi
+  require_docker "Kafka"
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$KAFKA_CONTAINER"; then
+    docker start "$KAFKA_CONTAINER" >/dev/null
+  else
+    docker run -d \
+      --name "$KAFKA_CONTAINER" \
+      -p 9092:9092 \
+      -e KAFKA_NODE_ID=1 \
+      -e KAFKA_PROCESS_ROLES=broker,controller \
+      -e KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
+      -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://127.0.0.1:9092 \
+      -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+      -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+      -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@127.0.0.1:9093 \
+      -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
+      -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 \
+      -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
+      -e KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0 \
+      apache/kafka:latest >/dev/null
+  fi
+  docker inspect --format '{{.Id}}' "$KAFKA_CONTAINER" > "$KAFKA_CID_FILE" 2>/dev/null || true
+  wait_for_tcp "Kafka" "127.0.0.1" "9092" 120
+}
+
+start_broker_if_needed() {
+  case "$BROKER_TYPE" in
+    redpanda)
+      start_redpanda_if_needed
+      ;;
+    kafka)
+      start_kafka_if_needed
+      ;;
+  esac
+}
+
 start_redis_if_needed() {
   if is_tcp_port_open "127.0.0.1" "6379"; then
     echo "Redis already reachable at 127.0.0.1:6379."
@@ -523,6 +647,54 @@ start_redis_if_needed() {
   fi
   docker inspect --format '{{.Id}}' "$REDIS_CONTAINER" > "$REDIS_CID_FILE" 2>/dev/null || true
   wait_for_tcp "Redis" "127.0.0.1" "6379" 60
+}
+
+start_redpanda_console_if_needed() {
+  if [[ "$START_REDPANDA_CONSOLE" -ne 1 ]]; then
+    return 0
+  fi
+  if is_tcp_port_open "127.0.0.1" "$REDPANDA_CONSOLE_PORT"; then
+    echo "Redpanda Console already reachable at http://127.0.0.1:${REDPANDA_CONSOLE_PORT}."
+    return 0
+  fi
+  require_docker "Redpanda Console"
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$REDPANDA_CONSOLE_CONTAINER"; then
+    docker start "$REDPANDA_CONSOLE_CONTAINER" >/dev/null
+  else
+    docker run -d \
+      --name "$REDPANDA_CONSOLE_CONTAINER" \
+      --network host \
+      -e "KAFKA_BROKERS=${BROKER_BOOTSTRAP_SERVERS}" \
+      -e "SERVER_LISTENPORT=${REDPANDA_CONSOLE_PORT}" \
+      -e "SERVER_LISTENADDRESS=0.0.0.0" \
+      docker.redpanda.com/redpandadata/console:latest >/dev/null
+  fi
+  docker inspect --format '{{.Id}}' "$REDPANDA_CONSOLE_CONTAINER" > "$REDPANDA_CONSOLE_CID_FILE" 2>/dev/null || true
+  wait_for_tcp "Redpanda Console" "127.0.0.1" "$REDPANDA_CONSOLE_PORT" 90
+}
+
+start_redis_insight_if_needed() {
+  if [[ "$START_REDIS_INSIGHT" -ne 1 ]]; then
+    return 0
+  fi
+  if is_tcp_port_open "127.0.0.1" "$REDIS_INSIGHT_PORT"; then
+    echo "Redis Insight already reachable at http://127.0.0.1:${REDIS_INSIGHT_PORT}."
+    return 0
+  fi
+  require_docker "Redis Insight"
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$REDIS_INSIGHT_CONTAINER"; then
+    docker start "$REDIS_INSIGHT_CONTAINER" >/dev/null
+  else
+    docker run -d \
+      --name "$REDIS_INSIGHT_CONTAINER" \
+      --network host \
+      -v "${REDIS_INSIGHT_VOLUME}:/data" \
+      -e "RI_APP_HOST=0.0.0.0" \
+      -e "RI_APP_PORT=${REDIS_INSIGHT_PORT}" \
+      redis/redisinsight:latest >/dev/null
+  fi
+  docker inspect --format '{{.Id}}' "$REDIS_INSIGHT_CONTAINER" > "$REDIS_INSIGHT_CID_FILE" 2>/dev/null || true
+  wait_for_tcp "Redis Insight" "127.0.0.1" "$REDIS_INSIGHT_PORT" 90
 }
 
 require_docker() {
@@ -580,9 +752,16 @@ import sys
 
 required = {
     "grpc": "grpcio",
-    "qdrant_client": "qdrant-client",
 }
-if os.environ.get("RAG_EMBEDDING_PROVIDER", "local").lower() == "local":
+if os.environ.get("BROKER_FIRST") == "1":
+    required["aiokafka"] = "aiokafka"
+    required["redis"] = "redis"
+if os.environ.get("INFRA_ONLY") != "1":
+    required["qdrant_client"] = "qdrant-client"
+if (
+    os.environ.get("INFRA_ONLY") != "1"
+    and os.environ.get("RAG_EMBEDDING_PROVIDER", "local").lower() == "local"
+):
     required["sentence_transformers"] = "sentence-transformers"
 missing = [package for module, package in required.items() if importlib.util.find_spec(module) is None]
 if missing:
@@ -774,6 +953,8 @@ write_state() {
 ROOT_DIR=${ROOT_DIR}
 RUNTIME_DIR=${RUNTIME_DIR}
 RAG_LOCAL_DATA_DIR=${RAG_LOCAL_DATA_DIR}
+PROJECT_CONFIG_DB_PATH=${PROJECT_CONFIG_DB_PATH}
+INGESTION_JOB_DB_PATH=${INGESTION_JOB_DB_PATH}
 RAG_GRPC_PORT=${RAG_GRPC_PORT}
 RAG_PROJECT_GRPC_PORT=${RAG_PROJECT_GRPC_PORT}
 RAG_QDRANT_HOST=${RAG_QDRANT_HOST}
@@ -782,7 +963,11 @@ RAG_QDRANT_GRPC_PORT=${RAG_QDRANT_GRPC_PORT}
 QDRANT_CONTAINER=${QDRANT_CONTAINER}
 QDRANT_VOLUME=${QDRANT_VOLUME}
 REDPANDA_CONTAINER=${REDPANDA_CONTAINER}
+KAFKA_CONTAINER=${KAFKA_CONTAINER}
 REDIS_CONTAINER=${REDIS_CONTAINER}
+REDPANDA_CONSOLE_CONTAINER=${REDPANDA_CONSOLE_CONTAINER}
+REDIS_INSIGHT_CONTAINER=${REDIS_INSIGHT_CONTAINER}
+REDIS_INSIGHT_VOLUME=${REDIS_INSIGHT_VOLUME}
 RETRIEVAL_INDEX_REQUEST_TOPIC=${RETRIEVAL_INDEX_REQUEST_TOPIC}
 RETRIEVAL_HTTP_PORT=${RETRIEVAL_HTTP_PORT}
 BROKER_FIRST=${BROKER_FIRST}
@@ -791,6 +976,8 @@ BROKER_BOOTSTRAP_SERVERS=${BROKER_BOOTSTRAP_SERVERS}
 BROKER_CLIENT_ID=${BROKER_CLIENT_ID}
 BROKER_TOPIC_PREFIX=${BROKER_TOPIC_PREFIX}
 BROKER_LAG_TARGETS=${BROKER_LAG_TARGETS}
+REDPANDA_CONSOLE_PORT=${REDPANDA_CONSOLE_PORT}
+REDIS_INSIGHT_PORT=${REDIS_INSIGHT_PORT}
 MANAGER_TASK_INTAKE_TOPIC=${MANAGER_TASK_INTAKE_TOPIC}
 TASK_MANAGER_SERVICE_NAME=${TASK_MANAGER_SERVICE_NAME}
 TASK_MANAGER_TASK_INTAKE_TOPIC=${TASK_MANAGER_TASK_INTAKE_TOPIC}
@@ -799,6 +986,9 @@ REDIS_TASK_STATUS_KEY_PREFIX=${REDIS_TASK_STATUS_KEY_PREFIX}
 STORAGE_NODE_ROOT=${STORAGE_NODE_ROOT}
 SQLITE_NODE_DATABASE_ROOT=${SQLITE_NODE_DATABASE_ROOT}
 TASK_MANAGER_STATE_DB_PATH=${TASK_MANAGER_STATE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/task_manager_state.db}
+MANAGER_QUEUE_DB_PATH=${MANAGER_QUEUE_DB_PATH}
+INGESTION_RETRIEVAL_INDEX_QUEUE_DB_PATH=${INGESTION_RETRIEVAL_INDEX_QUEUE_DB_PATH}
+RETRIEVAL_INDEX_QUEUE_DB_PATH=${RETRIEVAL_INDEX_QUEUE_DB_PATH}
 EOF
 }
 
@@ -1017,16 +1207,19 @@ if [[ "$BROKER_FIRST" -eq 1 ]]; then
   export MANAGER_PROJECT_CLIENT_MODE=broker
   export MANAGER_INGESTION_WORKER_MODE=external
   export MANAGER_RETRIEVAL_CLIENT_MODE=broker
-  export MANAGER_QUEUE_BROKER=redpanda
+  export MANAGER_QUEUE_BROKER="$BROKER_TYPE"
 fi
 
 validate_provider_config
 validate_runtime_config
 
 if [[ "$START_SERVER" -eq 1 ]]; then
+  check_runtime_dependencies
   if [[ "$BROKER_FIRST" -eq 1 ]]; then
-    start_redpanda_if_needed
+    start_broker_if_needed
     start_redis_if_needed
+    start_redpanda_console_if_needed
+    start_redis_insight_if_needed
     bootstrap_broker_topics
     verify_redis_status
     verify_broker_first_readiness 1
@@ -1041,7 +1234,6 @@ if [[ "$START_SERVER" -eq 1 ]]; then
   if [[ "$BROKER_FIRST" -eq 1 ]]; then
     verify_broker_first_readiness 0
   fi
-  check_runtime_dependencies
   ensure_not_already_running
 fi
 
@@ -1059,8 +1251,10 @@ Local RAG service settings:
   data_dir:            ${RAG_LOCAL_DATA_DIR}
   config_profile:      ${RAG_CONFIG_PROFILE}
   config_db:           ${RAG_CONFIG_DB_PATH}
+  project_config_db:   ${PROJECT_CONFIG_DB_PATH}
   response_cache_db:   ${RAG_RESPONSE_CACHE_DB_PATH}
   ingest_jobs_db:      ${RAG_INGEST_JOB_DB_PATH}
+  ingestion_job_db:    ${INGESTION_JOB_DB_PATH}
   workflow_log_db:     ${WORKFLOW_LOG_DB_PATH}
   placement_db:        ${RETRIEVAL_PLACEMENT_DB_PATH}
   placement_mode:      ${RETRIEVAL_PLACEMENT_ROUTING_MODE}
@@ -1078,7 +1272,10 @@ Local RAG service settings:
   project_client_mode: ${MANAGER_PROJECT_CLIENT_MODE}
   project_target:      ${MANAGER_PROJECT_GRPC_TARGET}
   broker_first:        ${BROKER_FIRST}
+  broker_type:         ${BROKER_TYPE}
   broker:              ${BROKER_BOOTSTRAP_SERVERS}
+  redpanda_console:    http://127.0.0.1:${REDPANDA_CONSOLE_PORT} $([[ "$START_REDPANDA_CONSOLE" -eq 1 ]] && printf '(enabled)' || printf '(disabled)')
+  redis_insight:       http://127.0.0.1:${REDIS_INSIGHT_PORT} $([[ "$START_REDIS_INSIGHT" -eq 1 ]] && printf '(enabled)' || printf '(disabled)')
   task_intake_topic:   ${MANAGER_TASK_INTAKE_TOPIC}
   task_manager:        ${TASK_MANAGER_SERVICE_NAME}
   redis_status:        ${REDIS_TASK_STATUS_URL}

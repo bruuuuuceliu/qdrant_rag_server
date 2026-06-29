@@ -346,7 +346,7 @@ Runtime files created by the local runner:
 - `.run/logs/`
 - `.run/*.pid`
 - `.run/state.env`
-- `examples/local/.data/`
+- `.run/data/`
 
 ## Documentation
 

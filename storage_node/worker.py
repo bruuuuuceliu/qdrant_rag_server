@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 
 from broker_service import BrokerSettings
+from shared.logging import configure_logging
 from shared.runtime_health import RuntimeHealth
 from storage_node.config import StorageNodeSettings
 from storage_node.helper_app import StorageHelperServerContext, create_helper_app
@@ -56,7 +57,7 @@ async def create_worker_context(
 
 async def serve_forever() -> None:
     context = await create_worker_context()
-    context.helper_app.start()
+    await context.helper_app.start_runtime()
     try:
         while True:
             await asyncio.sleep(3600)
@@ -65,6 +66,7 @@ async def serve_forever() -> None:
 
 
 def main() -> None:
+    configure_logging()
     asyncio.run(serve_forever())
 
 

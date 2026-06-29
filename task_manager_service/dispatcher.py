@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 from shared.contracts import (
@@ -26,6 +27,8 @@ from shared.contracts import (
 )
 from task_manager_service.config import TaskManagerSettings
 from task_manager_service.repository import TaskStateRepository
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +79,13 @@ class TaskManagerDispatcher:
         payload = TaskIntakePayload.from_envelope(envelope)
         operation = payload.operation
         domain_topic = domain_command_topic(envelope.data_type)
+        logger.info(
+            "task dispatch intake task_id=%s operation=%s data_type=%s domain_topic=%s",
+            envelope.task_id,
+            operation,
+            envelope.data_type,
+            domain_topic,
+        )
         await self._write_status(envelope, operation=operation, status=TaskStatus.RUNNING)
         await self._publish_task_started(envelope, operation=operation)
         await self._publish_domain_command(envelope, payload=payload, topic=domain_topic)
@@ -101,6 +111,13 @@ class TaskManagerDispatcher:
             )
         operation = payload.operation
         helper_topics = _helper_topics(operation)
+        logger.info(
+            "task dispatch domain_result task_id=%s operation=%s data_type=%s helper_topics=%s",
+            envelope.task_id,
+            operation,
+            envelope.data_type,
+            ",".join(helper_topics),
+        )
         if self._state_repository is not None:
             await self._state_repository.set_expected_helpers(envelope.task_id, helper_topics)
         for topic in helper_topics:
@@ -123,6 +140,13 @@ class TaskManagerDispatcher:
         payload = DomainResultPayload.from_envelope(envelope)
         result = _result_with_failure_metadata(payload.result, payload)
         status = TaskStatus.COMPLETED if result.get("ok", True) is not False else TaskStatus.FAILED
+        logger.info(
+            "task finalize domain_result task_id=%s operation=%s status=%s result_topic=%s",
+            envelope.task_id,
+            payload.operation,
+            str(status),
+            self._settings.task_result_topic,
+        )
         await self._write_status(
             envelope,
             operation=payload.operation,
@@ -160,9 +184,23 @@ class TaskManagerDispatcher:
         result = _result_with_failure_metadata(payload.result, payload)
         status = TaskStatus.COMPLETED if result.get("ok", True) is not False else TaskStatus.FAILED
         helper = payload.helper
+        logger.info(
+            "task handle helper_result task_id=%s operation=%s helper=%s status=%s attempt=%s",
+            envelope.task_id,
+            operation,
+            helper,
+            str(status),
+            payload.attempt,
+        )
         if self._state_repository is not None:
             existing = await self._state_repository.get(envelope.task_id)
             if existing is not None and existing.final_published:
+                logger.info(
+                    "task skip duplicate final task_id=%s helper=%s final_status=%s",
+                    envelope.task_id,
+                    helper,
+                    existing.final_status,
+                )
                 return FinalizeResult(
                     task_id=envelope.task_id,
                     status=existing.final_status,
@@ -170,6 +208,12 @@ class TaskManagerDispatcher:
                 )
             if _should_retry(payload, self._settings.max_attempts):
                 retry_plan = _retry_plan(existing, helper, fallback_operation=operation)
+                logger.info(
+                    "task retry helper task_id=%s helper=%s next_attempt=%s",
+                    envelope.task_id,
+                    helper,
+                    payload.attempt + 1,
+                )
                 await self._publish_helper_command_from_plan(
                     envelope,
                     operation=retry_plan.operation,
@@ -197,6 +241,12 @@ class TaskManagerDispatcher:
             )
             followups = _followup_plans_from_ingestion_result(operation, helper, result)
             if status == TaskStatus.COMPLETED and followups:
+                logger.info(
+                    "task schedule followups task_id=%s helper=%s followup_topics=%s",
+                    envelope.task_id,
+                    helper,
+                    ",".join(topic for topic, _plan in followups),
+                )
                 await self._state_repository.add_expected_helpers(
                     envelope.task_id,
                     tuple(topic for topic, _plan in followups),
@@ -226,6 +276,13 @@ class TaskManagerDispatcher:
                     result_topic="",
                 )
             if not state.complete:
+                logger.info(
+                    "task waiting helpers task_id=%s completed=%s expected=%s failed=%s",
+                    envelope.task_id,
+                    ",".join(sorted(state.completed_helpers)),
+                    ",".join(sorted(state.expected_helpers)),
+                    ",".join(sorted(state.failed_helpers)),
+                )
                 await self._write_status(
                     envelope,
                     operation=operation,
@@ -239,6 +296,13 @@ class TaskManagerDispatcher:
                 )
             status = TaskStatus.FAILED if state.failed else TaskStatus.COMPLETED
             result = _aggregate_helper_results(state.helper_results)
+        logger.info(
+            "task finalize helpers task_id=%s operation=%s status=%s result_topic=%s",
+            envelope.task_id,
+            operation,
+            str(status),
+            self._settings.task_result_topic,
+        )
         await self._write_status(
             envelope,
             operation=operation,
@@ -247,6 +311,12 @@ class TaskManagerDispatcher:
             ttl_seconds=self._settings.completed_ttl_seconds,
         )
         if status == TaskStatus.FAILED:
+            logger.info(
+                "task publish dead_letter task_id=%s helper=%s topic=%s",
+                envelope.task_id,
+                payload.helper,
+                self._settings.dead_letter_topic,
+            )
             await self._publish_dead_letter(
                 envelope,
                 operation=operation,
@@ -301,6 +371,12 @@ class TaskManagerDispatcher:
             started,
             key=envelope.task_id,
         )
+        logger.info(
+            "task publish started task_id=%s operation=%s topic=%s",
+            envelope.task_id,
+            operation,
+            self._settings.task_started_topic,
+        )
 
     async def _publish_domain_command(
         self,
@@ -323,6 +399,12 @@ class TaskManagerDispatcher:
             ).to_payload(),
         )
         await self._producer.publish(topic, command, key=envelope.task_id)
+        logger.info(
+            "task publish domain_command task_id=%s operation=%s topic=%s",
+            envelope.task_id,
+            payload.operation,
+            topic,
+        )
 
     async def _publish_helper_command_from_plan(
         self,
@@ -349,6 +431,13 @@ class TaskManagerDispatcher:
             | {"attempt": attempt},
         )
         await self._producer.publish(topic, command, key=envelope.task_id)
+        logger.info(
+            "task publish helper_command task_id=%s operation=%s topic=%s attempt=%s",
+            envelope.task_id,
+            operation,
+            topic,
+            attempt,
+        )
 
     async def _publish_helper_command(
         self,
@@ -372,6 +461,12 @@ class TaskManagerDispatcher:
             | {"attempt": 1},
         )
         await self._producer.publish(topic, command, key=envelope.task_id)
+        logger.info(
+            "task publish helper_command task_id=%s operation=%s topic=%s attempt=1",
+            envelope.task_id,
+            payload.operation,
+            topic,
+        )
 
     async def _publish_dead_letter(
         self,
@@ -405,6 +500,12 @@ class TaskManagerDispatcher:
             dead_letter,
             key=envelope.task_id,
         )
+        logger.info(
+            "task publish dead_letter task_id=%s topic=%s source_topic=%s",
+            envelope.task_id,
+            self._settings.dead_letter_topic,
+            payload.helper,
+        )
 
     async def _write_status(
         self,
@@ -417,6 +518,13 @@ class TaskManagerDispatcher:
     ) -> None:
         if self._status_store is None:
             return
+        logger.info(
+            "task status write task_id=%s operation=%s status=%s ttl_seconds=%s",
+            envelope.task_id,
+            operation,
+            str(status),
+            ttl_seconds if ttl_seconds is not None else "",
+        )
         await self._status_store.set_status(
             TaskStatusRecord(
                 task_id=envelope.task_id,

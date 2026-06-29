@@ -40,3 +40,19 @@ python -m examples.unites.storage_database_crud
 The storage example uses `FilesystemStorageService` to put, get, delete, and
 verify a missing read. Configure the root with `STORAGE_NODE_ROOT`; the default
 is `/tmp/qdrant_rag/storage_node`.
+
+## Client-To-Server Showcases
+
+The `examples/test_client/` folder contains runnable scripts that mimic a client
+calling a running local or remote RAG deployment:
+
+```bash
+python -m examples.test_client.test_1  # gRPC health
+python -m examples.test_client.test_2  # gRPC ingest + status
+python -m examples.test_client.test_3  # gRPC search
+python -m examples.test_client.test_4  # HTTP POST /search
+python -m examples.test_client.test_5  # HTTP POST /documents/raw
+```
+
+By default they target `examples/local/run-all.sh` ports. Override with
+`RAG_TEST_GRPC_TARGET`, `RAG_TEST_HTTP_BASE_URL`, or matching CLI flags.

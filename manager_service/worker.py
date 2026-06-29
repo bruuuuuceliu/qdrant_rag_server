@@ -6,6 +6,7 @@ import asyncio
 
 from configs import load_settings
 from deployment.composition.manager import create_manager_context
+from shared.logging import configure_logging
 
 
 async def serve_forever() -> None:
@@ -17,6 +18,7 @@ async def serve_forever() -> None:
 
 
 def main() -> None:
+    configure_logging()
     asyncio.run(serve_forever())
 
 

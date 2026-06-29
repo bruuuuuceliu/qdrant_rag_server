@@ -100,10 +100,11 @@ class FakeAioKafkaAdmin(FakeKafkaAdmin):
             self.topics.add(topic.name)
 
 
-def test_broker_settings_loads_from_values_and_prefixes_topics() -> None:
+@pytest.mark.parametrize("broker_type", ("redpanda", "kafka"))
+def test_broker_settings_loads_from_values_and_prefixes_topics(broker_type: str) -> None:
     settings = BrokerSettings.from_values(
         {
-            "BROKER_TYPE": "redpanda",
+            "BROKER_TYPE": broker_type,
             "BROKER_BOOTSTRAP_SERVERS": "redpanda:9092",
             "BROKER_CLIENT_ID": "tests",
             "BROKER_REQUEST_TIMEOUT_SECONDS": "12.5",
@@ -112,6 +113,7 @@ def test_broker_settings_loads_from_values_and_prefixes_topics() -> None:
     )
 
     assert settings.bootstrap_servers == "redpanda:9092"
+    assert settings.broker_type == broker_type
     assert settings.client_id == "tests"
     assert settings.request_timeout_seconds == 12.5
     assert settings.topic(TOPICS.task_intake) == "local.task.intake"
@@ -120,7 +122,7 @@ def test_broker_settings_loads_from_values_and_prefixes_topics() -> None:
 @pytest.mark.parametrize(
     ("values", "match"),
     (
-        ({"BROKER_TYPE": "kafka"}, "BROKER_TYPE"),
+        ({"BROKER_TYPE": "rabbitmq"}, "BROKER_TYPE"),
         ({"BROKER_BOOTSTRAP_SERVERS": " "}, "BROKER_BOOTSTRAP_SERVERS"),
         ({"BROKER_CLIENT_ID": ""}, "BROKER_CLIENT_ID"),
         ({"BROKER_REQUEST_TIMEOUT_SECONDS": "0"}, "BROKER_REQUEST_TIMEOUT_SECONDS"),

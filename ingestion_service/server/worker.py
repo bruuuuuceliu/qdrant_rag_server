@@ -14,8 +14,9 @@ from ingestion_service.server.broker_runtime import BrokerIngestionApp
 from ingestion_service.server.app import IngestionAppContext, create_app as create_ingestion_app
 from ingestion_service.server.helper_app import IngestionHelperServerContext, create_helper_app
 from ingestion_service.service import IngestionService
-from shared.runtime_health import RuntimeHealth
+from shared.logging import configure_logging
 from shared.queue import LocalQueueBroker, QueueBroker, SQLiteQueueBroker
+from shared.runtime_health import RuntimeHealth
 
 
 @dataclass(slots=True)
@@ -66,7 +67,7 @@ async def create_worker_server(
 
 async def serve_forever() -> None:
     app = await create_worker_server()
-    app.helper_app.start()
+    await app.helper_app.start_runtime()
     try:
         while True:
             await asyncio.sleep(3600)
@@ -75,6 +76,7 @@ async def serve_forever() -> None:
 
 
 def main() -> None:
+    configure_logging()
     asyncio.run(serve_forever())
 
 

@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+DEFAULT_RUNTIME_DIR="${ROOT_DIR}/.run"
 RUNTIME_DIR="${RAG_LOCAL_RUNTIME_DIR:-${ROOT_DIR}/.run}"
 STATE_FILE="${RUNTIME_DIR}/state.env"
 MANAGER_PID_FILE="${RUNTIME_DIR}/manager.pid"
@@ -19,19 +20,25 @@ REDIS_STATUS_PID_FILE="${RUNTIME_DIR}/redis-status.pid"
 QDRANT_CID_FILE="${RUNTIME_DIR}/qdrant.cid"
 QDRANT_LOG_PID_FILE="${RUNTIME_DIR}/qdrant-log.pid"
 REDPANDA_CID_FILE="${RUNTIME_DIR}/redpanda.cid"
+KAFKA_CID_FILE="${RUNTIME_DIR}/kafka.cid"
 REDIS_CID_FILE="${RUNTIME_DIR}/redis.cid"
+REDPANDA_CONSOLE_CID_FILE="${RUNTIME_DIR}/redpanda-console.cid"
+REDIS_INSIGHT_CID_FILE="${RUNTIME_DIR}/redis-insight.cid"
 
 CLEAN_RUNTIME=0
 CLEAN_DATA=0
-STOP_DOCKER=1
 FORCE=1
 GRPC_PORT="${RAG_GRPC_PORT:-50051}"
 PROJECT_GRPC_PORT="${RAG_PROJECT_GRPC_PORT:-50052}"
 QDRANT_CONTAINER="${RAG_QDRANT_CONTAINER:-qdrant-rag-local}"
 QDRANT_VOLUME="${RAG_QDRANT_VOLUME:-qdrant-rag-local-data}"
 REDPANDA_CONTAINER="${RAG_REDPANDA_CONTAINER:-redpanda-rag-local}"
+KAFKA_CONTAINER="${RAG_KAFKA_CONTAINER:-kafka-rag-local}"
 REDIS_CONTAINER="${RAG_REDIS_CONTAINER:-redis-rag-local}"
-RAG_LOCAL_DATA_DIR="${RAG_LOCAL_DATA_DIR:-${SCRIPT_DIR}/.data}"
+REDPANDA_CONSOLE_CONTAINER="${RAG_REDPANDA_CONSOLE_CONTAINER:-redpanda-console-rag-local}"
+REDIS_INSIGHT_CONTAINER="${RAG_REDIS_INSIGHT_CONTAINER:-redis-insight-rag-local}"
+REDIS_INSIGHT_VOLUME="${RAG_REDIS_INSIGHT_VOLUME:-redis-insight-rag-local-data}"
+RAG_LOCAL_DATA_DIR="${RAG_LOCAL_DATA_DIR:-${RUNTIME_DIR}/data}"
 
 usage() {
   cat <<'EOF'
@@ -44,13 +51,18 @@ PID/container state, then falls back to service-module process matching.
 Options:
   --clean               Remove runtime files/logs after stopping.
   --clean-data          Remove local data directory after stopping.
-  --no-docker           Do not stop/remove the local Qdrant container.
   --qdrant-container VALUE
                         Docker container name. Default: qdrant-rag-local.
   --redpanda-container VALUE
                         Docker container name. Default: redpanda-rag-local.
+  --kafka-container VALUE
+                        Docker container name. Default: kafka-rag-local.
   --redis-container VALUE
                         Docker container name. Default: redis-rag-local.
+  --redpanda-console-container VALUE
+                        Docker container name. Default: redpanda-console-rag-local.
+  --redis-insight-container VALUE
+                        Docker container name. Default: redis-insight-rag-local.
   --grpc-port VALUE     Extra cleanup check for this gRPC port. Default: 50051.
   --project-grpc-port VALUE
                         Extra cleanup check for project gRPC port. Default: 50052.
@@ -74,10 +86,6 @@ while [[ $# -gt 0 ]]; do
       CLEAN_DATA=1
       shift
       ;;
-    --no-docker)
-      STOP_DOCKER=0
-      shift
-      ;;
     --qdrant-container)
       QDRANT_CONTAINER="${2:?--qdrant-container requires a value}"
       shift 2
@@ -86,8 +94,20 @@ while [[ $# -gt 0 ]]; do
       REDPANDA_CONTAINER="${2:?--redpanda-container requires a value}"
       shift 2
       ;;
+    --kafka-container)
+      KAFKA_CONTAINER="${2:?--kafka-container requires a value}"
+      shift 2
+      ;;
     --redis-container)
       REDIS_CONTAINER="${2:?--redis-container requires a value}"
+      shift 2
+      ;;
+    --redpanda-console-container)
+      REDPANDA_CONSOLE_CONTAINER="${2:?--redpanda-console-container requires a value}"
+      shift 2
+      ;;
+    --redis-insight-container)
+      REDIS_INSIGHT_CONTAINER="${2:?--redis-insight-container requires a value}"
       shift 2
       ;;
     --grpc-port)
@@ -122,8 +142,12 @@ if [[ -f "$STATE_FILE" ]]; then
   QDRANT_CONTAINER="${QDRANT_CONTAINER:-qdrant-rag-local}"
   QDRANT_VOLUME="${QDRANT_VOLUME:-qdrant-rag-local-data}"
   REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-redpanda-rag-local}"
+  KAFKA_CONTAINER="${KAFKA_CONTAINER:-kafka-rag-local}"
   REDIS_CONTAINER="${REDIS_CONTAINER:-redis-rag-local}"
-  RAG_LOCAL_DATA_DIR="${RAG_LOCAL_DATA_DIR:-${SCRIPT_DIR}/.data}"
+  REDPANDA_CONSOLE_CONTAINER="${REDPANDA_CONSOLE_CONTAINER:-redpanda-console-rag-local}"
+  REDIS_INSIGHT_CONTAINER="${REDIS_INSIGHT_CONTAINER:-redis-insight-rag-local}"
+  REDIS_INSIGHT_VOLUME="${REDIS_INSIGHT_VOLUME:-redis-insight-rag-local-data}"
+  RAG_LOCAL_DATA_DIR="${RAG_LOCAL_DATA_DIR:-${RUNTIME_DIR}/data}"
 fi
 
 is_pid_alive() {
@@ -175,6 +199,9 @@ stop_pid_file() {
 }
 
 fallback_stop_python_services() {
+  if [[ "$RUNTIME_DIR" != "$DEFAULT_RUNTIME_DIR" ]]; then
+    return 0
+  fi
   local patterns=(
     "python -m local_runtime.manager_app"
     "python -m manager_service.worker"
@@ -205,6 +232,9 @@ fallback_stop_python_services() {
 }
 
 fallback_stop_port_listener() {
+  if [[ "$RUNTIME_DIR" != "$DEFAULT_RUNTIME_DIR" ]]; then
+    return 0
+  fi
   if ! command -v lsof >/dev/null 2>&1; then
     return 0
   fi
@@ -224,7 +254,7 @@ fallback_stop_port_listener() {
 }
 
 stop_qdrant() {
-  if [[ "$STOP_DOCKER" -ne 1 ]] || ! command -v docker >/dev/null 2>&1; then
+  if ! command -v docker >/dev/null 2>&1; then
     return 0
   fi
   local container="$QDRANT_CONTAINER"
@@ -242,7 +272,7 @@ stop_docker_container() {
   local label="$1"
   local container_name="$2"
   local cid_file="$3"
-  if [[ "$STOP_DOCKER" -ne 1 ]] || ! command -v docker >/dev/null 2>&1; then
+  if ! command -v docker >/dev/null 2>&1; then
     return 0
   fi
   local container="$container_name"
@@ -271,7 +301,10 @@ stop_pid_file "$QDRANT_LOG_PID_FILE" "Qdrant log collector"
 fallback_stop_python_services
 fallback_stop_port_listener
 stop_qdrant
+stop_docker_container "Redpanda Console" "$REDPANDA_CONSOLE_CONTAINER" "$REDPANDA_CONSOLE_CID_FILE"
+stop_docker_container "Redis Insight" "$REDIS_INSIGHT_CONTAINER" "$REDIS_INSIGHT_CID_FILE"
 stop_docker_container "Redpanda" "$REDPANDA_CONTAINER" "$REDPANDA_CID_FILE"
+stop_docker_container "Kafka" "$KAFKA_CONTAINER" "$KAFKA_CID_FILE"
 stop_docker_container "Redis" "$REDIS_CONTAINER" "$REDIS_CID_FILE"
 
 if [[ "$CLEAN_RUNTIME" -eq 1 ]]; then
@@ -282,8 +315,9 @@ fi
 
 if [[ "$CLEAN_DATA" -eq 1 ]]; then
   rm -rf "$RAG_LOCAL_DATA_DIR"
-  if [[ "$STOP_DOCKER" -eq 1 ]] && command -v docker >/dev/null 2>&1; then
+  if command -v docker >/dev/null 2>&1; then
     docker volume rm "$QDRANT_VOLUME" >/dev/null 2>&1 || true
+    docker volume rm "$REDIS_INSIGHT_VOLUME" >/dev/null 2>&1 || true
   fi
 fi
 

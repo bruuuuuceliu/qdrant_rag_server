@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, field
 
 from broker_service import BrokerSettings, create_redpanda_bus
@@ -15,7 +16,13 @@ class RetrievalHelperServerContext:
     handler: RetrievalHelperHandler
     consumer: MessageConsumer
     command_topic: str = TOPICS.helper_retrieval_commands
+    producer: MessageProducer | None = None
     _task: asyncio.Task[None] | None = field(default=None, init=False)
+
+    async def start_runtime(self) -> None:
+        await _start_component(self.producer)
+        await _start_component(self.consumer)
+        self.start()
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -27,6 +34,8 @@ class RetrievalHelperServerContext:
         self._task.cancel()
         await asyncio.gather(self._task, return_exceptions=True)
         self._task = None
+        await _stop_component(self.consumer)
+        await _stop_component(self.producer)
 
     async def run_once(self) -> None:
         envelope = await self.consumer.consume(self.command_topic)
@@ -46,7 +55,7 @@ def create_helper_app(
     service_name: str = "retrieval_service",
     command_topic: str = TOPICS.helper_retrieval_commands,
 ) -> RetrievalHelperServerContext:
-    broker_settings = broker_settings or BrokerSettings()
+    broker_settings = broker_settings or BrokerSettings.from_values(dict(os.environ))
     producer = producer or create_redpanda_bus(broker_settings)
     consumer = consumer or create_redpanda_bus(
         broker_settings,
@@ -56,5 +65,18 @@ def create_helper_app(
     return RetrievalHelperServerContext(
         handler=RetrievalHelperHandler(api=api, producer=producer),
         consumer=consumer,
+        producer=producer,
         command_topic=command_topic,
     )
+
+
+async def _start_component(component: object | None) -> None:
+    start = getattr(component, "start", None)
+    if start is not None:
+        await start()
+
+
+async def _stop_component(component: object | None) -> None:
+    stop = getattr(component, "stop", None)
+    if stop is not None:
+        await stop()

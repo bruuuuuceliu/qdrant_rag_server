@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 
 from broker_service import BrokerSettings
+from shared.logging import configure_logging
 from shared.runtime_health import RuntimeHealth
 from workflow_log_service.domain_app import (
     WorkflowLogDomainServerContext,
@@ -53,7 +54,7 @@ async def create_worker_context(
 
 async def serve_forever() -> None:
     context = await create_worker_context()
-    context.domain_app.start()
+    await context.domain_app.start_runtime()
     try:
         while True:
             await asyncio.sleep(3600)
@@ -62,6 +63,7 @@ async def serve_forever() -> None:
 
 
 def main() -> None:
+    configure_logging()
     asyncio.run(serve_forever())
 
 

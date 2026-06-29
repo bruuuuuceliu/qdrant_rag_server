@@ -44,6 +44,30 @@ def test_task_manager_composition_wires_redis_status_store(monkeypatch: pytest.M
     assert captured["status_store"].settings.url == "redis://redis:6379/1"
 
 
+def test_task_manager_composition_loads_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def fake_create_app(*, broker_settings, settings, status_store):
+        captured["broker_settings"] = broker_settings
+        captured["settings"] = settings
+        captured["status_store"] = status_store
+        return "context"
+
+    monkeypatch.setenv("TASK_MANAGER_STATE_DB_PATH", "/tmp/task-manager-state.db")
+    monkeypatch.setenv("REDIS_TASK_STATUS_URL", "redis://redis:6379/3")
+    monkeypatch.setenv("TASK_MANAGER_TASK_INTAKE_TOPIC", "task.custom")
+    monkeypatch.setattr(task_manager_composition, "RedisTaskStatusStore", FakeRedisStore)
+    monkeypatch.setattr(task_manager_composition, "create_task_manager_app", fake_create_app)
+
+    context = task_manager_composition.create_task_manager_context()
+
+    assert context == "context"
+    assert captured["broker_settings"] is None
+    assert captured["settings"].state_db_path == "/tmp/task-manager-state.db"
+    assert captured["settings"].task_intake_topic == "task.custom"
+    assert captured["status_store"].settings.url == "redis://redis:6379/3"
+
+
 @pytest.mark.asyncio
 async def test_manager_composition_wires_broker_and_redis(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}

@@ -14,6 +14,7 @@ from project_service.domain_handler import ProjectDomainHandler
 from project_service.gateway import AsyncConcurrencyLimiter, RagGateway
 from project_service.planning import ProjectPlanningService
 from shared.contracts import MessageConsumer, MessageProducer, TOPICS
+from shared.logging import configure_logging
 from shared.runtime_health import RuntimeHealth
 
 
@@ -22,7 +23,13 @@ class ProjectDomainServerContext:
     handler: ProjectDomainHandler
     consumer: MessageConsumer
     command_topic: str = TOPICS.domain_project_commands
+    producer: MessageProducer | None = None
     _task: asyncio.Task[None] | None = field(default=None, init=False)
+
+    async def start_runtime(self) -> None:
+        await _start_component(self.producer)
+        await _start_component(self.consumer)
+        self.start()
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -34,6 +41,8 @@ class ProjectDomainServerContext:
         self._task.cancel()
         await asyncio.gather(self._task, return_exceptions=True)
         self._task = None
+        await _stop_component(self.consumer)
+        await _stop_component(self.producer)
 
     async def run_once(self) -> None:
         envelope = await self.consumer.consume(self.command_topic)
@@ -64,7 +73,7 @@ def create_domain_app(
     service_name: str = "project_service",
     command_topic: str = TOPICS.domain_project_commands,
 ) -> ProjectDomainServerContext:
-    broker_settings = broker_settings or BrokerSettings()
+    broker_settings = broker_settings or BrokerSettings.from_values(dict(os.environ))
     producer = producer or create_redpanda_bus(broker_settings)
     consumer = consumer or create_redpanda_bus(
         broker_settings,
@@ -73,6 +82,7 @@ def create_domain_app(
     )
     return ProjectDomainServerContext(
         handler=ProjectDomainHandler(planning=planning, producer=producer),
+        producer=producer,
         consumer=consumer,
         command_topic=command_topic,
     )
@@ -134,7 +144,7 @@ async def serve_forever() -> None:
     context = await create_default_domain_app(
         settings=ProjectDomainSettings.from_values(dict(os.environ)),
     )
-    context.start()
+    await context.start_runtime()
     try:
         while True:
             await asyncio.sleep(3600)
@@ -143,7 +153,20 @@ async def serve_forever() -> None:
 
 
 def main() -> None:
+    configure_logging()
     asyncio.run(serve_forever())
+
+
+async def _start_component(component: object | None) -> None:
+    start = getattr(component, "start", None)
+    if start is not None:
+        await start()
+
+
+async def _stop_component(component: object | None) -> None:
+    stop = getattr(component, "stop", None)
+    if stop is not None:
+        await stop()
 
 
 if __name__ == "__main__":

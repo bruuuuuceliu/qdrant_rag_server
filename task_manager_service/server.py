@@ -20,6 +20,15 @@ class TaskManagerServerContext:
     settings: TaskManagerSettings = field(default_factory=TaskManagerSettings)
     _tasks: list[asyncio.Task[None]] = field(default_factory=list)
 
+    async def start_runtime(self) -> None:
+        await _start_component(getattr(self.dispatcher, "_producer", None))
+        await _start_component(self.intake_consumer)
+        for _topic, consumer in self.domain_result_consumers:
+            await _start_component(consumer)
+        for _topic, consumer in self.helper_result_consumers:
+            await _start_component(consumer)
+        self.start()
+
     def start(self) -> None:
         if self._tasks:
             return
@@ -41,6 +50,12 @@ class TaskManagerServerContext:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
+        for _topic, consumer in self.helper_result_consumers:
+            await _stop_component(consumer)
+        for _topic, consumer in self.domain_result_consumers:
+            await _stop_component(consumer)
+        await _stop_component(self.intake_consumer)
+        await _stop_component(getattr(self.dispatcher, "_producer", None))
 
     async def health(self) -> RuntimeHealth:
         status_store = getattr(self.dispatcher, "_status_store", None)
@@ -128,3 +143,15 @@ class TaskManagerServerContext:
         if not configured:
             raise RuntimeError(f"task manager has no {label} consumers")
         return configured[0]
+
+
+async def _start_component(component: object | None) -> None:
+    start = getattr(component, "start", None)
+    if start is not None:
+        await start()
+
+
+async def _stop_component(component: object | None) -> None:
+    stop = getattr(component, "stop", None)
+    if stop is not None:
+        await stop()

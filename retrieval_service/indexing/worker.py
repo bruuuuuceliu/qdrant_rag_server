@@ -30,8 +30,9 @@ from retrieval_service.services.bm25 import QdrantSparseBM25Index
 from retrieval_service.services.entities import LocalNerExtractor, NoopNerExtractor
 from retrieval_service.services.sparse_encoder import FastEmbedSparseTextEncoder
 from retrieval_service.services.vector_store import QdrantStore
-from shared.runtime_health import RuntimeHealth
+from shared.logging import configure_logging
 from shared.queue import LocalQueueBroker, QueueBroker, SQLiteQueueBroker
+from shared.runtime_health import RuntimeHealth
 
 
 @dataclass(slots=True)
@@ -232,7 +233,7 @@ async def create_queue_worker_server(
 
 async def serve_forever(settings: AppSettings | None = None) -> None:
     app = await create_worker_server(settings)
-    app.helper_app.start()
+    await app.helper_app.start_runtime()
     try:
         while True:
             await asyncio.sleep(3600)
@@ -241,6 +242,7 @@ async def serve_forever(settings: AppSettings | None = None) -> None:
 
 
 def main() -> None:
+    configure_logging()
     asyncio.run(serve_forever(load_settings()))
 
 
