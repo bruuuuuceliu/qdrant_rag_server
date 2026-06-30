@@ -34,7 +34,10 @@ class RetrievalIndexCommand:
         payloads = (
             [_payload_from_mapping(item) for item in payload_items]
             if payload_items
-            else [BaseChunkPayload.from_chunk(chunk) for chunk in chunks]
+            else [
+                _payload_from_mapping(_payload_mapping_from_chunk_mapping(item))
+                for item in _list(payload.get("chunks"))
+            ]
         )
         collection_name = str(payload.get("collection_name", ""))
         if not collection_name.strip():
@@ -90,7 +93,7 @@ def _payload_from_mapping(value: Any) -> BaseChunkPayload:
         content_hash=str(value.get("content_hash", "")),
         embedding_version=str(value.get("embedding_version", "")),
         chunker_version=str(value.get("chunker_version", "v1")),
-        metadata=dict(value.get("metadata", {}) or {}),
+        metadata=_payload_metadata(value),
     )
 
 
@@ -100,3 +103,21 @@ def _list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
     raise ValueError("index command field must be a list")
+
+
+def _payload_metadata(value: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(value.get("metadata", {}) or {})
+    for key in ("project_id", "user_id", "kb_id", "doc_id"):
+        item = value.get(key)
+        if item is not None and str(item).strip():
+            metadata.setdefault(key, str(item))
+    return metadata
+
+
+def _payload_mapping_from_chunk_mapping(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("chunk must be an object")
+    payload = dict(value)
+    payload["payload_id"] = str(value.get("payload_id") or value.get("chunk_id", ""))
+    payload.setdefault("embedding_version", "")
+    return payload

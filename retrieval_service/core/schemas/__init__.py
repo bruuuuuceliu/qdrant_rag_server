@@ -12,7 +12,7 @@ from retrieval_service.core.schemas.common import (
 )
 from retrieval_service.core.schemas.document import BaseChunk, BaseChunkPayload, BaseDocument
 from retrieval_service.core.schemas.ingest import BaseIngestJob
-from retrieval_service.core.schemas.project import BaseProjectConfig, BaseServiceConfig
+from retrieval_service.core.schemas.project import BaseServiceConfig
 from retrieval_service.core.schemas.scope import BaseQueryScope, BaseRetrievalFilter
 
 __all__ = [
@@ -21,7 +21,6 @@ __all__ = [
     "BaseChunkPayload",
     "BaseDocument",
     "BaseIngestJob",
-    "BaseProjectConfig",
     "BaseServiceConfig",
     "BaseQueryScope",
     "BaseRetrievalFilter",

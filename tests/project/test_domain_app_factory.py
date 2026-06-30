@@ -24,7 +24,8 @@ def test_project_domain_settings_loads_owned_config_values() -> None:
     settings = domain_app.ProjectDomainSettings.from_values(
         {
             "PROJECT_SERVICE_NAME": "project-a",
-            "PROJECT_DOMAIN_COMMAND_TOPIC": "project.commands",
+            "PROJECT_PLAN_REQUEST_TOPIC": "project.commands",
+            "PROJECT_PLAN_RESULT_TOPIC": "project.results",
             "PROJECT_CONFIG_DB_PATH": "/data/project.db",
             "PROJECT_MAX_PER_PROJECT": "12",
             "PROJECT_MAX_PER_USER": "3",
@@ -33,6 +34,7 @@ def test_project_domain_settings_loads_owned_config_values() -> None:
 
     assert settings.service_name == "project-a"
     assert settings.command_topic == "project.commands"
+    assert settings.result_topic == "project.results"
     assert settings.config_db_path == "/data/project.db"
     assert settings.max_per_project == 12
     assert settings.max_per_user == 3
@@ -50,6 +52,7 @@ async def test_create_default_project_domain_app_builds_planning_stack(monkeypat
     settings = domain_app.ProjectDomainSettings(
         service_name="project-a",
         command_topic="project.commands",
+        result_topic="project.results",
         config_db_path=":memory:",
     )
 

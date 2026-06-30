@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import inspect
 import logging
 from typing import Any
 from uuid import uuid4
 
-from manager_service.clients import ProjectDocumentClient
 from manager_service.routing import DataType, ManagerRouter, Operation, RouteRequest
 from shared.contracts import MessageEnvelope, MessageProducer, MessageType, TOPICS, TaskIntakePayload
 from shared.contracts import TaskStatusStore
@@ -54,27 +52,16 @@ class ManagerService:
     def __init__(
         self,
         *,
-        project_documents: ProjectDocumentClient | None = None,
         task_producer: MessageProducer | None = None,
         task_status_store: TaskStatusStore | None = None,
         task_intake_topic: str = TOPICS.task_intake,
-        ingest_topic: str = "ingestion.requests",
-        ingest_response_timeout: float = 30.0,
         router: ManagerRouter | None = None,
-        allow_direct_project_client: bool = False,
     ) -> None:
-        if task_producer is None and not allow_direct_project_client:
+        if task_producer is None:
             raise ValueError("ManagerService requires a task producer for broker-first runtime")
-        if task_producer is None and project_documents is None:
-            raise ValueError("direct project-document compatibility requires a project-document client")
-        if task_producer is not None and project_documents is not None and not allow_direct_project_client:
-            raise ValueError("project-document client is not allowed in broker-first runtime")
-        self._project_documents = project_documents
         self._task_producer = task_producer
         self._task_status_store = task_status_store
         self._task_intake_topic = task_intake_topic
-        self._ingest_topic = ingest_topic
-        self._ingest_response_timeout = ingest_response_timeout
         self._router = router or ManagerRouter()
 
     async def ingest(
@@ -94,11 +81,7 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
-        if self._task_producer is not None:
-            return await self._publish_task(Operation.INGEST, request, context=context)
-        if self._project_documents is None:
-            raise ValueError("project-document client is not configured")
-        return await _project_ingest(self._project_documents, request, context=context)
+        return await self._publish_task(Operation.INGEST, request, context=context)
 
     async def search(
         self,
@@ -116,11 +99,7 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
-        if self._task_producer is not None:
-            return await self._publish_task(Operation.SEARCH, request, context=context)
-        if self._project_documents is None:
-            raise ValueError("project-document client is not configured")
-        return await _project_search(self._project_documents, request, context=context)
+        return await self._publish_task(Operation.SEARCH, request, context=context)
 
     async def ingest_status(
         self,
@@ -139,15 +118,7 @@ class ManagerService:
             raise ValueError(route.reason)
         if self._task_status_store is not None:
             return await self._task_status_store.get_status(job_id)
-        if self._task_producer is not None:
-            raise ValueError("task status lookup is not configured")
-        if self._project_documents is None:
-            raise ValueError("task status lookup is not configured")
-        return await _project_ingest_status(
-            self._project_documents,
-            job_id,
-            context=context,
-        )
+        raise ValueError("task status lookup is not configured")
 
     async def delete(
         self,
@@ -166,16 +137,7 @@ class ManagerService:
         )
         if not route.executable:
             raise ValueError(route.reason)
-        if self._task_producer is not None:
-            return await self._publish_task(Operation.DELETE, request, context=context)
-        if self._project_documents is None:
-            raise ValueError("project-document client is not configured")
-        return await _call_project(
-            self._project_documents,
-            "delete_document",
-            request,
-            context=context,
-        )
+        return await self._publish_task(Operation.DELETE, request, context=context)
 
     async def _publish_task(
         self,
@@ -368,71 +330,3 @@ def _context_summary(context: dict[str, Any]) -> dict[str, Any]:
         elif value is not None and str(value).strip():
             summary[field] = str(value)
     return summary
-
-
-async def _project_ingest(
-    project_documents: ProjectDocumentClient,
-    request: Any,
-    *,
-    context: ManagerRequestContext | None = None,
-) -> Any:
-    start_task = getattr(project_documents, "start_document_ingest_task", None)
-    if start_task is not None:
-        return await _call_project_method(start_task, request, context=context)
-    return await _call_project_method(project_documents.ingest, request, context=context)
-
-
-async def _project_search(
-    project_documents: ProjectDocumentClient,
-    request: Any,
-    *,
-    context: ManagerRequestContext | None = None,
-) -> Any:
-    search_documents = getattr(project_documents, "search_documents", None)
-    if search_documents is not None:
-        return await _call_project_method(search_documents, request, context=context)
-    return await _call_project_method(project_documents.search, request, context=context)
-
-
-async def _project_ingest_status(
-    project_documents: ProjectDocumentClient,
-    job_id: str,
-    *,
-    context: ManagerRequestContext | None = None,
-) -> Any:
-    get_status = getattr(project_documents, "get_document_task_status", None)
-    if get_status is not None:
-        return await _call_project_method(get_status, job_id, context=context)
-    return await _call_project_method(project_documents.ingest_status, job_id, context=context)
-
-
-async def _call_project(
-    project_documents: ProjectDocumentClient,
-    method_name: str,
-    *args: Any,
-    context: ManagerRequestContext | None = None,
-) -> Any:
-    method = getattr(project_documents, method_name)
-    return await _call_project_method(method, *args, context=context)
-
-
-async def _call_project_method(
-    method: Any,
-    *args: Any,
-    context: ManagerRequestContext | None = None,
-) -> Any:
-    if context is None:
-        return await method(*args)
-    if _accepts_context(method):
-        return await method(*args, context=context.to_payload())
-    return await method(*args)
-
-
-def _accepts_context(method: Any) -> bool:
-    signature = inspect.signature(method)
-    if "context" in signature.parameters:
-        return True
-    return any(
-        parameter.kind == inspect.Parameter.VAR_KEYWORD
-        for parameter in signature.parameters.values()
-    )

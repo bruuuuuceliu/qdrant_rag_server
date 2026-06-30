@@ -4,11 +4,10 @@ Section status: implementation accepted for the next development loop section.
 
 ## Requirement Document
 
-The retrieval API contracts and handler are meant to be reusable by future gRPC,
-HTTP, or queue transports. They must not start depending on manager,
-project-service, ingestion-service, generated protobuf, or concrete transport
-modules. A focused import-boundary guard should keep this contract layer clean as
-the physical service API work begins.
+The retrieval API contracts and handler are used by the Redpanda helper worker.
+They must not start depending on manager, project-service, ingestion-service,
+generated protobuf, or concrete transport modules. A focused import-boundary
+guard keeps this contract layer clean as broker helper work evolves.
 
 Scope:
 

@@ -11,8 +11,6 @@ ROOT = Path(__file__).resolve().parents[2]
 
 GUARDED_FILES = (
     ROOT / "retrieval_service" / "indexing" / "commands.py",
-    ROOT / "retrieval_service" / "indexing" / "consumer.py",
-    ROOT / "retrieval_service" / "indexing" / "app.py",
     ROOT / "retrieval_service" / "indexing" / "domain_handler.py",
     ROOT / "retrieval_service" / "indexing" / "helper_app.py",
     ROOT / "retrieval_service" / "indexing" / "worker.py",

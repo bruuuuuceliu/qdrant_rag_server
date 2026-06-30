@@ -1,53 +1,35 @@
 # Examples: Getting Started
 
-This guide shows the shortest practical path to start the RAG platform and try ingest/search.
-
-The project is now a multi-service RAG platform with a **manager service** at the edge routing project-document requests to the **project service** task boundary. Project service plans the work, attaches placement metadata, and uses ingestion/retrieval capabilities behind typed service clients and async queue contracts.
+This guide shows the shortest path to start the local RAG platform and try the
+manager-compatible gRPC ingest/search flow.
 
 ## Architecture
 
+```text
+client
+  -> manager_service gRPC API
+  -> Redpanda task intake
+  -> task_manager_service
+  -> task_service
+  -> project_service planning
+  -> helper services for ingestion, storage, retrieval, and indexing
+  -> Redis task status
 ```
-Client → ManagerService → ProjectDocumentClient/project_service
-                         ↓
-                  [project planning]
-                         ↓
-        [ingestion_service] → [retrieval_service]
-                         ↓
-                 [workflow_log_service]
-                         ↓
-                [shared contracts & queue]
-```
 
-The `ManagerRouter` decides routing based on `operation` + `data_type`:
+The manager accepts public requests and publishes task intake messages. Project
+planning and helper execution happen behind Redpanda-compatible topics. The
+manager reads task status from Redis for status checks.
 
-| operation | data_type | target |
-|-----------|-----------|--------|
-| ingest | project_document | project_service |
-| search | project_document | project_service |
-| delete | project_document | project_service |
-| status | project_document | project_service |
-
-Local placement status: project planning now creates and forwards
-`placement_plan` payloads backed by a SQLite placement registry. The current
-local runtime still executes against the configured single Qdrant endpoint;
-multi-database/Qdrant execution is documented design work and is not enabled in
-the showcase scripts yet.
-
-## One-Line Local Start
+## Local Start
 
 From the repository root:
 
 ```bash
-examples/local/run-all.sh --init
+examples/local/run-all.sh --reset --init
 ```
 
-This command:
-
-- stores local data under `examples/local/.data`
-- starts Qdrant with Docker when needed and available
-- initializes a demo project config when `--init` is provided
-- starts the temporary local compatibility app via `python -m local_runtime.manager_app`
-- composes the project service, ingestion consumer, local queue, placement registry, retrieval service, and workflow-log app outside the manager service package
+This starts local Redpanda, Redis, Qdrant when needed, task services, domain
+services, helper workers, and the manager gRPC API on `127.0.0.1:50051`.
 
 Stop local services with:
 
@@ -58,11 +40,10 @@ examples/local/stop-all.sh --clean
 Useful variants:
 
 ```bash
-examples/local/run-all.sh --reset --init --project-id demo
 examples/local/run-all.sh --init --no-server
-examples/local/run-all.sh --init --grpc-port 50052
+examples/local/run-all.sh --infra-only
+examples/local/run-all.sh --reset --init --no-qdrant
 examples/local/run-all.sh --init --embedding-provider openrouter --embedding-model your-embedding-model --embedding-dimension 1536
-examples/local/run-all.sh --init --generation
 ```
 
 For remote/OpenRouter-compatible embeddings, provide an embedding API key:
@@ -72,102 +53,36 @@ export RAG_EMBEDDING_API_KEY=sk-or-your-key
 examples/local/run-all.sh --init --embedding-provider openrouter --embedding-model your-embedding-model --embedding-dimension 1536
 ```
 
-The older `deployment/local/start.sh` remains available for direct one-process startup, but `examples/local/` is the preferred showcase runner because it includes matching cleanup scripts and local runtime files.
+## Test Client
 
-## 1. Activate Environment
-
-Use the project environment:
+After the local stack is running:
 
 ```bash
-source /home/bruce/miniconda3/etc/profile.d/conda.sh
-conda activate evo
+python -m examples.test_client.test_1
+python -m examples.test_client.test_2
+python -m examples.test_client.test_3
 ```
 
-Install the project:
+The scripts cover health, ingest/status, and search through the manager gRPC
+API. The ingest status helper accepts in-flight broker statuses such as
+`accepted`, `queued`, `running`, and `dispatched`, then waits for `completed` or
+`failed` when the script needs a terminal result.
 
-```bash
-python -m pip install -e ".[dev]"
-```
+## Direct gRPC Shape
 
-## 2. Start Qdrant
+The compatibility gRPC protobuf package currently remains under
+`shared.transport.grpc.generated`. Clients still call the manager gRPC
+server on port `50051`.
 
-If Docker is available:
-
-```bash
-docker run --rm -p 6333:6333 -p 6334:6334 qdrant/qdrant
-```
-
-The default config expects Qdrant at `localhost:6333`.
-
-## 3. Create Local Runtime Directories
-
-For local development, use `/tmp` paths:
-
-```bash
-export RAG_CONFIG_DB_PATH=/tmp/qdrant_rag/config.db
-export RAG_RESPONSE_CACHE_DB_PATH=/tmp/qdrant_rag/response_cache.db
-export RETRIEVAL_PLACEMENT_DB_PATH=/tmp/qdrant_rag/placement.db
-export RETRIEVAL_PLACEMENT_ROUTING_MODE=project_single
-export RAG_GRPC_PORT=50051
-export RAG_QDRANT_HOST=localhost
-export RAG_QDRANT_PORT=6333
-export RAG_INGEST_WORKERS=1
-export RAG_EMBEDDING_PROVIDER=local
-export RAG_EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
-export RAG_EMBEDDING_DEVICE=cpu
-export RAG_EMBEDDING_DIMENSION=768
-export RAG_GENERATION_ENABLED=false
-```
-
-## 4. Seed A Project Config
-
-The manager resolves adapters from project config. Add a website project:
-
-```bash
-python - <<'PY'
-import asyncio
-import os
-from pathlib import Path
-
-from project_service.config import SQLiteProjectConfigRepository
-from project_service.schemas import ProjectConfig
-
-async def main():
-    repo = SQLiteProjectConfigRepository(Path(os.environ["RAG_CONFIG_DB_PATH"]))
-    await repo.initialize()
-    await repo.upsert_project(
-        ProjectConfig(
-            project_id="demo",
-            project_type="website",
-            active_embedding_version="v1",
-            embedding_model="BAAI/bge-base-en-v1.5",
-            reranker_model="none",
-            retrieval_config={"candidate_count": 20, "top_k": 5},
-        )
-    )
-
-asyncio.run(main())
-PY
-```
-
-## 5. Start The Server
-
-```bash
-python -m local_runtime.manager_app
-```
-
-On first start, the embedding model may take time to download/load. The local runtime app boots the manager, project service, ingestion consumer, and workflow log app behind a temporary compatibility entry point.
-
-## 6. Ingest A Small Document
-
-In another shell with the same environment activated:
-
-```bash
-python - <<'PY'
+```python
 import asyncio
 import grpc
 
-from project_service.server.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
+from shared.transport.grpc.generated import (
+    retrieval_service_pb2,
+    retrieval_service_pb2_grpc,
+)
+
 
 async def main():
     async with grpc.aio.insecure_channel("localhost:50051") as channel:
@@ -176,131 +91,42 @@ async def main():
             retrieval_service_pb2.IngestRequest(
                 project_id="demo",
                 user_id="user_1",
+                kb_id="demo",
                 doc_id="hello_doc",
                 source_uri="memory://hello_doc",
                 content_type="text/plain",
-                metadata={
-                    "raw_text": "Hello world.\n\nThis service indexes chunks for retrieval.",
-                },
+                metadata={"raw_text": "Hello world."},
             )
         )
         print(response)
 
-asyncio.run(main())
-PY
-```
-
-Save the returned `job_id`.
-
-## 7. Check Ingest Status
-
-```bash
-python - <<'PY'
-import asyncio
-import grpc
-
-from project_service.server.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
-
-JOB_ID = "replace-with-job-id"
-
-async def main():
-    async with grpc.aio.insecure_channel("localhost:50051") as channel:
-        client = retrieval_service_pb2_grpc.RagServiceStub(channel)
-        response = await client.GetIngestJobStatus(
-            retrieval_service_pb2.GetIngestJobStatusRequest(job_id=JOB_ID)
-        )
-        print(response)
 
 asyncio.run(main())
-PY
 ```
 
-## 8. Search
+## Unit Showcases
 
-```bash
-python - <<'PY'
-import asyncio
-import grpc
-
-from project_service.server.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
-
-async def main():
-    async with grpc.aio.insecure_channel("localhost:50051") as channel:
-        client = retrieval_service_pb2_grpc.RagServiceStub(channel)
-        response = await client.Search(
-            retrieval_service_pb2.SearchRequest(
-                project_id="demo",
-                user_id="user_1",
-                query="What does the service index?",
-                include_shared=True,
-            )
-        )
-        print(response)
-
-asyncio.run(main())
-PY
-```
-
-## Showcase Scripts
-
-### Programmatic API via ManagerService (recommended)
-
-Demonstrates using the `ManagerService` facade directly:
-
-```bash
-python -m examples.unites.rag_insertion_retrieval
-```
-
-This showcase:
-
-- Creates a manager with a local queue broker and project client
-- Uses the project planning boundary, including placement-plan propagation
-- Ingests documents through the manager routing boundary
-- Searches through the manager
-
-### Standalone Ingestion
-
-Tests the ingestion pipeline in isolation (no Qdrant, no embeddings):
+Standalone examples that do not require the full local stack:
 
 ```bash
 python -m examples.unites.ingestion
+python -m examples.unites.llm_generation
 ```
-
-### Multi-Retrieval Showcase
-
-Ingests a full document in hybrid mode and compares dense, BM25, and hybrid search against the current single-Qdrant local runtime:
-
-```bash
-python -m examples.unites.rag_multi_retrieval_showcase
-```
-
-## 9. Optional Generation
-
-Generation is disabled by default. To enable:
-
-```bash
-export RAG_GENERATION_ENABLED=true
-```
-
-Restart the server. Generation requests still require a request-scoped OpenRouter key in `GenerateRequest.openrouter_api_key`.
 
 ## Troubleshooting
 
-### `ModuleNotFoundError: grpc` or Missing Runtime Dependencies
+Install runtime dependencies:
 
 ```bash
 python -m pip install -e ".[dev]"
 ```
 
-### Qdrant Connection Errors
+Check Qdrant:
 
 ```bash
 curl http://localhost:6333/collections
 ```
 
-### Search Returns No Results
-
-- project config exists for `project_id`
-- ingest job completed (`status=completed`)
-- Qdrant is running
-- `user_id` matches the ingested document
+If search returns no chunks, confirm the ingest task reached `completed`, the
+project config was seeded with `--init`, and the search uses the same
+`project_id`, `user_id`, and `kb_id` as the ingest request.

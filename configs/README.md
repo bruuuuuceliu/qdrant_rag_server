@@ -45,7 +45,7 @@ settings = load_settings(profile="production")
 Or by environment:
 
 ```bash
-RAG_CONFIG_PROFILE=production python -m manager_service.server.app
+RAG_CONFIG_PROFILE=production python -m manager_service.worker
 ```
 
 Local remains the default when no profile is selected.
@@ -62,9 +62,8 @@ Committed env examples:
 
 Current folders include manager, project, ingestion, retrieval, workflow log,
 memory, storage, Qdrant, embeddings, generation, broker, Redis task-status, and
-SQLite/database node settings. Broker, Redis, and SQLite folders currently
-provide layout and env examples; runtime Redpanda and Redis integration still
-needs implementation.
+SQLite/database node settings. Runtime composition uses Redpanda-compatible
+broker settings, Redis task status, and SQLite database-node settings.
 
 For local testing, copy examples to untracked `.env` files when needed, then
 adjust values and secrets there.

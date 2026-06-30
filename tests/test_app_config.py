@@ -12,57 +12,34 @@ from unittest.mock import patch
 from configs.config import get_positive_int_value, load_settings
 from configs.ingestion import load_ingestion_settings
 from configs.manager import load_manager_settings
-from configs.retrieval.config import load_retrieval_index_worker_settings
+from configs.retrieval.config import (
+    load_retrieval_helper_settings,
+    load_retrieval_index_worker_settings,
+)
 from configs.validation import validate_settings, validate_settings_or_raise
-from configs.workflow_log import load_workflow_log_settings
 
 
 class AppConfigTest(unittest.TestCase):
-    def test_positive_int_rejects_zero_ingest_workers(self) -> None:
-        with self.assertRaisesRegex(ValueError, "RAG_INGEST_WORKERS must be at least 1"):
-            get_positive_int_value({"RAG_INGEST_WORKERS": "0"}, "RAG_INGEST_WORKERS", 4)
+    def test_positive_int_rejects_zero_retrieval_placement_bucket_count(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "RETRIEVAL_PLACEMENT_BUCKET_COUNT must be at least 1",
+        ):
+            get_positive_int_value(
+                {"RETRIEVAL_PLACEMENT_BUCKET_COUNT": "0"},
+                "RETRIEVAL_PLACEMENT_BUCKET_COUNT",
+                1,
+            )
 
     def test_positive_int_accepts_positive_value(self) -> None:
         self.assertEqual(
-            get_positive_int_value({"RAG_INGEST_WORKERS": "2"}, "RAG_INGEST_WORKERS", 4),
+            get_positive_int_value(
+                {"RETRIEVAL_PLACEMENT_BUCKET_COUNT": "2"},
+                "RETRIEVAL_PLACEMENT_BUCKET_COUNT",
+                1,
+            ),
             2,
         )
-
-    def test_positive_int_rejects_zero_resource_limit(self) -> None:
-        with self.assertRaisesRegex(
-            ValueError,
-            "RAG_MAX_CONCURRENT_SEARCHES must be at least 1",
-        ):
-            get_positive_int_value(
-                {"RAG_MAX_CONCURRENT_SEARCHES": "0"},
-                "RAG_MAX_CONCURRENT_SEARCHES",
-                32,
-            )
-
-    def test_loads_workflow_log_settings(self) -> None:
-        settings = load_workflow_log_settings(
-            {
-                "WORKFLOW_LOG_SERVICE_ENABLED": "false",
-                "WORKFLOW_LOG_SERVICE_NAME": "wf",
-                "WORKFLOW_LOG_TOPIC": "ingestion.events",
-                "WORKFLOW_LOG_DB_PATH": "/tmp/workflow.db",
-            }
-        )
-
-        self.assertFalse(settings.enabled)
-        self.assertEqual(settings.service_name, "wf")
-        self.assertEqual(settings.topic, "ingestion.events")
-        self.assertEqual(settings.db_path, Path("/tmp/workflow.db"))
-
-    def test_app_settings_include_workflow_log_settings(self) -> None:
-        settings = load_settings(
-            env_file=Path("/tmp/does-not-exist.env"),
-            component_env_files=(),
-            profile="testing",
-        )
-
-        self.assertTrue(settings.workflow_log_enabled)
-        self.assertEqual(settings.workflow_log_topic, "ingestion.events")
 
     def test_load_settings_uses_local_profile_defaults(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -72,7 +49,6 @@ class AppConfigTest(unittest.TestCase):
                 profile="local",
             )
 
-        self.assertEqual(settings.config_db_path, Path("/var/lib/rag/config.db"))
         self.assertEqual(settings.embedding_provider, "local")
         self.assertEqual(settings.embedding_dimension, 768)
 
@@ -85,10 +61,10 @@ class AppConfigTest(unittest.TestCase):
             )
 
         self.assertEqual(
-            settings.config_db_path,
-            Path("/var/lib/retrieval_service/config.db"),
+            settings.response_cache_db_path,
+            Path("/var/lib/retrieval_service/response_cache.db"),
         )
-        self.assertEqual(settings.ingest_worker_count, 4)
+        self.assertEqual(settings.retrieval_placement_shard_id, "retrieval-primary")
 
     def test_load_settings_can_select_profile_from_environment(self) -> None:
         with patch.dict(os.environ, {"RAG_CONFIG_PROFILE": "production"}, clear=True):
@@ -130,8 +106,8 @@ class AppConfigTest(unittest.TestCase):
                 component_env_files=(),
             )
 
-        self.assertEqual(settings.config_db_path, Path("/var/lib/rag/config.db"))
-        self.assertEqual(settings.ingest_worker_count, 1)
+        self.assertEqual(settings.embedding_provider, "local")
+        self.assertEqual(settings.retrieval_placement_shard_id, "local-qdrant")
 
     def test_promoted_production_config_defaults_to_production_profile(self) -> None:
         production_config = import_module("configs.config_production")
@@ -143,10 +119,10 @@ class AppConfigTest(unittest.TestCase):
             )
 
         self.assertEqual(
-            settings.config_db_path,
-            Path("/var/lib/retrieval_service/config.db"),
+            settings.response_cache_db_path,
+            Path("/var/lib/retrieval_service/response_cache.db"),
         )
-        self.assertEqual(settings.ingest_worker_count, 4)
+        self.assertEqual(settings.retrieval_placement_shard_id, "retrieval-primary")
 
     def test_promoted_profile_app_settings_from_env_uses_promoted_default(self) -> None:
         local_config = import_module("configs.config_local")
@@ -163,10 +139,10 @@ class AppConfigTest(unittest.TestCase):
                 component_env_files=(),
             )
 
-        self.assertEqual(local_settings.config_db_path, Path("/var/lib/rag/config.db"))
+        self.assertEqual(local_settings.embedding_provider, "local")
         self.assertEqual(
-            production_settings.config_db_path,
-            Path("/var/lib/retrieval_service/config.db"),
+            production_settings.response_cache_db_path,
+            Path("/var/lib/retrieval_service/response_cache.db"),
         )
 
     def test_env_files_and_process_env_override_profile_defaults(self) -> None:
@@ -202,7 +178,7 @@ class AppConfigTest(unittest.TestCase):
             {
                 "RAG_EMBEDDING_PROVIDER": "openai",
                 "RAG_EMBEDDING_API_KEY": "",
-                "RAG_CONFIG_DB_PATH": ":memory:",
+                "RAG_RESPONSE_CACHE_DB_PATH": "relative.db",
                 "RAG_QDRANT_URL": "not-a-url",
             },
             clear=True,
@@ -218,7 +194,7 @@ class AppConfigTest(unittest.TestCase):
         fields = {issue.field for issue in result.issues if issue.severity == "error"}
         self.assertFalse(result.ok)
         self.assertIn("embedding_api_key", fields)
-        self.assertIn("config_db_path", fields)
+        self.assertIn("response_cache_db_path", fields)
         self.assertIn("qdrant_url", fields)
 
     def test_validate_settings_or_raise_formats_errors(self) -> None:
@@ -237,67 +213,60 @@ class AppConfigTest(unittest.TestCase):
             {
                 "INGESTION_SERVICE_ENABLED": "true",
                 "INGESTION_SERVICE_NAME": "ingest",
-                "INGESTION_REQUEST_TOPIC": "docs.in",
+                "INGESTION_HELPER_COMMAND_TOPIC": "ingestion.commands",
                 "INGESTION_WORKER_COUNT": "3",
                 "INGESTION_QUEUE_MAXSIZE": "50",
                 "INGESTION_JOB_DB_PATH": "/tmp/jobs.db",
-                "INGESTION_RETRIEVAL_INDEX_ENABLED": "true",
-                "INGESTION_RETRIEVAL_INDEX_TOPIC": "index.in",
-                "INGESTION_RETRIEVAL_INDEX_QUEUE_BROKER": "sqlite",
-                "INGESTION_RETRIEVAL_INDEX_QUEUE_DB_PATH": "/tmp/index_queue.db",
-                "INGESTION_RETRIEVAL_INDEX_QUEUE_MAXSIZE": "25",
-                "INGESTION_RETRIEVAL_INDEX_RESPONSE_TIMEOUT": "1.5",
             }
         )
 
         self.assertTrue(settings.enabled)
         self.assertEqual(settings.service_name, "ingest")
-        self.assertEqual(settings.request_topic, "docs.in")
+        self.assertEqual(settings.command_topic, "ingestion.commands")
         self.assertEqual(settings.worker_count, 3)
         self.assertEqual(settings.queue_maxsize, 50)
         self.assertEqual(settings.job_db_path, Path("/tmp/jobs.db"))
-        self.assertTrue(settings.retrieval_index_enabled)
-        self.assertEqual(settings.retrieval_index_topic, "index.in")
-        self.assertEqual(settings.retrieval_index_queue_broker, "sqlite")
-        self.assertEqual(settings.retrieval_index_queue_db_path, Path("/tmp/index_queue.db"))
-        self.assertEqual(settings.retrieval_index_queue_maxsize, 25)
-        self.assertEqual(settings.retrieval_index_response_timeout, 1.5)
 
-    def test_loads_manager_retrieval_queue_settings(self) -> None:
+    def test_loads_manager_task_settings(self) -> None:
         settings = load_manager_settings(
             {
-                "MANAGER_RETRIEVAL_CLIENT_MODE": "queue",
-                "MANAGER_RETRIEVAL_TOPIC": "retrieval.custom",
-                "MANAGER_RETRIEVAL_RESPONSE_TIMEOUT": "2.5",
-                "MANAGER_RETRIEVAL_HTTP_BASE_URL": "http://retrieval:8081",
-                "MANAGER_RETRIEVAL_HTTP_TIMEOUT": "3.5",
+                "MANAGER_SERVICE_NAME": "manager-a",
+                "MANAGER_TASK_INTAKE_TOPIC": "tasks.custom",
+                "REDIS_TASK_STATUS_URL": "redis://redis:6379/1",
+                "REDIS_TASK_STATUS_KEY_PREFIX": "rag-task:",
+                "REDIS_TASK_COMPLETED_TTL_SECONDS": "60",
             }
         )
 
-        self.assertEqual(settings.retrieval_client_mode, "queue")
-        self.assertEqual(settings.retrieval_topic, "retrieval.custom")
-        self.assertEqual(settings.retrieval_response_timeout, 2.5)
-        self.assertEqual(settings.retrieval_http_base_url, "http://retrieval:8081")
-        self.assertEqual(settings.retrieval_http_timeout, 3.5)
+        self.assertEqual(settings.service_name, "manager-a")
+        self.assertEqual(settings.task_intake_topic, "tasks.custom")
+        self.assertEqual(settings.task_status_url, "redis://redis:6379/1")
+        self.assertEqual(settings.task_status_key_prefix, "rag-task:")
+        self.assertEqual(settings.task_completed_ttl_seconds, 60)
+
+    def test_loads_retrieval_helper_settings(self) -> None:
+        settings = load_retrieval_helper_settings(
+            {
+                "RETRIEVAL_HELPER_SERVICE_NAME": "retrieval-a",
+                "RETRIEVAL_HELPER_COMMAND_TOPIC": "retrieval.commands",
+            }
+        )
+
+        self.assertEqual(settings.service_name, "retrieval-a")
+        self.assertEqual(settings.command_topic, "retrieval.commands")
 
     def test_loads_retrieval_index_worker_settings(self) -> None:
         settings = load_retrieval_index_worker_settings(
             {
                 "RETRIEVAL_INDEX_WORKER_ENABLED": "false",
                 "RETRIEVAL_INDEX_WORKER_SERVICE_NAME": "indexer",
-                "RETRIEVAL_INDEX_REQUEST_TOPIC": "index.custom",
-                "RETRIEVAL_INDEX_QUEUE_BROKER": "sqlite",
-                "RETRIEVAL_INDEX_QUEUE_DB_PATH": "/tmp/index_queue.db",
-                "RETRIEVAL_INDEX_QUEUE_MAXSIZE": "75",
+                "RETRIEVAL_INDEX_HELPER_COMMAND_TOPIC": "index.commands",
             }
         )
 
         self.assertFalse(settings.enabled)
         self.assertEqual(settings.service_name, "indexer")
-        self.assertEqual(settings.request_topic, "index.custom")
-        self.assertEqual(settings.queue_broker, "sqlite")
-        self.assertEqual(settings.queue_db_path, Path("/tmp/index_queue.db"))
-        self.assertEqual(settings.queue_maxsize, 75)
+        self.assertEqual(settings.command_topic, "index.commands")
 
 
 if __name__ == "__main__":

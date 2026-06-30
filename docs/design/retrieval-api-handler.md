@@ -4,8 +4,8 @@ Section status: implementation accepted for the next development loop section.
 
 ## Requirement Document
 
-The retrieval service now has transport-neutral command DTOs, but future
-transports still need a retrieval-owned entry point that accepts plain payload
+The retrieval service has transport-neutral command DTOs, and the Redpanda
+helper worker needs a retrieval-owned entry point that accepts plain payload
 mappings, calls the retrieval app context, and returns response envelopes. The
 search path also needs retrieval-owned filter normalization so payloads do not
 depend on project-service filter classes.
@@ -21,7 +21,7 @@ Scope:
 Out of scope:
 
 - Network server startup.
-- gRPC/HTTP/protobuf adapters.
+- Network or protobuf adapters outside the Redpanda helper flow.
 - Manager remote retrieval client wiring.
 - Retry, auth, or rate limiting.
 

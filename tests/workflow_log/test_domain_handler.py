@@ -54,7 +54,7 @@ async def test_workflow_log_domain_handler_rejects_unknown_operation() -> None:
 
 def _command(*, operation: str) -> MessageEnvelope:
     return MessageEnvelope.create(
-        producer="task_manager_service",
+        producer="task_service",
         message_type=MessageType.DOMAIN_COMMAND,
         data_type="workflow_log",
         task_id="task-1",
@@ -74,7 +74,7 @@ def _command(*, operation: str) -> MessageEnvelope:
 
 def _list_command(*, job_id: str = "", operation: str = "list") -> MessageEnvelope:
     return MessageEnvelope.create(
-        producer="task_manager_service",
+        producer="task_service",
         message_type=MessageType.DOMAIN_COMMAND,
         data_type="workflow_log",
         task_id="task-1",

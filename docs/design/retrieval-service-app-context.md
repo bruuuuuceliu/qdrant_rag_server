@@ -6,10 +6,8 @@ Section status: implementation accepted for the eighth development loop section.
 
 `RetrievalService` owns search, delete, and raw-document operations, but there
 is no retrieval app context that exposes the service as an independently
-composable runtime object. The manager still reaches retrieval through
-compatibility project-document adapters. Before adding transport clients, the
-retrieval service needs a minimal app context that can be injected into future
-composition roots and tests.
+composable runtime object. The retrieval service needs a minimal app context
+that can be injected into the Redpanda helper worker and tests.
 
 Scope:
 
@@ -20,7 +18,7 @@ Scope:
 
 Out of scope:
 
-- gRPC/HTTP retrieval server transport.
+- Network retrieval server transport outside the Redpanda helper flow.
 - Manager remote retrieval clients.
 - Qdrant/embedding factory wiring.
 

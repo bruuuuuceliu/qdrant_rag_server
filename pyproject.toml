@@ -48,11 +48,11 @@ include = [
     "project_service*",
     "retrieval_service*",
     "redis_status_node*",
-    "server*",
     "shared*",
     "sqlite_node*",
     "storage_node*",
     "task_manager_service*",
+    "task_service*",
     "workflow_log_service*",
 ]
 

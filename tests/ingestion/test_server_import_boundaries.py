@@ -10,9 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 GUARDED_FILES = (
-    ROOT / "ingestion_service" / "server" / "app.py",
     ROOT / "ingestion_service" / "server" / "broker_runtime.py",
-    ROOT / "ingestion_service" / "server" / "consumer.py",
     ROOT / "ingestion_service" / "server" / "domain_handler.py",
     ROOT / "ingestion_service" / "server" / "helper_app.py",
     ROOT / "ingestion_service" / "server" / "worker.py",

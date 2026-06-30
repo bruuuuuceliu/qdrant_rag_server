@@ -12,11 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 GUARDED_FILES = (
     ROOT / "retrieval_service" / "retrieval" / "contracts.py",
     ROOT / "retrieval_service" / "retrieval" / "handler.py",
-    ROOT / "retrieval_service" / "server" / "app.py",
     ROOT / "retrieval_service" / "server" / "domain_handler.py",
     ROOT / "retrieval_service" / "server" / "helper_app.py",
-    ROOT / "retrieval_service" / "server" / "http.py",
-    ROOT / "retrieval_service" / "server" / "queue.py",
     ROOT / "retrieval_service" / "server" / "worker.py",
 )
 
@@ -26,6 +23,7 @@ FORBIDDEN_PREFIXES = (
     "ingestion_service",
     "project_service.server.grpc.generated",
     "retrieval_service.server.grpc.generated",
+    "shared.transport.grpc",
     "grpc",
 )
 

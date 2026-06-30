@@ -11,7 +11,6 @@ from examples.test_client import test_2
 from examples.test_client.test_client import (
     RagTestClient,
     RagTestClientConfig,
-    require_http_envelope,
     require_ingest_response,
     require_ingest_status_response,
     require_search_response,
@@ -23,7 +22,6 @@ def test_config_from_env_supports_local_and_remote_targets() -> None:
         {
             "RAG_TEST_GRPC_TARGET": "rag.example.com:443",
             "RAG_TEST_GRPC_SECURE": "true",
-            "RAG_TEST_HTTP_BASE_URL": "https://rag.example.com/retrieval",
             "RAG_TEST_PROJECT_ID": "remote_project",
             "RAG_TEST_USER_ID": "remote_user",
             "RAG_TEST_KB_ID": "remote_kb",
@@ -37,7 +35,6 @@ def test_config_from_env_supports_local_and_remote_targets() -> None:
 
     assert config.grpc_target == "rag.example.com:443"
     assert config.grpc_secure is True
-    assert config.http_base_url == "https://rag.example.com/retrieval"
     assert config.project_id == "remote_project"
     assert config.user_id == "remote_user"
     assert config.kb_id == "remote_kb"
@@ -107,66 +104,6 @@ def test_builds_grpc_search_request() -> None:
     assert request.include_shared is False
 
 
-def test_builds_retrieval_http_search_post_payload() -> None:
-    client = RagTestClient(
-        RagTestClientConfig(
-            project_id="demo",
-            user_id="user_1",
-            kb_id="demo",
-            collection_name="rag_demo_v1",
-            include_shared=True,
-        )
-    )
-
-    payload = client.build_http_search_payload(
-        query="what is qdrant?",
-        request_id="req-search",
-        retrieval_config={"top_k": 3},
-    )
-
-    assert payload == {
-        "request_id": "req-search",
-        "request": {
-            "project_id": "demo",
-            "user_id": "user_1",
-            "query_text": "what is qdrant?",
-            "collection_name": "rag_demo_v1",
-            "retrieval_config": {"top_k": 3},
-            "retrieval_filter": {
-                "project_id": "demo",
-                "allowed_user_ids": ["user_1", "__shared__"],
-                "kb_ids": ["demo"],
-            },
-        },
-    }
-
-
-def test_builds_retrieval_http_document_post_payloads() -> None:
-    client = RagTestClient(
-        RagTestClientConfig(
-            project_id="demo",
-            user_id="user_1",
-            kb_id="demo",
-            doc_id="doc-1",
-            collection_name="rag_demo_v1",
-        )
-    )
-
-    delete_payload = client.build_http_delete_payload(request_id="req-delete")
-    raw_payload = client.build_http_raw_document_payload(request_id="req-raw")
-
-    assert delete_payload["request"]["doc_id"] == "doc-1"
-    assert delete_payload["request"]["collection_name"] == "rag_demo_v1"
-    assert raw_payload == {
-        "request_id": "req-raw",
-        "request": {
-            "project_id": "demo",
-            "user_id": "user_1",
-            "doc_id": "doc-1",
-        },
-    }
-
-
 def test_invalid_metadata_env_must_be_json_object() -> None:
     with pytest.raises(ValueError, match="RAG_TEST_METADATA"):
         RagTestClientConfig.from_env({"RAG_TEST_METADATA": "[]"})
@@ -179,6 +116,8 @@ def test_ingest_response_validation_rejects_empty_success() -> None:
 
 def test_ingest_response_validation_accepts_broker_first_task_status() -> None:
     require_ingest_response({"job_id": "task-1", "status": "accepted"})
+    require_ingest_response({"job_id": "task-1", "status": "queued"})
+    require_ingest_status_response({"job_id": "task-1", "status": "queued"}, expected_job_id="task-1")
 
 
 def test_ingest_status_validation_rejects_mismatched_job_id() -> None:
@@ -193,16 +132,6 @@ def test_search_response_validation_can_require_chunks() -> None:
     require_search_response({"chunks": [{"text": "answer"}], "elapsed_ms": 1})
     with pytest.raises(RuntimeError, match="chunks"):
         require_search_response({"chunks": []}, require_chunks=True)
-
-
-def test_http_envelope_validation_rejects_error_envelopes() -> None:
-    with pytest.raises(RuntimeError, match="error envelope"):
-        require_http_envelope(
-            {
-                "ok": False,
-                "error": {"code": "internal_error", "message": "boom"},
-            }
-        )
 
 
 def test_test_2_writes_loadable_local_source(tmp_path, monkeypatch) -> None:

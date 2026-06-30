@@ -1,392 +1,391 @@
-# Ideal Service Interaction Migration Plan
+# Responsibility Shift Implementation Plan
 
-Status: draft migration plan.
+Status: implementation plan.
 
-This plan compares the current wiring with the ideal service model and defines
-how to migrate while keeping the existing rules:
-
-- all config code, env examples, and secrets stay under `./configs`
-- service work stays async by default
-- long-running work uses queues or other message passing
-- message contracts remain typed and transport-neutral
-- services do not import another service's internals
-- workflow logging is observational only
-
-## What Is Wrong Today
-
-The current repository is a useful migration scaffold, but control flow is
-still mixed:
-
-- `manager_service` still routes directly to ingestion and retrieval clients.
-- `project_service` still contains compatibility `RagEngine` execution logic.
-- `ingestion_service` still delegates back to a project-document client in some
-  paths.
-- `retrieval_service` owns many capability concerns at once: retrieval, index
-  writes, caches, raw storage, embeddings, ranking.
-- `workflow_log_service` exists as an event sink, but it should not appear in
-  the business path graph.
-
-## Ideal Responsibility Model
-
-The ideal design is:
+This file only covers the responsibility shift:
 
 ```text
-Manager = auth gate + context forwarder + task starter/status checker
-Project service = project task executor / orchestrator + task-context owner
-Ingestion service = generic async content preparation
-Retrieval/database service = placement-aware storage/index/query capability
-Workflow log = async observer only
+task manager = task intake + status read model
+task service = task execution + workflow orchestration
+project service = project setup/planning
+helpers = narrow capability workers
 ```
 
-The manager authenticates the client, resolves request/customer context from
-the auth layer, starts tasks, checks task status, and returns responses to the
-client. It may forward opaque customer and database-placement marks retrieved
-from auth or routing metadata, but it does not own parsing, indexing,
-retrieval, database assignment, or storage policy.
+## Target Responsibilities
 
-The project service owns task-related policy and orchestration for
-project-document work. It retrieves project/user/topic task context, applies
-visibility and business rules, and decides how to use ingestion and
-retrieval/database capabilities.
-
-Retrieval/database placement owns database assignment. It maps project, user,
-topic, and document/bucket routing keys to retrieval shards. Database-side
-caches stay shard-local, so requests should be routed to the shard that owns
-the relevant placement rather than round-robin across all database servers.
-
-Memory service is not part of the current design. It stays out of the core
-graphs until a dedicated design section is added.
-
-## Message Types
-
-Use the messaging method on every edge:
-
-- `RPC` for synchronous calls
-- `queue` for async task handoff
-- `status-poll` for task completion checks
-- `event` for observational logging
-
-The method must be explicit in every graph.
-
-## Target Graphs
-
-### Project Document Insertion
-
-```mermaid
-flowchart LR
-    C[Client / project request] -->|RPC| M[Manager]
-    M -->|RPC auth-enriched task start| P[Project Service]
-    P -->|RPC/lookup task context| PS[(Project/User/Topic State)]
-    P -->|RPC placement resolve| R[(Retrieval Placement)]
-    P -->|queue ingest task + placement| I[Ingestion Service]
-    I -->|queue prepared chunks + placement| D[Retrieval / Database Shard]
-    D -->|status-poll or async result| P
-    P -->|RPC task status/result| M
-    M -->|RPC response| C
-
-    M -.->|event| E[(Event Bus)]
-    P -.->|event| E
-    I -.->|event| E
-    D -.->|event| E
-    E -.->|event| W[Workflow Log Service placeholder]
-```
-
-### Project Document Query
-
-```mermaid
-flowchart LR
-    C[Client / project request] -->|RPC| M[Manager]
-    M -->|RPC auth-enriched task start| P[Project Service]
-    P -->|RPC/lookup task context| PS[(Project/User/Topic State)]
-    P -->|RPC placement resolve| R[(Retrieval Placement)]
-    P -->|RPC query task + placement| D[Retrieval / Database Shard]
-    D -->|RPC result| P
-    P -->|RPC task result| M
-    M -->|RPC response| C
-
-    M -.->|event| E[(Event Bus)]
-    P -.->|event| E
-    D -.->|event| E
-    E -.->|event| W[Workflow Log Service placeholder]
-```
-
-### Workflow Log
-
-```mermaid
-flowchart LR
-    Any[Any service] -.->|event| E[(Event Bus)]
-    E -.->|event| W[Workflow Log Service placeholder]
-    W -.->|RPC read only| M[Manager]
-```
-
-Workflow log is a read-side service for audit/history queries and an async sink
-for events. It is not a required hop in the main business path.
-
-## Compare Current Vs Ideal
-
-| Area | Current | Ideal |
+| Component | Owns | Must Not Own |
 | --- | --- | --- |
-| Manager | Routes directly to ingestion/retrieval clients in fallback paths. | Authenticates, forwards enriched context, starts project tasks, checks status, and returns results. |
-| Project service | Owns config/scope and still contains compatibility execution. | Owns project task orchestration, task-context retrieval, visibility, and policy. |
-| Ingestion service | Prepares content but still calls back into project-document compatibility paths. | Generic async task worker for source loading, parsing, cleaning, chunking. |
-| Retrieval/database | Owns retrieval, indexing, embeddings, cache, raw storage. | Placement-aware capability service behind typed async/sync APIs, with shard-local cache. |
-| Workflow log | Event sink exists but should stay out of business graphs. | Async observer only. |
-| Memory service | Placeholder only. | Out of scope for this migration. |
-| Config | Recently moved toward profile variants under `configs`. | All configs/env examples/keys stay under `configs`. |
-| Async | Ingestion and indexing use queues locally. | Long-running tasks use durable queues with correlation IDs, retries, leases, and dead letters. |
+| Task manager | Client task intake, task ID creation, task request publication, status event consumption, Redis/status read model, status API | Project planning, helper command creation, helper fan-in, retries, dead letters, execution state |
+| Task service | Task execution, project planning requests, helper fan-out/fan-in, retries, dead letters, durable execution state, final results | Public client API, auth, Redis status read API |
+| Project service | Project setup, collection name, retrieval config, chunker config, scope/filter, placement plan | Task execution, helper orchestration |
+| Ingestion helper | Source loading, parsing, cleaning, chunking, ingestion-owned job metadata | Project policy, task lifecycle |
+| Retrieval helper | Search/delete execution | Project policy, task lifecycle |
+| Retrieval-index helper | Chunk indexing | Project policy, task lifecycle |
+| Storage helper | Raw content put/get/delete | Project policy, task lifecycle |
+| Workflow log | Async audit/event observation | Main request path |
 
-## Required Flow Rules
+## Target Topics
 
-### Manager
+| Topic | Sender | Receiver | Purpose |
+| --- | --- | --- | --- |
+| `task.requests` | Task manager | Task service | Normalized accepted task request |
+| `task.events` | Task service | Task manager | Non-terminal task progress/status updates |
+| `task.results` | Task service | Task manager | Terminal task result |
+| `project.plan.requests` | Task service | Project service | Ask for project setup/planning |
+| `project.plan.results` | Project service | Task service | Return project-aware execution plan |
+| `helper.ingestion.commands` | Task service | Ingestion helper | Prepare/chunk source content |
+| `helper.ingestion.results` | Ingestion helper | Task service | Prepared content result |
+| `helper.storage.commands` | Task service | Storage helper | Store/delete raw content |
+| `helper.storage.results` | Storage helper | Task service | Storage result |
+| `helper.retrieval.commands` | Task service | Retrieval helper | Search/delete retrieval data |
+| `helper.retrieval.results` | Retrieval helper | Task service | Retrieval result |
+| `helper.retrieval_index.commands` | Task service | Retrieval-index helper | Index prepared chunks |
+| `helper.retrieval_index.results` | Retrieval-index helper | Task service | Index result |
+| `audit.events` | Any service | Workflow log | Observational audit events |
 
-- authenticates public requests
-- retrieves or receives customer context and opaque routing/placement marks from auth
-- starts project tasks
-- tracks task IDs
-- checks task status
-- returns task acknowledgements and final responses
-- never does parsing, chunking, embedding, database assignment, or storage writes
+The manager-to-task-manager `task.intake` topic remains the public intake
+handoff. Project planning uses only `project.plan.requests` and
+`project.plan.results`; the old `domain.project.*` project-planning topics are
+not a runtime compatibility path.
 
-### Project Service
+## Implementation Steps
 
-- retrieves task-related project, user, and topic context
-- decides policy and ownership
-- resolves or requests retrieval/database placement for the task
-- submits ingestion and retrieval/database work
-- polls or receives status
-- shapes results for the manager
-- does not own raw parsing or vector storage internals
+### 1. Add Shared Task Boundary Contracts
 
-### Ingestion Service
+Create shared transport-neutral contracts for the new task-manager/task-service
+boundary.
 
-- fetches source data
-- detects format and parses content
-- normalizes and chunks
-- publishes prepared work or result messages
-- persists only ingestion-owned job state
+Add:
 
-### Retrieval / Database Service
-
-- resolves routing keys to database shard placements, or accepts a placement plan
-- indexes prepared chunks
-- queries retrieval backends
-- manages shard-local caches and raw backups
-- exposes basic store/retrieve/delete capabilities
-- stays generic and reusable
-
-### Retrieval Placement
-
-- uses project, user, topic, and document/bucket routing keys
-- assigns new routing keys to retrieval shards with weighted rendezvous
-  hashing, a consistent-hashing variant that ranks every active shard by
-  `hash(routing_key, shard_id) * effective_weight`
-- stores the selected shard in a placement record; normal requests reuse the
-  stored placement instead of recomputing against live load
-- keeps placement records versioned so cache and routing can be invalidated on
-  rebalance
-- supports fanout plans when a hot project/user/topic is split into buckets
-- chooses replicas by taking the next-highest rendezvous scores when
-  replication is enabled
-- rebalances explicitly by marking old placements moving/stale, creating a new
-  placement version, reindexing or migrating data, and letting cache keys
-  invalidate through `placement_version`
-- does not depend on manager request handling
-
-### Workflow Log Service
-
-- consumes events asynchronously
-- stores lifecycle/audit records
-- is not on the main task path
-
-## Migration Phases
-
-### Phase 1: Align Documentation
-
-Goal: make the graphs and docs match the intended design.
-
-Tasks:
-
-- keep workflow log out of the main business path diagrams
-- show manager as task starter and status checker
-- show message type labels on arrows
-- document that memory is a placeholder/out-of-scope until a dedicated design
-  section exists
-
-### Phase 2: Make Manager A Project Task Coordinator
-
-Goal: move manager toward task orchestration only.
-
-Tasks:
-
-- add explicit project task start and task status commands
-- keep sync response handling in manager
-- push long-running work to queue or async domain APIs
+- `TaskRequestPayload`
+- `TaskEventPayload`
+- `TaskExecutionResultPayload`
+- `ProjectPlanRequestPayload`
+- `ProjectPlanResultPayload`
 
 Acceptance:
 
-- manager no longer routes directly to retrieval or ingestion for normal
-  project-document operations
-- manager talks to project service task APIs
+- task manager can publish `task.requests` without helper details
+- task service can publish `task.events` and `task.results` without importing
+  task-manager code
+- project service can return JSON-safe plans without leaking project internals
 
-### Phase 3: Extract Project Service Task Execution
+### 2. Create `task_service`
 
-Goal: make `project_service` the executor for project-document tasks.
+Add a new top-level `task_service/` package.
 
-Tasks:
+Required files:
 
-- move project-document orchestration into project service
-- have project service call ingestion and retrieval/database capabilities
-- keep project policy and scope in project service
-
-Acceptance:
-
-- project service owns project-document task execution
-- project service is the only manager-facing executor for project documents
-
-### Phase 4: Make Ingestion Generic
-
-Goal: remove compatibility callbacks from ingestion.
-
-Tasks:
-
-- ingestion accepts generic source/task payloads
-- ingestion emits prepared-content messages or task status messages
-- ingestion stops calling project-document compatibility clients
+- `task_service/__init__.py`
+- `task_service/config.py`
+- `task_service/app.py`
+- `task_service/worker.py`
+- `task_service/dispatcher.py`
+- `task_service/repository.py`
+- `tests/task_service/`
 
 Acceptance:
 
-- ingestion is reusable by project service and any future domain service
+- task service starts as an independent process
+- task service consumes `task.requests`
+- task service publishes `task.events` and `task.results`
+- task service has import-boundary tests
 
-### Phase 5: Clarify Retrieval / Database Capabilities
+### 3. Move Workflow Execution Out Of Task Manager
 
-Goal: keep retrieval/database basic and generic.
+Move these responsibilities from `task_manager_service` to `task_service`:
 
-Current progress: placement core exists under `retrieval_service.placement`.
-It provides models, routing-key generation, weighted rendezvous assignment,
-replica selection, in-memory/SQLite registries, and a resolver that reuses
-stored active placements. Placement plans are carried through retrieval
-index/search/delete contracts and are now produced by project planning from
-local placement config. Split ingestion forwards placement plans to retrieval
-indexing. Retrieval indexing now writes primary plus replica placement targets.
-Retrieval search resolves live shard stores, fans out by routing key, falls back
-from primary to replica targets, merges hits by score, and namespaces cache keys
-by placement scope. Retrieval delete removes dense and sparse records from the
-placement write set. Per-project/default routing-policy persistence and
-explicit moving/stale/active rebalance states are implemented locally.
-Migration/reindex orchestration and production broker behavior are still
-pending.
-
-Tasks:
-
-- keep retrieval/query/index/delete behind typed APIs
-- keep Qdrant/cache/raw storage as implementation details of the capability
-  service
-- add database placement contracts for routing keys, placement plans, shard
-  targets, and placement versions
-- add retrieval shard registry and placement registry
-- implement weighted rendezvous assignment for new routing keys and replica
-  selection
-- persist placement decisions so cache affinity is stable across requests
-- keep cache affinity by routing reads/writes to the responsible shard
-- avoid making a separate generic database service unless a true cross-domain
-  need appears
+- project planning request/result handling
+- helper command creation
+- helper result fan-in
+- ingestion follow-up scheduling for storage and retrieval indexing
+- delete fan-out to retrieval and storage
+- retry handling
+- dead-letter publication
+- final result idempotency
 
 Acceptance:
 
-- project service calls retrieval/database capabilities through contracts, not
-  internals
-- normal retrieval/index/delete requests carry enough placement context to
-  reach the owning database shard
+- normal helper command sender is `task_service`
+- task manager code no longer references helper command topics
+- task-service tests cover ingest, search, delete, retry, and dead-letter paths
 
-### Phase 6: Reserve Future Domain Services
+### 4. Move Durable Execution State To Task Service
 
-Goal: keep placeholders out of the project-document design.
+Move task execution state out of task manager.
 
-Tasks:
+Current state table:
 
-- do not implement agent memory in this migration
-- keep placeholder docs minimal if a future section is needed
-- do not add workflow-log business routing unless separately scoped
+- `task_states`
 
-Acceptance:
+Target owner:
 
-- project-document graphs do not include agent memory
-- placeholder services do not affect project-document behavior
+- `task_service`
 
-### Phase 7: Keep Workflow Log Observational
+Recommended target tables:
 
-Goal: preserve audit/event logging without coupling it to request paths.
-
-Tasks:
-
-- standardize event envelopes
-- emit events from manager, project, ingestion, and retrieval
-- keep workflow log read-only from the manager
+- `task_executions`
+- `task_steps`
+- `task_step_results`
 
 Acceptance:
 
-- workflow log is only async/event-driven, never a required hop in the core
-  business path
+- task service can restart without losing expected helpers, completed helpers,
+  failed helpers, retry plans, or final result idempotency
+- task manager restart does not affect in-flight execution
 
-### Phase 8: Add Production Broker Semantics
+### 5. Reduce Task Manager To Intake And Status
 
-Goal: replace local-only queue behavior with durable async semantics.
+Change task manager to only:
 
-Tasks:
-
-- add a production broker adapter behind `shared.queue.QueueBroker`
-- add message metadata:
-  - idempotency key
-  - correlation ID
-  - causation ID
-  - attempt count
-  - first-seen timestamp
-  - visibility lease or claim timeout
-  - last error
-- add retry topics and dead-letter topics
-- keep `LocalQueueBroker` and `SQLiteQueueBroker` for local development and
-  tests
+- receive raw client task requests
+- validate transport-level fields
+- normalize requests into `TaskRequestPayload`
+- create `task_id` and `correlation_id`
+- write initial status: `accepted` or `queued`
+- publish `task.requests`
+- consume `task.events` and `task.results`
+- update Redis/status read model
+- serve status reads
 
 Acceptance:
 
-- ingestion/indexing survive process restarts and worker failures
-- failed messages can be retried and dead-lettered with repair context
+- task manager does not publish `project.plan.*`
+- task manager does not publish `helper.*`
+- task manager does not own task fan-in state
+- task manager can be tested without ingestion, retrieval, storage, or indexing
+  helpers
 
-### Phase 9: Remove Compatibility RagEngine Path
+### 6. Convert Project Domain To Project Planning
 
-Goal: finish the migration.
+Reframe the project-service broker boundary as planning.
 
-Tasks:
-
-- stop manager from adapting `ProjectDocumentClient` for normal routes
-- move or delete compatibility `RagEngine` responsibilities after project,
-  ingestion, and retrieval services own their final paths
-- keep external compatibility gRPC API only as a thin adapter over manager or
-  project domain APIs if still needed
-- remove duplicate schemas and import shims
-
-Acceptance:
-
-- normal ingest/search/delete/status no longer depends on
-  `project_service.rag.RagEngine`
-- project service owns project policy and orchestration only
-- ingestion and retrieval services are independently deployable
-- full local runner and full test suite pass
-
-## Non-Negotiable Rules
-
-- configs stay under `./configs`
-- env files stay under `./configs`
-- message passing must stay explicit
-- no service should import another service's private internals
-- manager should orchestrate tasks and status, not execute business logic
-- workflow log is a side channel only
-
-## Recommended Next Section
+Removed old aliases:
 
 ```text
-Project Config/Scope API Extraction
+domain.project.commands -> project.plan.requests
+domain.project.results  -> project.plan.results
 ```
 
-This is the first step that makes `project_service` a true task executor
-instead of a compatibility wrapper.
+The plan result must include:
+
+- operation
+- project ID
+- user ID
+- collection name
+- retrieval config
+- chunker config
+- retrieval filter/scope
+- placement plan
+- source metadata needed by the task service
+
+Acceptance:
+
+- project service returns JSON-safe shared contract payloads
+- project service does not send helper commands
+- task service can build helper commands from task request + project plan
+
+### 7. Keep Helpers Narrow
+
+Helpers should only execute their own command contracts.
+
+Acceptance:
+
+- ingestion helper returns prepared content/chunk metadata
+- storage helper returns raw storage result
+- retrieval helper returns search/delete result
+- retrieval-index helper returns index result
+- helpers do not import task manager, task service, or project internals
+
+### 8. Update Local Runtime
+
+Update local broker-first runtime to start:
+
+- task manager / intake + status process
+- task service / executor process
+- project service / planning process
+- helper processes
+- Redis status store
+- Redpanda
+
+Acceptance:
+
+- local startup validates both task manager and task service readiness
+- `test_2` ingest flow runs through `task.requests -> task_service -> helpers`
+- `test_3` search flow runs through `task.requests -> task_service -> helpers`
+
+### 9. Update Tests
+
+Required test coverage:
+
+- task manager publishes only `task.requests`
+- task manager writes initial Redis status
+- task manager updates Redis from `task.events` and `task.results`
+- task service consumes `task.requests`
+- task service requests project plans
+- task service publishes helper commands
+- task service aggregates helper results
+- task service publishes final `task.results`
+- project planning payloads are JSON-safe
+- helper command sender is task service
+
+Acceptance:
+
+- tests assert sender and receiver ownership for each topic
+- old task-manager orchestration tests are moved or rewritten under
+  `tests/task_service/`
+
+### 10. Remove Compatibility Orchestration
+
+After the new path is passing:
+
+- remove task-manager helper dispatch from normal runtime
+- remove task-manager durable fan-in state
+- keep topic aliases only if external compatibility still requires them
+
+Acceptance:
+
+- normal runtime follows:
+
+```text
+client -> task manager -> task.requests -> task service -> project planning -> helpers -> task.results -> task manager status
+```
+
+## Graphs
+
+### Current Problem
+
+```mermaid
+flowchart LR
+    C[Client] -->|RPC| M[Manager / current intake]
+    M -->|task.intake| B[(Redpanda)]
+    B --> TM[Task Manager]
+    TM -->|task.requests| B
+    B --> P[Project Service]
+    P -->|project.plan.results| B
+    B --> TM
+    TM -->|helper.ingestion.commands| B
+    TM -->|helper.retrieval.commands| B
+    TM -->|helper.storage.commands| B
+    TM -->|helper.retrieval_index.commands| B
+    TM --> Redis[(Redis Status)]
+
+    classDef wrong fill:#ffe8e8,stroke:#b00020,color:#111;
+    class TM wrong;
+```
+
+### Target Ownership
+
+```mermaid
+flowchart LR
+    C[Client] -->|RPC| TM[Task Manager / Intake + Status]
+    TM -->|task.requests| B[(Redpanda)]
+    B -->|task.requests| TS[Task Service / Executor]
+
+    TS -->|project.plan.requests| B
+    B --> P[Project Service / Planning]
+    P -->|project.plan.results| B
+    B --> TS
+
+    TS -->|helper commands| B
+    B --> I[Ingestion Helper]
+    B --> R[Retrieval Helper]
+    B --> RI[Retrieval Index Helper]
+    B --> S[Storage Helper]
+    B --> DB[SQLite / DB Helper]
+
+    I -->|helper result| B
+    R -->|helper result| B
+    RI -->|helper result| B
+    S -->|helper result| B
+    DB -->|helper result| B
+    B --> TS
+
+    TS -->|task.events / task.results| B
+    B --> TM
+    TM --> Redis[(Redis Status Read Model)]
+    TM -->|status RPC| C
+
+    B -. audit.events .-> W[Workflow Log]
+```
+
+### Ingest Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant TM as Task Manager
+    participant B as Redpanda
+    participant TS as Task Service
+    participant P as Project Service
+    participant I as Ingestion Helper
+    participant S as Storage Helper
+    participant RI as Retrieval Index Helper
+    participant Redis as Redis
+
+    C->>TM: Ingest request
+    TM->>Redis: status accepted
+    TM->>B: task.requests
+    B->>TS: task request
+    TS->>B: task.events running
+    B->>TM: task event
+    TM->>Redis: status running
+    TS->>B: project.plan.requests
+    B->>P: plan request
+    P->>B: project.plan.results
+    B->>TS: project plan
+    TS->>B: helper.ingestion.commands
+    B->>I: ingestion command
+    I->>B: helper.ingestion.results
+    B->>TS: ingestion result
+    TS->>B: helper.storage.commands
+    TS->>B: helper.retrieval_index.commands
+    B->>S: storage command
+    B->>RI: index command
+    S->>B: helper.storage.results
+    RI->>B: helper.retrieval_index.results
+    B->>TS: helper results
+    TS->>B: task.results completed
+    B->>TM: task result
+    TM->>Redis: status completed with TTL
+    C->>TM: GetTaskStatus
+    TM->>Redis: read task status
+    TM-->>C: status/result
+```
+
+### Search Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant TM as Task Manager
+    participant B as Redpanda
+    participant TS as Task Service
+    participant P as Project Service
+    participant R as Retrieval Helper
+    participant Redis as Redis
+
+    C->>TM: Search request
+    TM->>Redis: status accepted
+    TM->>B: task.requests
+    B->>TS: task request
+    TS->>B: task.events running
+    B->>TM: task event
+    TM->>Redis: status running
+    TS->>B: project.plan.requests
+    B->>P: plan request
+    P->>B: project.plan.results
+    B->>TS: project plan
+    TS->>B: helper.retrieval.commands
+    B->>R: retrieval command
+    R->>B: helper.retrieval.results
+    B->>TS: retrieval result
+    TS->>B: task.results completed
+    B->>TM: task result
+    TM->>Redis: status completed with TTL
+    C->>TM: GetTaskStatus
+    TM->>Redis: read task status
+    TM-->>C: status/result
+```

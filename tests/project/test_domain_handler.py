@@ -52,11 +52,11 @@ async def test_project_domain_handler_returns_and_publishes_plan_result() -> Non
 
     result = await handler.handle(command)
 
-    assert result.message_type == MessageType.DOMAIN_RESULT
+    assert result.message_type == MessageType.PROJECT_PLAN_RESULT
     assert result.task_id == "task-1"
     assert result.payload["operation"] == "ingest"
     assert result.payload["plan"] == {"project_id": "p1", "operation": "ingest"}
-    assert producer.published == [(TOPICS.domain_project_results, result, "task-1")]
+    assert producer.published == [(TOPICS.project_plan_results, result, "task-1")]
     assert planning.requests == [{"project_id": "p1"}]
 
 
@@ -80,11 +80,10 @@ async def test_project_domain_handler_rejects_unknown_operation() -> None:
 
 def _command(*, operation: str) -> MessageEnvelope:
     return MessageEnvelope.create(
-        producer="task_manager_service",
-        message_type=MessageType.DOMAIN_COMMAND,
+        producer="task_service",
+        message_type=MessageType.PROJECT_PLAN_REQUEST,
         data_type="project_document",
         task_id="task-1",
         correlation_id="corr-1",
         payload={"operation": operation, "request": {"project_id": "p1"}},
     )
-

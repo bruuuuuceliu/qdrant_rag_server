@@ -50,9 +50,7 @@ calling a running local or remote RAG deployment:
 python -m examples.test_client.test_1  # gRPC health
 python -m examples.test_client.test_2  # gRPC ingest + status
 python -m examples.test_client.test_3  # gRPC search
-python -m examples.test_client.test_4  # HTTP POST /search
-python -m examples.test_client.test_5  # HTTP POST /documents/raw
 ```
 
 By default they target `examples/local/run-all.sh` ports. Override with
-`RAG_TEST_GRPC_TARGET`, `RAG_TEST_HTTP_BASE_URL`, or matching CLI flags.
+`RAG_TEST_GRPC_TARGET` or matching CLI flags.

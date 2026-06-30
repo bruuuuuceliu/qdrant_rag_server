@@ -4,16 +4,14 @@ This server translates gRPC proto messages into manager-service calls.
 It depends only on shared contracts, manager types, and the generated
 proto stubs (which are pure transport code, not business logic).
 
-Compatibility notes (temporary):
-- The proto definition (service RagService) is still shared with the
-  project_service compat layer. This will be replaced with a manager-native
-  proto after service extraction is complete.
-- The Generate RPC delegates directly to the generation engine until
-  generation is extracted into its own service boundary.
+Compatibility note:
+- The generated proto package still lives under project_service until the
+  transport package is moved to a neutral shared namespace.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -21,14 +19,10 @@ from typing import Any
 import grpc
 from grpc import aio
 
-from manager_service.errors import ManagerIngestFailedError, ManagerIngestTimeoutError
-from manager_service.service import ManagerService
-from project_service.rag.engine import GenerationUnavailableError
-from project_service.server.grpc.generated import retrieval_service_pb2
-from project_service.server.grpc.generated import retrieval_service_pb2_grpc
-from shared.contracts import TaskStatus
-from retrieval_service.llm import OpenRouterClientError
-from shared.queue import QueueFullError
+from manager_service.service import ManagerService, ManagerTaskAccepted
+from shared.transport.grpc.generated import retrieval_service_pb2
+from shared.transport.grpc.generated import retrieval_service_pb2_grpc
+from shared.contracts import TaskStatus, TaskStatusRecord
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +40,9 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
         self,
         *,
         manager: ManagerService,
-        generation_engine: Any = None,
         health_checker: Any = None,
     ) -> None:
         self._manager = manager
-        self._generation_engine = generation_engine
         self._health_checker = health_checker
 
     # -- Search -----------------------------------------------------------
@@ -75,6 +67,10 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
         except Exception:
             logger.exception("manager search failed")
             await context.abort(grpc.StatusCode.INTERNAL, "internal error")
+        if isinstance(result, TaskStatusRecord):
+            return _search_result_to_proto(_search_result_from_task_record(result))
+        if isinstance(result, ManagerTaskAccepted):
+            result = await self._wait_for_task_result(result.task_id, context)
         return _search_result_to_proto(result)
 
     # -- Ingest -----------------------------------------------------------
@@ -98,12 +94,6 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
             )
         except ValueError as exc:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
-        except QueueFullError as exc:
-            await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, str(exc))
-        except ManagerIngestTimeoutError as exc:
-            await context.abort(grpc.StatusCode.DEADLINE_EXCEEDED, str(exc))
-        except ManagerIngestFailedError as exc:
-            await context.abort(grpc.StatusCode.INTERNAL, str(exc))
         except Exception:
             logger.exception("manager ingest failed")
             await context.abort(grpc.StatusCode.INTERNAL, "internal error")
@@ -144,54 +134,16 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
             doc_id=doc_id,
         )
 
-    # -- Generate (temporary compat pass-through) -------------------------
+    # -- Generate ---------------------------------------------------------
 
     async def Generate(
         self,
         request: retrieval_service_pb2.GenerateRequest,
         context: grpc.aio.ServicerContext,
     ) -> retrieval_service_pb2.GenerateResponse:
-        if self._generation_engine is None:
-            await context.abort(grpc.StatusCode.UNAVAILABLE, "generation is unavailable")
-        if not request.openrouter_api_key:
-            await context.abort(
-                grpc.StatusCode.UNAUTHENTICATED,
-                "openrouter_api_key is required",
-            )
-
-        chunks: list[dict[str, Any]] = [
-            {
-                "project_id": c.project_id,
-                "user_id": c.user_id,
-                "kb_id": c.kb_id,
-                "doc_id": c.doc_id,
-                "chunk_id": c.chunk_id,
-                "chunk_index": c.chunk_index,
-                "text": c.text,
-                "score": c.score,
-            }
-            for c in request.chunks
-        ]
-        try:
-            result = await self._generation_engine.generate(
-                project_id=request.project_id,
-                user_id=request.user_id,
-                query=request.query,
-                chunks=chunks,
-                openrouter_key=request.openrouter_api_key,
-                model=request.model or None,
-            )
-        except GenerationUnavailableError as exc:
-            await context.abort(grpc.StatusCode.UNAVAILABLE, str(exc))
-        except OpenRouterClientError as exc:
-            await context.abort(grpc.StatusCode.UNAUTHENTICATED, str(exc))
-        except Exception:
-            logger.exception("generation failed")
-            await context.abort(grpc.StatusCode.INTERNAL, "internal error")
-
-        return retrieval_service_pb2.GenerateResponse(
-            response=result.response,
-            cache_hit=result.cache_hit,
+        await context.abort(
+            grpc.StatusCode.UNIMPLEMENTED,
+            "generation is not part of the broker-first manager flow",
         )
 
     # -- Health -----------------------------------------------------------
@@ -211,6 +163,35 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
             status="healthy",
             components={},
         )
+
+    async def _wait_for_task_result(
+        self,
+        task_id: str,
+        context: grpc.aio.ServicerContext,
+    ) -> Any:
+        deadline = _grpc_time_remaining(context)
+        timeout_seconds = deadline if deadline is not None and deadline > 0 else 30.0
+        loop = asyncio.get_running_loop()
+        expires_at = loop.time() + timeout_seconds
+        last: TaskStatusRecord | None = None
+        while True:
+            try:
+                last = await self._manager.ingest_status(task_id)
+            except ValueError as exc:
+                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+            except Exception:
+                logger.exception("manager task status lookup failed")
+                await context.abort(grpc.StatusCode.INTERNAL, "internal error")
+            if last is not None:
+                if last.status == TaskStatus.COMPLETED.value:
+                    return _search_result_from_task_record(last)
+                if last.status == TaskStatus.FAILED.value:
+                    detail = last.error or str(last.result.get("error", "search task failed"))
+                    await context.abort(grpc.StatusCode.INTERNAL, detail)
+            if loop.time() >= expires_at:
+                detail = f"search task {task_id} did not complete before gRPC deadline"
+                await context.abort(grpc.StatusCode.DEADLINE_EXCEEDED, detail)
+            await asyncio.sleep(min(0.1, max(0.0, expires_at - loop.time())))
 
 
 # -- Helpers ---------------------------------------------------------------
@@ -295,17 +276,39 @@ def _search_result_to_proto(result: Any) -> retrieval_service_pb2.SearchResponse
     )
 
 
+def _search_result_from_task_record(record: TaskStatusRecord) -> SimpleNamespace:
+    result = dict(record.result)
+    if isinstance(result.get("result"), dict):
+        result = dict(result["result"])
+    chunks = result.get("chunks")
+    if not isinstance(chunks, list):
+        chunks = result.get("hits")
+    if not isinstance(chunks, list):
+        chunks = []
+    return SimpleNamespace(
+        chunks=[dict(chunk) for chunk in chunks if isinstance(chunk, dict)],
+        elapsed_ms=int(result.get("elapsed_ms", 0) or 0),
+        cache_hit=bool(result.get("cache_hit", False)),
+    )
+
+
+def _grpc_time_remaining(context: grpc.aio.ServicerContext) -> float | None:
+    time_remaining = getattr(context, "time_remaining", None)
+    if time_remaining is None:
+        return None
+    value = time_remaining()
+    return float(value) if value is not None else None
+
+
 async def serve_grpc(
     *,
     manager: ManagerService,
-    generation_engine: Any = None,
     health_checker: Any = None,
     port: int = 50051,
 ) -> aio.Server:
     server = aio.server()
     servicer = ManagerRagServiceServicer(
         manager=manager,
-        generation_engine=generation_engine,
         health_checker=health_checker,
     )
     retrieval_service_pb2_grpc.add_RagServiceServicer_to_server(servicer, server)

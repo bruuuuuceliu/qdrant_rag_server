@@ -19,8 +19,6 @@ from ingestion_service import (
 from ingestion_service.chunking import SectionAwareChunker
 from ingestion_service.routing import FileRouter
 from ingestion_service.source import load_source
-from project_service.gateway import IngestRequest
-from retrieval_service.ingest import UniversalSourceIngester
 
 
 class SourceLoadingTest(unittest.IsolatedAsyncioTestCase):
@@ -39,15 +37,15 @@ class SourceLoadingTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_loads_top_level_raw_text_request(self) -> None:
         source = await load_source(
-            IngestRequest(
-                project_id="p1",
-                user_id="u1",
-                kb_id="kb",
-                doc_id="d1",
-                source_uri="memory://doc",
-                content_type="text/plain",
-                raw_text="Top level raw text",
-            )
+            {
+                "project_id": "p1",
+                "user_id": "u1",
+                "kb_id": "kb",
+                "doc_id": "d1",
+                "source_uri": "memory://doc",
+                "content_type": "text/plain",
+                "raw_text": "Top level raw text",
+            }
         )
 
         self.assertEqual(source.text(), "Top level raw text")
@@ -55,15 +53,15 @@ class SourceLoadingTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_loads_top_level_raw_content_request(self) -> None:
         source = await load_source(
-            IngestRequest(
-                project_id="p1",
-                user_id="u1",
-                kb_id="kb",
-                doc_id="d1",
-                source_uri="memory://doc",
-                content_type="text/plain",
-                raw_content=b"Top level bytes",
-            )
+            {
+                "project_id": "p1",
+                "user_id": "u1",
+                "kb_id": "kb",
+                "doc_id": "d1",
+                "source_uri": "memory://doc",
+                "content_type": "text/plain",
+                "raw_content": b"Top level bytes",
+            }
         )
 
         self.assertEqual(source.content, b"Top level bytes")
@@ -126,39 +124,6 @@ class IngestionServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.document.document_id, "d1")
         self.assertEqual([chunk.text for chunk in result.chunks], ["First\n\nSecond"])
         self.assertEqual(result.raw_content, b"First\n\nSecond")
-
-    async def test_legacy_universal_ingester_delegates_to_ingestion_service(self) -> None:
-        request = IngestRequest(
-            project_id="p1",
-            user_id="u1",
-            kb_id="kb_a",
-            doc_id="d1",
-            source_uri="memory://doc",
-            content_type="text/plain",
-            metadata={"raw_text": "First\n\nSecond"},
-        )
-
-        prepared = await UniversalSourceIngester().prepare(request)
-
-        self.assertEqual(prepared.document.document_id, "d1")
-        self.assertEqual([chunk.text for chunk in prepared.chunks], ["First\n\nSecond"])
-        self.assertEqual(prepared.raw_content, b"First\n\nSecond")
-
-    async def test_universal_ingester_accepts_top_level_raw_text(self) -> None:
-        request = IngestRequest(
-            project_id="p1",
-            user_id="u1",
-            kb_id="kb_a",
-            doc_id="d1",
-            source_uri="memory://doc",
-            content_type="text/plain",
-            raw_text="First\n\nSecond",
-        )
-
-        prepared = await UniversalSourceIngester().prepare(request)
-
-        self.assertEqual([chunk.text for chunk in prepared.chunks], ["First\n\nSecond"])
-        self.assertEqual(prepared.raw_content, b"First\n\nSecond")
 
     async def test_cleaning_metadata_reaches_chunks(self) -> None:
         result = await IngestionService().process(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock
 
-from project_service.schemas import ProjectChunk, ProjectChunkPayload
+from retrieval_service.core.schemas import BaseChunk, BaseChunkPayload
 from retrieval_service.indexing import IndexChunksRequest, IndexingService
 from retrieval_service.placement import PlacementStoreResolver
 from retrieval_service.services.entities import EntityMention
@@ -27,16 +27,14 @@ class IndexingServiceTest(unittest.IsolatedAsyncioTestCase):
             )]]),
         )
 
-        chunk = ProjectChunk(
-            project_id="p1",
-            user_id="u1",
-            kb_id="kb",
-            doc_id="d1",
+        chunk = BaseChunk(
+            document_id="d1",
             chunk_id="c1",
             chunk_index=0,
             text="hello alpha",
+            metadata=_scope_metadata(),
         )
-        payload = ProjectChunkPayload.from_chunk(chunk)
+        payload = BaseChunkPayload.from_chunk(chunk)
 
         result = await service.index_chunks(
             IndexChunksRequest(
@@ -57,6 +55,8 @@ class IndexingServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(vectors, [[0.1, 0.2]])
         payloads = qdrant_store.upsert.call_args.kwargs["payloads"]
         self.assertEqual(payloads[0].metadata["entity_keys"], ["ORG:alpha"])
+        self.assertEqual(payloads[0].to_qdrant_payload()["project_id"], "p1")
+        self.assertEqual(payloads[0].to_qdrant_payload()["user_id"], "u1")
 
     async def test_index_chunks_uses_hybrid_upsert_when_bm25_enabled(self) -> None:
         qdrant_store = AsyncMock()
@@ -67,16 +67,14 @@ class IndexingServiceTest(unittest.IsolatedAsyncioTestCase):
             sparse_encoder=_SparseEncoder(),
         )
 
-        chunk = ProjectChunk(
-            project_id="p1",
-            user_id="u1",
-            kb_id="kb",
-            doc_id="d1",
+        chunk = BaseChunk(
+            document_id="d1",
             chunk_id="c1",
             chunk_index=0,
             text="hello alpha",
+            metadata=_scope_metadata(),
         )
-        payload = ProjectChunkPayload.from_chunk(chunk)
+        payload = BaseChunkPayload.from_chunk(chunk)
 
         result = await service.index_chunks(
             IndexChunksRequest(
@@ -98,6 +96,60 @@ class IndexingServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["dense_vectors"], [[0.1, 0.2]])
         self.assertEqual(kwargs["sparse_vectors"], [{"indices": [1], "values": [1.0]}])
 
+    async def test_base_payload_metadata_scope_fields_render_for_qdrant(self) -> None:
+        qdrant_store = AsyncMock()
+        qdrant_store.upsert = AsyncMock()
+        service = IndexingService(
+            embedding_provider=_Embedding(),
+            qdrant_store=qdrant_store,
+        )
+
+        chunk = BaseChunk(
+            document_id="d1",
+            chunk_id="c1",
+            chunk_index=0,
+            text="hello alpha",
+            data_type="document",
+            content_hash="",
+            chunker_version="v1",
+            metadata={},
+        )
+        payload = BaseChunkPayload(
+            payload_id="c1",
+            document_id="d1",
+            chunk_id="c1",
+            chunk_index=0,
+            text="hello alpha",
+            data_type="document",
+            content_hash="",
+            embedding_version="",
+            chunker_version="v1",
+            metadata={
+                "project_id": "p1",
+                "user_id": "u1",
+                "kb_id": "kb",
+                "doc_id": "d1",
+                "visibility": "private",
+            },
+        )
+
+        await service.index_chunks(
+            IndexChunksRequest(
+                collection_name="rag_p1_v1",
+                chunks=[chunk],
+                payloads=[payload],
+                retrieval_config={"mode": "dense"},
+            )
+        )
+
+        stored_payload = qdrant_store.upsert.await_args.kwargs["payloads"][0]
+        rendered = stored_payload.to_qdrant_payload()
+        self.assertEqual(rendered["project_id"], "p1")
+        self.assertEqual(rendered["user_id"], "u1")
+        self.assertEqual(rendered["kb_id"], "kb")
+        self.assertEqual(rendered["doc_id"], "d1")
+        self.assertEqual(rendered["visibility"], "private")
+
     async def test_index_chunks_uses_placement_target_store_and_collection(self) -> None:
         default_store = AsyncMock()
         primary_store = AsyncMock()
@@ -108,16 +160,14 @@ class IndexingServiceTest(unittest.IsolatedAsyncioTestCase):
             qdrant_store=default_store,
             placement_store_resolver=resolver,
         )
-        chunk = ProjectChunk(
-            project_id="p1",
-            user_id="u1",
-            kb_id="kb",
-            doc_id="d1",
+        chunk = BaseChunk(
+            document_id="d1",
             chunk_id="c1",
             chunk_index=0,
             text="hello alpha",
+            metadata=_scope_metadata(),
         )
-        payload = ProjectChunkPayload.from_chunk(chunk)
+        payload = BaseChunkPayload.from_chunk(chunk)
 
         await service.index_chunks(
             IndexChunksRequest(
@@ -164,6 +214,15 @@ class _Embedding:
         self.texts = list(texts)
         self.task = task
         return [[0.1, 0.2] for _ in texts]
+
+
+def _scope_metadata() -> dict[str, str]:
+    return {
+        "project_id": "p1",
+        "user_id": "u1",
+        "kb_id": "kb",
+        "doc_id": "d1",
+    }
 
 
 class _SparseEncoder:

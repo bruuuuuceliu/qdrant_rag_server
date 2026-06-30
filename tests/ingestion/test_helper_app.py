@@ -58,7 +58,7 @@ async def test_ingestion_helper_server_start_stop() -> None:
 
 def _command() -> MessageEnvelope:
     return MessageEnvelope.create(
-        producer="task_manager_service",
+        producer="task_service",
         message_type=MessageType.HELPER_COMMAND,
         data_type="project_document",
         task_id="task-1",

@@ -6,17 +6,9 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from typing import Any, Protocol
 
-from retrieval_service.ingest.ingester import (
-    AdapterBackedIngester,
-    Ingester,
-    PreparedIngestData,
-    UniversalSourceIngester,
-)
 from project_service.schemas import (
-    ProjectChunk,
     ProjectChunkPayload,
     ProjectConfig,
-    ProjectDocument,
     ProjectQueryScope,
     ProjectRetrievalFilter,
 )
@@ -48,39 +40,6 @@ class ProjectAdapter(ABC):
         self, scope: ProjectQueryScope
     ) -> ProjectRetrievalFilter:
         """Build the retrieval filter used by Qdrant search."""
-
-    async def select_ingester(
-        self,
-        request: Any,
-        *,
-        config: ProjectConfig | None = None,
-    ) -> Ingester:
-        """Select the ingester implementation for one ingest request."""
-        del request, config
-        return UniversalSourceIngester()
-
-    async def adapt_ingest_output(
-        self,
-        prepared: PreparedIngestData,
-        request: Any,
-        *,
-        config: ProjectConfig | None = None,
-    ) -> PreparedIngestData:
-        """Render neutral ingester output into project-specific upload payloads."""
-        del prepared, config
-        return await AdapterBackedIngester(self).prepare(request)
-
-    async def parse_document(self, input_data: Any) -> ProjectDocument:
-        """Legacy hook for adapters that still own document parsing."""
-        raise NotImplementedError
-
-    async def build_chunks(self, document: ProjectDocument) -> Sequence[ProjectChunk]:
-        """Legacy hook for adapters that still own chunking."""
-        raise NotImplementedError
-
-    async def build_payload(self, chunk: ProjectChunk) -> ProjectChunkPayload:
-        """Legacy hook for adapters that still own payload rendering."""
-        raise NotImplementedError
 
     @abstractmethod
     async def build_prompt(

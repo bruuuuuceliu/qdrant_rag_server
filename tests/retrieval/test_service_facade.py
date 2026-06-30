@@ -5,7 +5,6 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock
 
-from project_service.schemas import ProjectRetrievalFilter
 from retrieval_service.retrieval import (
     DeleteDocumentRequest,
     RetrievalSearchRequest,
@@ -32,7 +31,7 @@ class RetrievalServiceFacadeTest(unittest.IsolatedAsyncioTestCase):
                 query_text="hello",
                 collection_name="rag_p1_v1",
                 retrieval_config={"top_k": 1, "candidate_count": 3},
-                retrieval_filter=ProjectRetrievalFilter(project_id="p1", user_id="u1"),
+                retrieval_filter=_retrieval_filter(),
             )
         )
 
@@ -265,7 +264,7 @@ class RetrievalServiceFacadeTest(unittest.IsolatedAsyncioTestCase):
                 query_text="hello",
                 collection_name="rag_p1_v1",
                 retrieval_config={"top_k": 1, "candidate_count": 3},
-                retrieval_filter=ProjectRetrievalFilter(project_id="p1", user_id="u1"),
+                retrieval_filter=_retrieval_filter(),
                 cache_key="query-key",
                 placement_plan={
                     "placement_version": 4,
@@ -300,7 +299,7 @@ class RetrievalServiceFacadeTest(unittest.IsolatedAsyncioTestCase):
                 query_text="hello",
                 collection_name="fallback",
                 retrieval_config={"top_k": 2, "candidate_count": 3},
-                retrieval_filter=ProjectRetrievalFilter(project_id="p1", user_id="u1"),
+                retrieval_filter=_retrieval_filter(),
                 placement_plan={
                     "placement_version": 5,
                     "fanout": True,
@@ -334,7 +333,7 @@ class RetrievalServiceFacadeTest(unittest.IsolatedAsyncioTestCase):
                 query_text="hello",
                 collection_name="fallback",
                 retrieval_config={"top_k": 1, "candidate_count": 3},
-                retrieval_filter=ProjectRetrievalFilter(project_id="p1", user_id="u1"),
+                retrieval_filter=_retrieval_filter(),
                 placement_plan={
                     "placement_version": 5,
                     "targets": [
@@ -364,6 +363,18 @@ class _Embedding:
         self.text = text
         self.task = task
         return [0.1, 0.2]
+
+
+class _RetrievalFilter:
+    project_id = "p1"
+    user_id = "u1"
+    allowed_user_ids = ("u1", "__shared__")
+    kb_ids: tuple[str, ...] = ()
+    doc_ids: tuple[str, ...] = ()
+
+
+def _retrieval_filter() -> _RetrievalFilter:
+    return _RetrievalFilter()
 
 
 class _Retriever:

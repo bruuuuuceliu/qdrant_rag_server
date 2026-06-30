@@ -7,7 +7,7 @@ This runbook covers the broker-first local/production-equivalent shape.
 - For local parity, use `examples/local/run-all.sh --broker-first`.
 - For an infrastructure-only gate, use `examples/local/run-all.sh --infra-only`.
 - The broker-first runner starts or verifies Docker Redpanda, Redis, Qdrant,
-  manager, task manager, project domain, workflow log, ingestion helper,
+  manager, task manager, task service, project planning, workflow log, ingestion helper,
   retrieval helper, retrieval-index helper, storage node, and SQLite node.
 - The runner bootstraps Redpanda topics with
   `broker_service.bootstrap.bootstrap_topics` and verifies Redis task-status
@@ -37,8 +37,10 @@ This runbook covers the broker-first local/production-equivalent shape.
   the node control-plane tables.
 - Qdrant readiness checks the configured `/collections` endpoint.
 - Manager readiness requires Redpanda task publishing and Redis task-status access.
-- Task manager readiness requires task-intake, domain-result, helper-result topics,
-  Redis task-status access, and its durable task-state repository.
+- Task manager readiness requires task-intake, task-event, and task-result
+  topics plus Redis task-status access.
+- Task service readiness requires task-request, project-plan-result, and helper
+  result topics plus its durable task-state repository.
 - Domain/helper/node readiness uses each worker context `health()` payload:
   `service`, `ready`, `dependencies`, and `details`.
 
@@ -50,12 +52,12 @@ This runbook covers the broker-first local/production-equivalent shape.
 - Inspect SQLite ownership state in `_sqlite_node.db` under
   `SQLITE_NODE_DATABASE_ROOT`; service-owned rows remain in their separate
   allocated database files.
-- If tasks stay `running`, inspect task-manager logs and the expected helper
+- If tasks stay `running`, inspect task-service logs and the expected helper
   result topics for missing fan-in results. Durable fan-in state is stored at
-  `TASK_MANAGER_STATE_DB_PATH`.
+  `TASK_SERVICE_STATE_DB_PATH`.
 - Terminal helper failures publish repair context to `task.dead_letters` by
   default. Retryable helper failures are republished until
-  `TASK_MANAGER_MAX_ATTEMPTS`.
+  `TASK_SERVICE_MAX_ATTEMPTS`.
 - The broker service owns Redpanda transport, topic bootstrap, health, and lag
   visibility. Task leases, retries, backoff, attempt counts, and dead-letter
-  decisions remain task-manager responsibilities.
+  decisions remain task-service responsibilities.

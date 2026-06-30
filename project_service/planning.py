@@ -59,6 +59,17 @@ class ProjectIngestPlan:
     placement_plan: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectPlacementScope:
+    """Project-owned retrieval placement input carried through plan contracts."""
+
+    project_id: str
+    user_id: str
+    topic_id: str = ""
+    doc_id: str = ""
+    data_type: str = "project_document"
+
+
 class ProjectPlanningService:
     """Project-owned config/scope planning facade."""
 
@@ -149,8 +160,6 @@ class ProjectPlanningService:
         if self._placement_resolver is None:
             return {}
 
-        from retrieval_service.placement import ProjectPlacementScope
-
         scope = ProjectPlacementScope(
             project_id=project_id,
             user_id=user_id,
@@ -188,7 +197,12 @@ def _search_request(request: Any) -> SearchRequest:
         return request
     if isinstance(request, dict):
         return SearchRequest.from_mapping(request)
-    return request
+    return SearchRequest.from_mapping(
+        _object_request_payload(
+            request,
+            ("project_id", "user_id", "query", "topic_id", "kb_ids", "include_shared"),
+        )
+    )
 
 
 def _delete_request(request: Any) -> DeleteDocumentRequest:
@@ -196,7 +210,12 @@ def _delete_request(request: Any) -> DeleteDocumentRequest:
         return request
     if isinstance(request, dict):
         return DeleteDocumentRequest.from_mapping(request)
-    return request
+    return DeleteDocumentRequest.from_mapping(
+        _object_request_payload(
+            request,
+            ("project_id", "user_id", "kb_id", "doc_id", "topic_id", "metadata"),
+        )
+    )
 
 
 def _ingest_request(request: Any) -> IngestRequest:
@@ -204,7 +223,41 @@ def _ingest_request(request: Any) -> IngestRequest:
         return request
     if isinstance(request, dict):
         return IngestRequest.from_mapping(request)
-    return request
+    payload = _object_request_payload(
+        request,
+        (
+            "project_id",
+            "user_id",
+            "kb_id",
+            "doc_id",
+            "source_uri",
+            "content_type",
+            "topic_id",
+            "raw_text",
+            "raw_content",
+            "metadata",
+        ),
+    )
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        payload.setdefault("raw_text", metadata.get("raw_text"))
+        payload.setdefault("raw_content", metadata.get("raw_content"))
+    return IngestRequest.from_mapping(payload)
+
+
+def _object_request_payload(request: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    for method_name in ("to_request_payload", "to_payload", "to_dict"):
+        method = getattr(request, method_name, None)
+        if method is None:
+            continue
+        value = method()
+        if isinstance(value, dict):
+            return dict(value.get("request", value))
+    return {
+        field: getattr(request, field)
+        for field in fields
+        if hasattr(request, field)
+    }
 
 
 def _topic_id(request: Any) -> str:

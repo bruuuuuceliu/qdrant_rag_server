@@ -1,30 +1,26 @@
-"""Standalone retrieval HTTP server."""
+"""Standalone retrieval broker-helper server."""
 
 from __future__ import annotations
 
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from broker_service import BrokerSettings
 from configs import AppSettings, load_settings
 from configs.retrieval.config import (
     RetrievalHelperSettings,
-    RetrievalHttpSettings,
     load_retrieval_helper_settings,
-    load_retrieval_http_settings,
 )
 from retrieval_service.embedding import EmbeddingProviderFactory
 from retrieval_service.health import MetricsCollector
 from retrieval_service.placement import PlacementStoreResolver, RetrievalShard, SQLitePlacementRegistry
 from retrieval_service.retrieval.factory import ProjectRetrieverFactory
+from retrieval_service.retrieval.handler import RetrievalApiHandler
+from retrieval_service.retrieval.app import create_app as create_retrieval_app
 from retrieval_service.retrieval.service import RetrievalService
-from retrieval_service.server.app import RetrievalApiServerContext
-from retrieval_service.server.app import create_app as create_api_app
 from retrieval_service.server.helper_app import RetrievalHelperServerContext, create_helper_app
-from retrieval_service.server.http import RetrievalHttpApp
-from retrieval_service.server.http import create_http_app, serve_http
 from retrieval_service.services.bm25 import BM25Retriever, QdrantSparseBM25Index
 from retrieval_service.services.cache import Tier1MemoryCache, Tier2ResponseCache
 from retrieval_service.services.entities import LocalNerExtractor, NoopNerExtractor
@@ -37,56 +33,53 @@ from shared.logging import configure_logging
 from shared.runtime_health import RuntimeHealth
 
 
-ServeHttp = Callable[
-    [RetrievalHttpApp, RetrievalHttpSettings],
-    Awaitable[asyncio.AbstractServer],
-]
-
-
 @dataclass(slots=True)
-class RetrievalHttpServerContext:
-    api_app: RetrievalApiServerContext
-    http_app: RetrievalHttpApp
-    http_server: Any | None
-    http_settings: RetrievalHttpSettings
-    retrieval_service: Any
-    embedding_provider: Any | None
-    qdrant_store: Any | None
-    bm25_index: Any | None
-    sparse_encoder: Any | None
-    ner_extractor: Any | None
-    tier2_cache: Any | None
+class RetrievalHelperApiContext:
+    """Broker-helper API context backed by a retrieval app."""
+
+    app: Any
+    handler: RetrievalApiHandler
+
+    async def search(
+        self,
+        payload: dict[str, Any],
+        *,
+        fallback_request_id: str,
+    ) -> dict[str, Any]:
+        return await self.handler.handle_search(
+            payload,
+            fallback_request_id=fallback_request_id,
+        )
+
+    async def delete_document(
+        self,
+        payload: dict[str, Any],
+        *,
+        fallback_request_id: str,
+    ) -> dict[str, Any]:
+        return await self.handler.handle_delete_document(
+            payload,
+            fallback_request_id=fallback_request_id,
+        )
+
+    async def get_raw_document(
+        self,
+        payload: dict[str, Any],
+        *,
+        fallback_request_id: str,
+    ) -> dict[str, Any]:
+        return await self.handler.handle_raw_document(
+            payload,
+            fallback_request_id=fallback_request_id,
+        )
 
     async def shutdown(self) -> None:
-        if self.http_server is not None:
-            close = getattr(self.http_server, "close", None)
-            if close is not None:
-                close()
-            wait_closed = getattr(self.http_server, "wait_closed", None)
-            if wait_closed is not None:
-                await wait_closed()
-        await self.api_app.shutdown()
-        if self.ner_extractor is not None:
-            shutdown_ner = getattr(self.ner_extractor, "shutdown", None)
-            if shutdown_ner is not None:
-                await shutdown_ner()
-        if self.bm25_index is not None:
-            close_bm25 = getattr(self.bm25_index, "close", None)
-            if close_bm25 is not None:
-                await close_bm25()
-        if self.embedding_provider is not None:
-            shutdown_embedding = getattr(self.embedding_provider, "shutdown", None)
-            if shutdown_embedding is not None:
-                await shutdown_embedding()
-        if self.qdrant_store is not None:
-            close_qdrant = getattr(self.qdrant_store, "close", None)
-            if close_qdrant is not None:
-                await close_qdrant()
+        await self.app.shutdown()
 
 
 @dataclass(slots=True)
 class RetrievalWorkerServerContext:
-    api_app: RetrievalApiServerContext
+    api_app: RetrievalHelperApiContext
     helper_app: RetrievalHelperServerContext
     helper_settings: RetrievalHelperSettings
     retrieval_service: Any
@@ -120,7 +113,11 @@ async def create_worker_server(
     owned = OwnedRetrievalDependencies()
     if retrieval_service is None:
         retrieval_service = await _build_retrieval_service(settings, owned=owned)
-    api_app = await create_api_app(retrieval_service=retrieval_service)
+    app = await create_retrieval_app(retrieval_service=retrieval_service)
+    api_app = RetrievalHelperApiContext(
+        app=app,
+        handler=RetrievalApiHandler(app=app),
+    )
     helper_app = create_helper_app(
         api=api_app,
         broker_settings=broker_settings,
@@ -133,39 +130,6 @@ async def create_worker_server(
         helper_settings=helper_settings,
         retrieval_service=retrieval_service,
         owned=owned,
-    )
-
-
-async def create_http_worker_server(
-    settings: AppSettings | None = None,
-    *,
-    http_settings: RetrievalHttpSettings | None = None,
-    retrieval_service: Any | None = None,
-    start_server: bool = True,
-    serve_http_fn: Callable[..., Awaitable[Any]] = serve_http,
-) -> RetrievalHttpServerContext:
-    settings = settings or load_settings()
-    http_settings = http_settings or load_retrieval_http_settings(dict(os.environ))
-    owned = OwnedRetrievalDependencies()
-    if retrieval_service is None:
-        retrieval_service = await _build_retrieval_service(settings, owned=owned)
-    api_app = await create_api_app(retrieval_service=retrieval_service)
-    http_app = create_http_app(api=api_app)
-    http_server = None
-    if start_server:
-        http_server = await serve_http_fn(app=http_app, settings=http_settings)
-    return RetrievalHttpServerContext(
-        api_app=api_app,
-        http_app=http_app,
-        http_server=http_server,
-        http_settings=http_settings,
-        retrieval_service=retrieval_service,
-        embedding_provider=owned.embedding_provider,
-        qdrant_store=owned.qdrant_store,
-        bm25_index=owned.bm25_index,
-        sparse_encoder=owned.sparse_encoder,
-        ner_extractor=owned.ner_extractor,
-        tier2_cache=owned.tier2_cache,
     )
 
 
@@ -288,7 +252,7 @@ def _build_placement_store_resolver(
 
 async def _shutdown_owned(
     owned: OwnedRetrievalDependencies,
-    api_app: RetrievalApiServerContext,
+    api_app: RetrievalHelperApiContext,
 ) -> None:
     await api_app.shutdown()
     if owned.ner_extractor is not None:

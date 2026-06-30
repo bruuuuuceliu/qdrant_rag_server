@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from project_service.gateway.requests import (
@@ -11,14 +12,6 @@ from project_service.gateway.requests import (
     SearchRequest,
 )
 from project_service.planning import ProjectPlanningService
-from retrieval_service.placement import (
-    InMemoryPlacementRepository,
-    InMemoryRoutingPolicyRepository,
-    InMemoryRetrievalShardRepository,
-    PlacementResolver,
-    RetrievalShard,
-    RoutingPolicy,
-)
 
 
 class ProjectPlanningServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -84,12 +77,70 @@ class ProjectPlanningServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.chunker_config, {"chunk_size": 128})
         gateway.prepare_ingest.assert_awaited_once()
 
+    async def test_plan_ingest_accepts_manager_namespace_request(self) -> None:
+        gateway = _Gateway()
+        service = ProjectPlanningService(gateway=gateway)
+
+        await service.plan_ingest(
+            SimpleNamespace(
+                project_id="p1",
+                user_id="u1",
+                kb_id="kb",
+                doc_id="d1",
+                source_uri="memory://d1",
+                content_type="text/plain",
+                metadata={"raw_text": "hello from grpc"},
+            )
+        )
+
+        request = gateway.prepare_ingest.await_args.args[0]
+        self.assertIsInstance(request, IngestRequest)
+        self.assertEqual(request.raw_text, "hello from grpc")
+        self.assertEqual(request.metadata["raw_text"], "hello from grpc")
+
+    async def test_plan_search_accepts_manager_namespace_request(self) -> None:
+        gateway = _Gateway()
+        service = ProjectPlanningService(gateway=gateway)
+
+        await service.plan_search(
+            SimpleNamespace(
+                project_id="p1",
+                user_id="u1",
+                query="hello",
+                kb_ids=("kb",),
+                include_shared=False,
+            )
+        )
+
+        request = gateway.prepare_search.await_args.args[0]
+        self.assertIsInstance(request, SearchRequest)
+        self.assertEqual(request.query, "hello")
+        self.assertEqual(request.kb_ids, ("kb",))
+        self.assertFalse(request.include_shared)
+
+    async def test_plan_delete_accepts_manager_namespace_request(self) -> None:
+        gateway = _Gateway()
+        service = ProjectPlanningService(gateway=gateway)
+
+        await service.plan_delete(
+            SimpleNamespace(
+                project_id="p1",
+                user_id="u1",
+                kb_id="kb",
+                doc_id="d1",
+            )
+        )
+
+        request = gateway.prepare_delete.await_args.args[0]
+        self.assertIsInstance(request, DeleteDocumentRequest)
+        self.assertEqual(request.doc_id, "d1")
+
     async def test_plan_search_resolves_placement_when_configured(self) -> None:
         gateway = _Gateway()
         service = ProjectPlanningService(
             gateway=gateway,
-            placement_resolver=_placement_resolver(),
-            routing_policy=RoutingPolicy(project_id="p1", routing_mode="project_single"),
+            placement_resolver=_PlacementResolver(),
+            routing_policy=_RoutingPolicy(routing_mode="project_single"),
         )
 
         plan = await service.plan_search(
@@ -98,10 +149,9 @@ class ProjectPlanningServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(plan.placement_plan["placement_version"], 1)
         self.assertFalse(plan.placement_plan["fanout"])
-        self.assertEqual(plan.placement_plan["targets"][0]["shard_id"], "shard-1")
         self.assertEqual(
             plan.placement_plan["targets"][0]["routing_key"],
-            "project:p1",
+            "read:p1::",
         )
 
     async def test_plan_ingest_uses_topic_placement_when_requested(self) -> None:
@@ -120,33 +170,29 @@ class ProjectPlanningServiceTest(unittest.IsolatedAsyncioTestCase):
         gateway.prepare_ingest.return_value = gateway.ingest_plan
         service = ProjectPlanningService(
             gateway=gateway,
-            placement_resolver=_placement_resolver(),
-            routing_policy=RoutingPolicy(project_id="p1", routing_mode="topic_single"),
+            placement_resolver=_PlacementResolver(),
+            routing_policy=_RoutingPolicy(routing_mode="topic_single"),
         )
 
         plan = await service.plan_ingest(gateway.ingest_plan.request)
 
         self.assertEqual(
             plan.placement_plan["targets"][0]["routing_key"],
-            "project:p1:topic:rentals",
+            "write:p1:rentals:d1",
         )
 
     async def test_plan_search_uses_policy_from_placement_resolver(self) -> None:
         gateway = _Gateway()
         service = ProjectPlanningService(
             gateway=gateway,
-            placement_resolver=_placement_resolver(
-                policies=InMemoryRoutingPolicyRepository(
-                    [RoutingPolicy(project_id="*", routing_mode="project_single")]
-                )
-            ),
+            placement_resolver=_PlacementResolver(),
         )
 
         plan = await service.plan_search(
             SearchRequest(project_id="p1", user_id="u1", query="hello")
         )
 
-        self.assertEqual(plan.placement_plan["targets"][0]["routing_key"], "project:p1")
+        self.assertEqual(plan.placement_plan["targets"][0]["routing_key"], "read:p1::")
 
 
 class _Gateway:
@@ -203,20 +249,74 @@ class _IngestPlan:
         self.config = _Config()
 
 
-def _placement_resolver(policies=None) -> PlacementResolver:
-    return PlacementResolver(
-        shard_repository=InMemoryRetrievalShardRepository(
-            [
-                RetrievalShard(
-                    shard_id="shard-1",
-                    cluster_id="cluster",
-                    qdrant_endpoint="http://qdrant:6333",
-                )
-            ]
-        ),
-        placement_repository=InMemoryPlacementRepository(),
-        policy_repository=policies,
-    )
+class _RoutingPolicy:
+    def __init__(self, *, routing_mode: str) -> None:
+        self.routing_mode = routing_mode
+
+
+class _PlacementPlan:
+    def __init__(self, *, routing_key: str, operation: str) -> None:
+        self.routing_key = routing_key
+        self.operation = operation
+
+    def to_mapping(self) -> dict:
+        return {
+            "placement_version": 1,
+            "fanout": False,
+            "operation": self.operation,
+            "targets": [
+                {
+                    "routing_key": self.routing_key,
+                    "shard_id": "test-shard",
+                    "collection_name": "rag_p1_v1",
+                    "role": "primary",
+                }
+            ],
+        }
+
+
+class _PlacementResolver:
+    def resolve_project_read(self, *, scope, collection_name: str) -> _PlacementPlan:
+        del collection_name
+        return _PlacementPlan(
+            routing_key=f"read:{scope.project_id}:{scope.topic_id}:{scope.doc_id}",
+            operation="project_read",
+        )
+
+    def resolve_project_write(self, *, scope, collection_name: str) -> _PlacementPlan:
+        del collection_name
+        return _PlacementPlan(
+            routing_key=f"write:{scope.project_id}:{scope.topic_id}:{scope.doc_id}",
+            operation="project_write",
+        )
+
+    def resolve_read(
+        self,
+        *,
+        scope,
+        policy: _RoutingPolicy,
+        collection_name: str,
+    ) -> _PlacementPlan:
+        del collection_name
+        assert policy.routing_mode
+        return _PlacementPlan(
+            routing_key=f"read:{scope.project_id}:{scope.topic_id}:{scope.doc_id}",
+            operation="read",
+        )
+
+    def resolve_write(
+        self,
+        *,
+        scope,
+        policy: _RoutingPolicy,
+        collection_name: str,
+    ) -> _PlacementPlan:
+        del collection_name
+        assert policy.routing_mode
+        return _PlacementPlan(
+            routing_key=f"write:{scope.project_id}:{scope.topic_id}:{scope.doc_id}",
+            operation="write",
+        )
 
 
 if __name__ == "__main__":

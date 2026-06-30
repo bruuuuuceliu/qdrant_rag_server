@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 
-from shared.contracts import MessageConsumer, TOPICS
+from shared.contracts import MessageConsumer
 from shared.runtime_health import RuntimeHealth
 from task_manager_service.config import TaskManagerSettings
 from task_manager_service.dispatcher import TaskManagerDispatcher
@@ -15,18 +15,16 @@ from task_manager_service.dispatcher import TaskManagerDispatcher
 class TaskManagerServerContext:
     dispatcher: TaskManagerDispatcher
     intake_consumer: MessageConsumer
-    domain_result_consumers: tuple[tuple[str, MessageConsumer], ...]
-    helper_result_consumers: tuple[tuple[str, MessageConsumer], ...]
+    task_event_consumer: MessageConsumer
+    task_result_consumer: MessageConsumer
     settings: TaskManagerSettings = field(default_factory=TaskManagerSettings)
     _tasks: list[asyncio.Task[None]] = field(default_factory=list)
 
     async def start_runtime(self) -> None:
         await _start_component(getattr(self.dispatcher, "_producer", None))
         await _start_component(self.intake_consumer)
-        for _topic, consumer in self.domain_result_consumers:
-            await _start_component(consumer)
-        for _topic, consumer in self.helper_result_consumers:
-            await _start_component(consumer)
+        await _start_component(self.task_event_consumer)
+        await _start_component(self.task_result_consumer)
         self.start()
 
     def start(self) -> None:
@@ -34,14 +32,8 @@ class TaskManagerServerContext:
             return
         self._tasks = [
             asyncio.create_task(self._run_intake()),
-            *(
-                asyncio.create_task(self._run_domain_results(topic, consumer))
-                for topic, consumer in self.domain_result_consumers
-            ),
-            *(
-                asyncio.create_task(self._run_helper_results(topic, consumer))
-                for topic, consumer in self.helper_result_consumers
-            ),
+            asyncio.create_task(self._run_task_events()),
+            asyncio.create_task(self._run_task_results()),
         ]
 
     async def stop(self) -> None:
@@ -50,10 +42,8 @@ class TaskManagerServerContext:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
-        for _topic, consumer in self.helper_result_consumers:
-            await _stop_component(consumer)
-        for _topic, consumer in self.domain_result_consumers:
-            await _stop_component(consumer)
+        await _stop_component(self.task_result_consumer)
+        await _stop_component(self.task_event_consumer)
         await _stop_component(self.intake_consumer)
         await _stop_component(getattr(self.dispatcher, "_producer", None))
 
@@ -71,78 +61,46 @@ class TaskManagerServerContext:
             service=self.settings.service_name,
             ready=redis_ready
             and self.intake_consumer is not None
-            and bool(self.domain_result_consumers)
-            and bool(self.helper_result_consumers),
+            and self.task_event_consumer is not None
+            and self.task_result_consumer is not None,
             dependencies={
                 "broker_intake": self.intake_consumer is not None,
-                "broker_domain_results": bool(self.domain_result_consumers),
-                "broker_helper_results": bool(self.helper_result_consumers),
+                "broker_task_events": self.task_event_consumer is not None,
+                "broker_task_results": self.task_result_consumer is not None,
                 "redis_status": redis_ready,
-                "state_repository": getattr(self.dispatcher, "_state_repository", None) is not None,
             },
             details={
                 "task_intake_topic": self.settings.task_intake_topic,
+                "task_request_topic": self.settings.task_request_topic,
+                "task_event_topic": self.settings.task_event_topic,
                 "task_result_topic": self.settings.task_result_topic,
-                "dead_letter_topic": self.settings.dead_letter_topic,
             },
         )
 
     async def run_intake_once(self) -> None:
         await self.dispatcher.run_once(self.intake_consumer)
 
-    async def run_domain_result_once(
-        self,
-        topic: str | None = None,
-        consumer: MessageConsumer | None = None,
-    ) -> None:
-        topic, consumer = self._select_consumer(
-            self.domain_result_consumers,
-            topic=topic,
-            consumer=consumer,
-            label="domain result",
-        )
-        envelope = await consumer.consume(topic)
-        await self.dispatcher.dispatch_domain_result(envelope)
+    async def run_task_event_once(self, consumer: MessageConsumer | None = None) -> None:
+        consumer = consumer or self.task_event_consumer
+        envelope = await consumer.consume(self.settings.task_event_topic)
+        await self.dispatcher.update_from_task_event(envelope)
 
-    async def run_helper_result_once(
-        self,
-        topic: str | None = None,
-        consumer: MessageConsumer | None = None,
-    ) -> None:
-        topic, consumer = self._select_consumer(
-            self.helper_result_consumers,
-            topic=topic,
-            consumer=consumer,
-            label="helper result",
-        )
-        envelope = await consumer.consume(topic)
-        await self.dispatcher.finalize_helper_result(envelope)
+    async def run_task_result_once(self, consumer: MessageConsumer | None = None) -> None:
+        consumer = consumer or self.task_result_consumer
+        envelope = await consumer.consume(self.settings.task_result_topic)
+        await self.dispatcher.update_from_task_result(envelope)
 
     async def _run_intake(self) -> None:
         while True:
             await self.dispatcher.run_once(self.intake_consumer)
 
-    async def _run_domain_results(self, topic: str, consumer: MessageConsumer) -> None:
+    async def _run_task_events(self) -> None:
         while True:
-            await self.run_domain_result_once(topic, consumer)
+            await self.run_task_event_once()
 
-    async def _run_helper_results(self, topic: str, consumer: MessageConsumer) -> None:
+    async def _run_task_results(self) -> None:
         while True:
-            await self.run_helper_result_once(topic, consumer)
-
-    def _select_consumer(
-        self,
-        configured: tuple[tuple[str, MessageConsumer], ...],
-        *,
-        topic: str | None,
-        consumer: MessageConsumer | None,
-        label: str,
-    ) -> tuple[str, MessageConsumer]:
-        if topic is not None and consumer is not None:
-            return topic, consumer
-        if not configured:
-            raise RuntimeError(f"task manager has no {label} consumers")
-        return configured[0]
+            await self.run_task_result_once()
 
 
 async def _start_component(component: object | None) -> None:

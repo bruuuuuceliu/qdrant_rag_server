@@ -7,16 +7,17 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-GUARDED_FILES = (
-    ROOT / "project_service" / "domain_app.py",
-    ROOT / "project_service" / "domain_handler.py",
-    ROOT / "project_service" / "planning.py",
-    ROOT / "project_service" / "tasks.py",
-)
+GUARDED_ROOT = ROOT / "project_service"
 FORBIDDEN_PREFIXES = (
-    "manager_service",
-    "workflow_log_service",
     "ingestion_service",
+    "manager_service",
+    "redis_status_node",
+    "retrieval_service",
+    "sqlite_node",
+    "storage_node",
+    "task_manager_service",
+    "task_service",
+    "workflow_log_service",
 )
 
 
@@ -26,7 +27,7 @@ def test_project_domain_modules_do_not_import_other_service_internals() -> None:
 
 def _violations() -> list[str]:
     violations: list[str] = []
-    for path in GUARDED_FILES:
+    for path in sorted(GUARDED_ROOT.rglob("*.py")):
         for module in _imports(path):
             if module.startswith(FORBIDDEN_PREFIXES):
                 violations.append(f"{path.relative_to(ROOT)} imports {module}")

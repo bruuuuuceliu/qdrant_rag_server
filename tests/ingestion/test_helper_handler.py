@@ -67,7 +67,7 @@ async def test_ingestion_helper_handler_rejects_missing_helper() -> None:
 
 def _command(*, operation: str, helper: str = TOPICS.helper_ingestion_commands) -> MessageEnvelope:
     return MessageEnvelope.create(
-        producer="task_manager_service",
+        producer="task_service",
         message_type=MessageType.HELPER_COMMAND,
         data_type="project_document",
         task_id="task-1",

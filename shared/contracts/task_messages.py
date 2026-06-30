@@ -10,46 +10,19 @@ from shared.contracts.task_status import TaskStatus
 
 
 @dataclass(frozen=True, slots=True)
-class TaskIntakePayload:
-    operation: str
-    request: dict[str, Any] = field(default_factory=dict)
-    context: dict[str, Any] = field(default_factory=dict)
-
-    @classmethod
-    def from_envelope(cls, envelope: MessageEnvelope) -> "TaskIntakePayload":
-        _expect_type(envelope, MessageType.REQUEST_ACCEPTED)
-        return cls.from_payload(envelope.payload)
-
-    @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "TaskIntakePayload":
-        return cls(
-            operation=_operation(payload),
-            request=_mapping(payload.get("request", {}), "request"),
-            context=_mapping(payload.get("context", {}), "context"),
-        )
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "operation": self.operation,
-            "request": dict(self.request),
-            "context": dict(self.context),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class DomainCommandPayload:
+class TaskRequestPayload:
     operation: str
     request: dict[str, Any] = field(default_factory=dict)
     context: dict[str, Any] = field(default_factory=dict)
     source_message_id: str = ""
 
     @classmethod
-    def from_envelope(cls, envelope: MessageEnvelope) -> "DomainCommandPayload":
-        _expect_type(envelope, MessageType.DOMAIN_COMMAND)
+    def from_envelope(cls, envelope: MessageEnvelope) -> "TaskRequestPayload":
+        _expect_type_in(envelope, MessageType.TASK_REQUEST, MessageType.REQUEST_ACCEPTED)
         return cls.from_payload(envelope.payload)
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "DomainCommandPayload":
+    def from_payload(cls, payload: dict[str, Any]) -> "TaskRequestPayload":
         return cls(
             operation=_operation(payload),
             request=_mapping(payload.get("request", {}), "request"),
@@ -67,7 +40,37 @@ class DomainCommandPayload:
 
 
 @dataclass(frozen=True, slots=True)
-class DomainResultPayload:
+class ProjectPlanRequestPayload:
+    operation: str
+    request: dict[str, Any] = field(default_factory=dict)
+    context: dict[str, Any] = field(default_factory=dict)
+    source_message_id: str = ""
+
+    @classmethod
+    def from_envelope(cls, envelope: MessageEnvelope) -> "ProjectPlanRequestPayload":
+        _expect_type_in(envelope, MessageType.PROJECT_PLAN_REQUEST, MessageType.DOMAIN_COMMAND)
+        return cls.from_payload(envelope.payload)
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "ProjectPlanRequestPayload":
+        return cls(
+            operation=_operation(payload),
+            request=_mapping(payload.get("request", {}), "request"),
+            context=_mapping(payload.get("context", {}), "context"),
+            source_message_id=str(payload.get("source_message_id", "")),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "operation": self.operation,
+            "request": dict(self.request),
+            "context": dict(self.context),
+            "source_message_id": self.source_message_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectPlanResultPayload:
     operation: str
     plan: dict[str, Any] = field(default_factory=dict)
     result: dict[str, Any] = field(default_factory=dict)
@@ -77,12 +80,12 @@ class DomainResultPayload:
     source_message_id: str = ""
 
     @classmethod
-    def from_envelope(cls, envelope: MessageEnvelope) -> "DomainResultPayload":
-        _expect_type(envelope, MessageType.DOMAIN_RESULT)
+    def from_envelope(cls, envelope: MessageEnvelope) -> "ProjectPlanResultPayload":
+        _expect_type_in(envelope, MessageType.PROJECT_PLAN_RESULT, MessageType.DOMAIN_RESULT)
         return cls.from_payload(envelope.payload)
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "DomainResultPayload":
+    def from_payload(cls, payload: dict[str, Any]) -> "ProjectPlanResultPayload":
         return cls(
             operation=_operation(payload),
             plan=_mapping(payload.get("plan", {}), "plan"),
@@ -186,6 +189,50 @@ class HelperResultPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskEventPayload:
+    operation: str
+    status: str = TaskStatus.RUNNING.value
+    event: str = "task.event"
+    result: dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+    source_message_id: str = ""
+    context: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_envelope(cls, envelope: MessageEnvelope) -> "TaskEventPayload":
+        _expect_type_in(
+            envelope,
+            MessageType.TASK_EVENT,
+            MessageType.TASK_STARTED,
+            MessageType.TASK_STEP,
+        )
+        return cls.from_payload(envelope.payload)
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "TaskEventPayload":
+        return cls(
+            operation=_operation(payload),
+            status=_status(payload.get("status", TaskStatus.RUNNING.value)),
+            event=str(payload.get("event", "task.event")),
+            result=_mapping(payload.get("result", {}), "result"),
+            error=str(payload.get("error", "")),
+            source_message_id=str(payload.get("source_message_id", "")),
+            context=_mapping(payload.get("context", {}), "context"),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "operation": self.operation,
+            "status": self.status,
+            "event": self.event,
+            "result": dict(self.result),
+            "error": self.error,
+            "source_message_id": self.source_message_id,
+            "context": dict(self.context),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TaskStartedPayload:
     operation: str
     status: str = TaskStatus.RUNNING.value
@@ -213,19 +260,19 @@ class TaskStartedPayload:
 
 
 @dataclass(frozen=True, slots=True)
-class TaskResultPayload:
+class TaskExecutionResultPayload:
     operation: str
     status: str
     result: dict[str, Any] = field(default_factory=dict)
     source_message_id: str = ""
 
     @classmethod
-    def from_envelope(cls, envelope: MessageEnvelope) -> "TaskResultPayload":
+    def from_envelope(cls, envelope: MessageEnvelope) -> "TaskExecutionResultPayload":
         _expect_type(envelope, MessageType.TASK_RESULT)
         return cls.from_payload(envelope.payload)
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "TaskResultPayload":
+    def from_payload(cls, payload: dict[str, Any]) -> "TaskExecutionResultPayload":
         return cls(
             operation=_operation(payload),
             status=_status(payload.get("status", "")),
@@ -292,6 +339,14 @@ def _expect_type(envelope: MessageEnvelope, expected: MessageType) -> None:
         )
 
 
+def _expect_type_in(envelope: MessageEnvelope, *expected: MessageType) -> None:
+    expected_values = {str(item) for item in expected}
+    if envelope.message_type not in expected_values:
+        raise MessageValidationError(
+            f"expected one of {', '.join(sorted(expected_values))} messages, got {envelope.message_type}"
+        )
+
+
 def _operation(payload: dict[str, Any]) -> str:
     operation = str(payload.get("operation", "")).strip()
     if not operation:
@@ -320,3 +375,9 @@ def _attempt(value: Any) -> int:
     if attempt < 1:
         raise MessageValidationError("attempt must be a positive integer")
     return attempt
+
+
+TaskIntakePayload = TaskRequestPayload
+DomainCommandPayload = ProjectPlanRequestPayload
+DomainResultPayload = ProjectPlanResultPayload
+TaskResultPayload = TaskExecutionResultPayload

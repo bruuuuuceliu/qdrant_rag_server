@@ -64,7 +64,7 @@ async def test_retrieval_index_helper_handler_rejects_unknown_operation() -> Non
 
 def _command(*, operation: str = "ingest") -> MessageEnvelope:
     return MessageEnvelope.create(
-        producer="task_manager_service",
+        producer="task_service",
         message_type=MessageType.HELPER_COMMAND,
         data_type="project_document",
         task_id="task-1",

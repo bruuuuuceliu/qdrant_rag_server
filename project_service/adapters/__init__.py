@@ -9,7 +9,6 @@ from project_service.adapters.base import (
 from project_service.adapters.website import (
     WEBSITE_PROJECT_TYPE as WEBSITE_PROJECT_TYPE,
     WebsiteChunkPayload as WebsiteChunkPayload,
-    WebsiteDocument as WebsiteDocument,
     WebsiteProjectAdapter as WebsiteProjectAdapter,
     WebsiteProjectConfig as WebsiteProjectConfig,
 )

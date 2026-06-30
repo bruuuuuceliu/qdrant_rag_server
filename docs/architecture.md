@@ -28,24 +28,28 @@ clients
 
 Redpanda broker
   -> task_manager_service server
+  -> task_service server
 
 task_manager_service server
-  -> Redpanda broker for domain task commands
+  -> Redpanda broker for normalized task requests
   -> Redis task-status store
 
+task_service server
+  -> Redpanda broker for project plan requests, helper commands, task events, and final results
+
 Redpanda broker
-  -> project_service server, triggered by task manager commands
-  -> workflow_log_service server, triggered by task manager commands/events
+  -> project_service server, triggered by task service planning requests
+  -> workflow_log_service worker, triggered by domain commands/events
   -> memory_service server or other domain services, triggered by task manager commands
 
 domain services
   -> Redpanda broker
 
 Redpanda broker
-  -> ingestion_service worker servers, triggered by task manager commands
-  -> storage helper nodes, triggered by task manager commands
-  -> retrieval_service API/index worker servers, triggered by task manager commands
-  -> other helper nodes, triggered by task manager commands
+  -> ingestion_service worker servers, triggered by task service commands
+  -> storage helper nodes, triggered by task service commands
+  -> retrieval_service API/index worker servers, triggered by task service commands
+  -> other helper nodes, triggered by task service commands
 
 helper nodes
   -> Redpanda broker
@@ -62,14 +66,17 @@ manager_service server
 
 - `manager_service`: public API/auth boundary and authenticated request
   envelope publication to the broker.
-- `project_service`: project config, adapters, scope construction, retrieval filter intent, and current gRPC compatibility app.
+- `project_service`: project config, adapters, scope construction, retrieval filter intent, and project planning.
 - `ingestion_service`: source loading, document routing, parsing, cleaning,
-  chunking, neutral ingestion output, and queued ingest request consumption.
+  chunking, neutral ingestion output, and helper command handling.
 - `retrieval_service`: embeddings, Qdrant, BM25/hybrid retrieval, ranking, indexing, cache, storage, and health.
-- `workflow_log_service`: lifecycle-event consumer, repository, and local
-  service app.
-- `task_manager_service`: target service for task lifecycle, fan-out/fan-in,
-  Redis status updates, and final result aggregation. This is not implemented yet.
+- `workflow_log_service`: audit/domain command handler, repository, and worker
+  process.
+- `task_manager_service`: normalized task request publication and Redis
+  task-status read-model updates from task events/results.
+- `task_service`: task lifecycle orchestration, project planning requests,
+  helper dispatch, retry/fan-in/dead-letter handling, and final result
+  publication.
 - `redis`: small task-status store keyed by `task_id`, written by task manager
   and read by manager for client status checks. Completed task keys must expire
   by TTL.
@@ -94,11 +101,15 @@ client
   -> broker
   -> task manager
   -> broker
+  -> task service
+  -> broker
   -> domain service, such as project service or workflow logging service
   -> broker
-  -> task manager
+  -> task service
   -> broker
   -> helper nodes, such as ingestion, storage, retrieval, or other helpers
+  -> broker
+  -> task service
   -> broker
   -> task manager
 ```
@@ -108,47 +119,40 @@ entrypoint, manager status lookup by `task_id`, and health checks. Service work
 and cross-service coordination move through Redpanda topics. Task status lookup
 is served from Redis.
 
-Current manager dispatch uses service-specific client protocols from
-`manager_service.clients`. This is now legacy compatibility relative to the
-corrected target. It must be replaced by authenticated request publication to
-Redpanda, Redis-backed task status reads, and task result consumption only when
-final result events are needed.
+Current manager dispatch publishes authenticated request envelopes to Redpanda.
+Status reads are Redis-backed by `task_id`; search may wait for a task result
+within the public gRPC deadline.
 
-Retrieval search, delete, and raw-document calls now have transport-neutral
-command and response contracts under `retrieval_service.retrieval.contracts`.
-In the target topology, these become helper-node command/result messages behind
-Redpanda or retrieval-owned public APIs used only at the retrieval boundary.
-`RetrievalApiHandler` provides the matching transport-neutral dispatch layer:
+Retrieval search, delete, and raw-document calls have transport-neutral command
+and response contracts under `retrieval_service.retrieval.contracts`.
+`RetrievalApiHandler` provides the dispatch layer behind the broker helper:
 payload mappings in, retrieval app calls, response-envelope mappings out.
-`retrieval_service.server` now provides the retrieval-owned server context that
-future network transports can wrap without depending on the compatibility
-`RagService` API.
-For the target runtime, retrieval work should be requested through broker-backed
-helper commands. Direct in-process retrieval execution and manager/project direct
-retrieval calls are compatibility paths, not the final local runtime.
+Retrieval work is requested through broker-backed helper commands.
 
-For ingest, the task manager first sends a domain command to a service such as
-project service. The domain service gathers project information and publishes a
-domain plan/result to Redpanda. The task manager consumes that result and then
-dispatches helper commands through Redpanda. The ingestion helper consumes its
+For ingest, the task manager publishes a normalized task request to the task
+service. The task service sends a project planning request to project service.
+The project service gathers project information and publishes a project plan
+result to Redpanda. The task service consumes that result and then dispatches
+helper commands through Redpanda. The ingestion helper consumes its
 command, creates ingestion-owned records, prepares content generically, and
 publishes prepared chunks/results back to Redpanda. Retrieval and storage
-helpers consume task-manager-issued commands and publish results back to the
-broker. The task manager consumes those events and owns lifecycle, fan-out,
-fan-in, status, and final result aggregation.
+helpers consume task-service-issued commands and publish results back to the
+broker. The task service owns lifecycle orchestration, fan-out, fan-in, retries,
+dead letters, and final result aggregation; task manager consumes task
+events/results and updates Redis.
 
 Asynchronous work should use Redpanda topics:
 
 - task intake topics from manager to task manager
-- domain command/result topics for project, workflow log, memory, and other
-  domain services
+- task request topics from task manager to task service
+- project plan request/result topics for project service
 - helper command/result topics for ingestion, storage, retrieval, indexing, and
   other helper nodes
-- task manager topics for task lifecycle, status, fan-out/fan-in, and results
+- task service topics for task lifecycle events, fan-out/fan-in, and results
 - service event topics for workflow logging
 
-Existing local/in-process/SQLite queue adapters are migration scaffolding. They
-must not remain in the intended local or production runtime.
+Local/in-process/SQLite queue adapters have been removed from the intended
+local and production runtime.
 
 ## Message Communication Graph
 
@@ -157,8 +161,10 @@ flowchart LR
     Client[Client / SDK] -->|public API| Manager[Manager / Auth]
 
     subgraph Broker[Redpanda Broker]
-        ManagerRequests[manager.requests]
-        ProjectRequests[project.commands]
+        ManagerRequests[task.intake]
+        TaskRequests[task.requests]
+        ProjectRequests[project.plan.requests]
+        ProjectResults[project.plan.results]
         WorkflowRequests[workflow_log.commands]
         HelperCommands[helper.commands]
         HelperResults[helper.results]
@@ -170,17 +176,19 @@ flowchart LR
     Redis[(Redis task status)]
 
     Manager -->|publish authenticated envelope| ManagerRequests
-    ManagerRequests -->|task intake| TaskEvents
-    TaskEvents --> TaskManager[Task Manager]
-    TaskManager -->|dispatch by data_type| ProjectRequests
+    ManagerRequests -->|task intake| TaskManager[Task Manager]
+    TaskManager -->|publish normalized request| TaskRequests
+    TaskRequests --> TaskService[Task Service]
+    TaskService -->|request project plan| ProjectRequests
     TaskManager -->|dispatch by data_type| WorkflowRequests
 
     ProjectRequests --> Project[Project Domain Service]
     WorkflowRequests --> Workflow[Workflow Logging Service]
 
-    Project -->|publish project plan/info| TaskEvents
+    Project -->|publish project plan/info| ProjectResults
+    ProjectResults --> TaskService
     Workflow -->|publish audit events/results| ServiceEvents
-    TaskManager -->|dispatch planned helper work| HelperCommands
+    TaskService -->|dispatch planned helper work| HelperCommands
 
     HelperCommands --> Ingestion[Ingestion Helper]
     HelperCommands --> Retrieval[Retrieval Helper]
@@ -190,12 +198,13 @@ flowchart LR
     Retrieval -->|publish search/index/delete result| HelperResults
     Storage -->|publish storage result| HelperResults
 
-    HelperResults --> TaskEvents
+    HelperResults --> TaskService
     ServiceEvents --> TaskEvents
+    TaskService --> TaskEvents
+    TaskService --> TaskResults
     TaskEvents --> TaskManager
     TaskManager -->|write status by task_id| Redis
-    TaskManager -->|publish final result event| TaskResults
-    TaskResults --> Manager
+    TaskResults --> TaskManager
     Manager -->|read status by task_id| Redis
 ```
 
@@ -220,17 +229,17 @@ the important rule is that all node-to-node messages pass through the broker.
 ## Migration Order
 
 1. Keep external `RagService` stable.
-2. Define broker envelopes and topics for manager/auth intake, task-manager
-   domain commands, domain plan/results, helper commands/results, service
-   events, and task manager status.
-3. Add independent task manager service ownership for lifecycle, dispatch,
-   fan-out/fan-in, status, and final result aggregation.
-4. Convert manager dispatch from direct service clients to broker publication
-   of task intake only.
+2. Define broker envelopes and topics for manager/auth intake, task requests,
+   project plan requests/results, helper commands/results, task events/results,
+   and service events.
+3. Add independent task manager status read-model ownership and task service
+   lifecycle orchestration, fan-out/fan-in, retries, and final aggregation.
+4. Keep manager dispatch limited to broker publication of task intake and
+   Redis-backed status reads.
 5. Convert project/workflow/memory services into broker-consumed domain task
    servers triggered by task manager messages.
-6. Convert ingestion, storage, retrieval, and other helpers into broker-consumed
-   helper nodes triggered by task manager messages.
-7. Replace local queue shortcuts with Redpanda for local and production.
+6. Keep ingestion, storage, retrieval, indexing, and other helpers as
+   broker-consumed helper nodes triggered by task service messages.
+7. Keep Redpanda as the local and production runtime broker.
 8. Restructure tests and configs by service.
 9. Remove legacy duplicate schemas and compatibility shims once callers migrate.

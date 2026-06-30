@@ -4,10 +4,10 @@ Section status: implementation accepted for the next development loop section.
 
 ## Requirement Document
 
-The retrieval facade now owns search, delete, and raw-document operations, and
-the manager can compose it locally through project planning. The next split
-needs transport-neutral contracts so a future gRPC or HTTP retrieval server can
-carry the same operations without importing manager or project internals.
+The retrieval facade owns search, delete, and raw-document operations. The
+broker-first split needs transport-neutral contracts so retrieval helper
+workers can carry the same operations through Redpanda command/result topics
+without importing manager or project internals.
 
 Scope:
 
@@ -151,8 +151,8 @@ Methods:
    `request_id`, `response_topic`, and nested `request`.
 3. Validate required fields in command objects before conversion to facade
    requests.
-4. Return plain dictionaries from serialization helpers so future transports can
-   encode them as JSON, queue payloads, or protobuf metadata.
+4. Return plain dictionaries from serialization helpers so broker workers can
+   encode them as Redpanda payloads without transport-specific dependencies.
 5. Export the new contracts from `retrieval_service.retrieval`.
 6. Add focused unit tests and run the retrieval/docs focused suite.
 

@@ -41,7 +41,7 @@ async def test_project_domain_server_runs_once() -> None:
 
     await context.run_once()
 
-    assert consumer.topic == TOPICS.domain_project_commands
+    assert consumer.topic == TOPICS.project_plan_requests
     assert handler.handled == [consumer.envelope]
 
 
@@ -58,11 +58,10 @@ async def test_project_domain_server_start_stop() -> None:
 
 def _command() -> MessageEnvelope:
     return MessageEnvelope.create(
-        producer="task_manager_service",
-        message_type=MessageType.DOMAIN_COMMAND,
+        producer="task_service",
+        message_type=MessageType.PROJECT_PLAN_REQUEST,
         data_type="project_document",
         task_id="task-1",
         correlation_id="corr-1",
         payload={"operation": "search", "request": {}},
     )
-

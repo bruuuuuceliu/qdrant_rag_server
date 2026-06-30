@@ -17,9 +17,8 @@ class Operation(StrEnum):
 
 
 class ServiceTarget(StrEnum):
-    PROJECT = "project_service"
-    RETRIEVAL = "retrieval_service"
-    INGESTION = "ingestion_service"
+    TASK_MANAGER = "task_manager_service"
+    TASK_STATUS = "task_status_store"
     MEMORY = "memory_service"
     WORKFLOW_LOG = "workflow_log_service"
 
@@ -50,8 +49,6 @@ class RouteDecision:
     data_type: DataType
     target_service: ServiceTarget
     executable: bool
-    async_required: bool = False
-    queue_topic: str = ""
     reason: str = ""
 
     @property
@@ -61,15 +58,6 @@ class RouteDecision:
 
 class ManagerRouter:
     """Routes public requests to the service that owns the requested work."""
-
-    def __init__(
-        self,
-        *,
-        ingest_topic: str = "ingestion.requests",
-        workflow_topic: str = "workflow.events",
-    ) -> None:
-        self._ingest_topic = ingest_topic
-        self._workflow_topic = workflow_topic
 
     def route(self, request: RouteRequest) -> RouteDecision:
         operation = request.normalized_operation()
@@ -83,7 +71,6 @@ class ManagerRouter:
                 data_type=data_type,
                 target_service=ServiceTarget.MEMORY,
                 executable=False,
-                async_required=operation == Operation.INGEST,
                 reason=spec.reserved_reason,
             )
         if data_type == DataType.WORKFLOW_LOG:
@@ -93,8 +80,6 @@ class ManagerRouter:
                 data_type=data_type,
                 target_service=ServiceTarget.WORKFLOW_LOG,
                 executable=False,
-                async_required=True,
-                queue_topic=self._workflow_topic,
                 reason=spec.reserved_reason,
             )
         raise ValueError(f"unsupported data_type: {data_type!r}")
@@ -104,22 +89,21 @@ class ManagerRouter:
             return RouteDecision(
                 operation=operation,
                 data_type=DataType.PROJECT_DOCUMENT,
-                target_service=ServiceTarget.PROJECT,
+                target_service=ServiceTarget.TASK_MANAGER,
                 executable=True,
-                async_required=True,
             )
         if operation in {Operation.SEARCH, Operation.DELETE}:
             return RouteDecision(
                 operation=operation,
                 data_type=DataType.PROJECT_DOCUMENT,
-                target_service=ServiceTarget.PROJECT,
+                target_service=ServiceTarget.TASK_MANAGER,
                 executable=True,
             )
         if operation == Operation.STATUS:
             return RouteDecision(
                 operation=operation,
                 data_type=DataType.PROJECT_DOCUMENT,
-                target_service=ServiceTarget.PROJECT,
+                target_service=ServiceTarget.TASK_STATUS,
                 executable=True,
             )
         raise ValueError(f"unsupported project_document operation: {operation!r}")

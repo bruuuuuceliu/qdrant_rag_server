@@ -196,26 +196,39 @@ generation, or project route decisions.
 
 ### Task Manager Service
 
-The task manager is the single task lifecycle and dispatch owner. It sits after
-the manager task intake topic, not inside the public manager. It keeps the
-manager simple and keeps domain/helper nodes focused on their own work.
+The task manager owns task intake normalization and the Redis status read model.
+It sits after the manager task intake topic, not inside the public manager. It
+keeps the manager simple and keeps execution orchestration out of the intake
+boundary.
 
 Ideal responsibilities:
 
 - Consume authenticated task intake events from Redpanda.
-- Create task records and keep Redis status current by `task_id`.
-- Dispatch domain commands to project, workflow log, memory, or other domain
-  services through Redpanda.
-- Consume domain plans/info and dispatch helper commands to ingestion,
-  retrieval, storage, indexing, or other helper nodes through Redpanda.
-- Fan out helper work across specialized worker nodes.
-- Fan in partial results and publish final task results when complete.
+- Create task IDs and publish normalized `task.requests`.
+- Consume `task.events` and `task.results`.
+- Keep Redis status current by `task_id`.
 - Apply TTL to completed task status records in Redis.
 
 The task manager should communicate through Redpanda topics and Redis status
 keys only. It should avoid direct calls to parsers, vector stores, project
-internals, or public manager handlers. Retries, leases, attempt counts, backoff,
-and dead-letter behavior are out of scope for the current phase.
+internals, helper nodes, or public manager handlers.
+
+### Task Service
+
+The task service owns task execution orchestration after task intake has been
+normalized.
+
+Ideal responsibilities:
+
+- Consume `task.requests`.
+- Request project plans through Redpanda.
+- Dispatch helper commands to ingestion, retrieval, retrieval-index, storage,
+  SQLite/database, or other helper nodes.
+- Fan out helper work across specialized worker nodes.
+- Fan in partial results and publish task lifecycle events and final task
+  results.
+- Own retries, leases, attempt counts, backoff, dead letters, and durable
+  execution state.
 
 ### Retrieval Service
 
@@ -224,7 +237,7 @@ integration, ranking, and retrieval-time storage access.
 
 Ideal responsibilities:
 
-- Consume task-manager-issued indexing/search/delete commands.
+- Consume task-service-issued indexing/search/delete commands.
 - Generate dense embeddings and sparse representations.
 - Enrich chunks with retrieval metadata.
 - Upsert vectors and payloads into Qdrant or another retrieval backend.
@@ -555,9 +568,10 @@ flow.
 Use Redpanda topics for work that can take variable time or needs backpressure:
 
 - manager-authenticated task intake requests
-- task-manager-issued domain commands
+- task-manager-issued normalized task requests
+- task-service-issued project plan requests
 - domain service info/planning responses
-- task-manager-issued helper commands for ingestion, storage, retrieval,
+- task-service-issued helper commands for ingestion, storage, retrieval,
   indexing, and other nodes
 - helper results
 - task lifecycle, fan-out/fan-in, status, and final result messages
@@ -599,17 +613,18 @@ Recommended topic names:
 | Topic | Producer | Consumer | Purpose |
 | --- | --- | --- | --- |
 | `task.intake` | manager service | task manager | Deliver authenticated public requests after auth/validation. |
-| `project.commands` | task manager | project service | Trigger project-document domain planning/info lookup. |
-| `project.results` | project service | task manager | Return project plan, scope, policy, and helper-work intent. |
+| `task.requests` | task manager | task service | Deliver normalized task requests for orchestration. |
+| `task.events` | task service | task manager | Report task lifecycle and step updates for Redis status. |
+| `task.results` | task service | task manager | Publish final success/failure task results. |
+| `project.plan.requests` | task service | project service | Trigger project-document planning/info lookup. |
+| `project.plan.results` | project service | task service | Return project plan, scope, policy, and helper-work intent. |
 | `workflow_log.commands` | task manager or services through broker | workflow log service | Deliver workflow-log requests and lifecycle events. |
-| `task.events` | domain services and helpers | task manager | Report task lifecycle and helper results. |
-| `task.results` | task manager | broker observers | Publish final result events when needed. |
-| `ingestion.commands` | task manager | ingestion helpers | Fetch, parse, normalize, and chunk source material. |
-| `ingestion.results` | ingestion helpers | task manager through broker | Publish prepared chunks and ingestion status. |
-| `retrieval.commands` | task manager | retrieval helpers | Execute search, delete, raw lookup, or index work. |
-| `retrieval.results` | retrieval helpers | task manager through broker | Publish retrieval/index/delete results. |
-| `storage.commands` | task manager | storage helpers | Store/read/delete raw or service-owned artifacts. |
-| `storage.results` | storage helpers | task manager through broker | Publish storage operation results. |
+| `ingestion.commands` | task service | ingestion helpers | Fetch, parse, normalize, and chunk source material. |
+| `ingestion.results` | ingestion helpers | task service through broker | Publish prepared chunks and ingestion status. |
+| `retrieval.commands` | task service | retrieval helpers | Execute search, delete, raw lookup, or index work. |
+| `retrieval.results` | retrieval helpers | task service through broker | Publish retrieval/index/delete results. |
+| `storage.commands` | task service | storage helpers | Store/read/delete raw or service-owned artifacts. |
+| `storage.results` | storage helpers | task service through broker | Publish storage operation results. |
 
 ## Main Data Flow
 
@@ -618,19 +633,19 @@ Recommended topic names:
 1. Client sends an ingest request to the manager.
 2. Manager validates the request, creates correlation/task IDs, publishes a
    task intake event, and returns the task ID.
-3. Task manager records accepted/running status in Redis and dispatches a
-   project-domain command through Redpanda.
+3. Task manager records queued status in Redis and publishes `task.requests`.
 4. Project service resolves project policy, scope, and placement intent, then
-   publishes a project plan/info result.
-5. Task manager consumes the project result and dispatches ingestion/storage
+   publishes a project plan/info result after task service requests planning.
+5. Task service consumes the project result and dispatches ingestion/storage
    helper commands through Redpanda.
 6. Ingestion workers fetch, parse, normalize, and chunk content.
 7. Ingestion service stores job state and raw artifacts as needed.
 8. Ingestion service publishes prepared chunks/status results.
-9. Task manager consumes ingestion results and dispatches retrieval index work.
+9. Task service consumes ingestion results and dispatches retrieval index work.
 10. Retrieval indexing workers embed and upsert chunks into the retrieval store.
 11. Retrieval service writes index status and invalidates affected caches.
-12. Task manager aggregates results, updates Redis, and publishes final results.
+12. Task service aggregates results and publishes task events/final results;
+    task manager updates Redis from those messages.
 13. Workflow log service consumes events and stores audit records.
 
 ### Retrieval Flow
@@ -638,18 +653,18 @@ Recommended topic names:
 1. Client sends a search request to the manager.
 2. Manager validates the request, creates correlation/task IDs, publishes a
    task intake event, and returns the task ID or current status.
-3. Task manager dispatches a project-domain command through Redpanda.
+3. Task manager publishes `task.requests`; task service requests project planning.
 4. Project service resolves project scope/filter intent and publishes a
    project plan/info result.
-5. Task manager consumes the project result and dispatches retrieval helper
+5. Task service consumes the project result and dispatches retrieval helper
    work through Redpanda.
 6. Retrieval service checks cache when enabled.
 7. Retrieval service embeds the query and executes dense, sparse, or hybrid
    search.
 8. Retrieval service applies filters, ranking, and optional reranking.
 9. Retrieval service publishes normalized results to the broker.
-10. Task manager aggregates the result, updates Redis, and publishes final task
-    results when needed.
+10. Task service aggregates the result and publishes final task results; task
+    manager updates Redis.
 11. Manager serves client status/result checks by reading Redis by `task_id`.
 
 ### Delete Flow
@@ -657,14 +672,14 @@ Recommended topic names:
 1. Client sends a delete request to the manager.
 2. Manager validates authorization, creates correlation/task IDs, publishes a
    task intake event, and returns the task ID.
-3. Task manager dispatches a project-domain command through Redpanda.
+3. Task manager publishes `task.requests`; task service requests project planning.
 4. Project service resolves delete scope/policy and publishes a project
    plan/info result.
-5. Task manager dispatches retrieval/storage delete commands through Redpanda.
+5. Task service dispatches retrieval/storage delete commands through Redpanda.
 6. Retrieval/storage helpers delete vector payloads, lexical records, cache
    entries, and raw backups according to policy.
-7. Helpers publish results; task manager aggregates them, updates Redis, and
-   publishes final task results when needed.
+7. Helpers publish results; task service aggregates them and publishes final task
+   results; task manager updates Redis.
 
 ## Boundary Stakes
 

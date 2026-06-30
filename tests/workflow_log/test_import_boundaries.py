@@ -11,7 +11,6 @@ GUARDED_FILES = (
     ROOT / "workflow_log_service" / "domain_app.py",
     ROOT / "workflow_log_service" / "domain_handler.py",
     ROOT / "workflow_log_service" / "repository.py",
-    ROOT / "workflow_log_service" / "server" / "app.py",
     ROOT / "workflow_log_service" / "worker.py",
 )
 FORBIDDEN_PREFIXES = (

@@ -9,10 +9,10 @@ STATE_FILE="${RUNTIME_DIR}/state.env"
 MANAGER_PID_FILE="${RUNTIME_DIR}/manager.pid"
 PROJECT_SERVICE_PID_FILE="${RUNTIME_DIR}/project-service.pid"
 TASK_MANAGER_PID_FILE="${RUNTIME_DIR}/task-manager.pid"
+TASK_SERVICE_PID_FILE="${RUNTIME_DIR}/task-service.pid"
 WORKFLOW_LOG_PID_FILE="${RUNTIME_DIR}/workflow-log.pid"
 INGESTION_WORKER_PID_FILE="${RUNTIME_DIR}/ingestion-worker.pid"
 RETRIEVAL_INDEX_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-index-worker.pid"
-RETRIEVAL_HTTP_PID_FILE="${RUNTIME_DIR}/retrieval-http.pid"
 RETRIEVAL_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-worker.pid"
 STORAGE_NODE_PID_FILE="${RUNTIME_DIR}/storage-node.pid"
 SQLITE_NODE_PID_FILE="${RUNTIME_DIR}/sqlite-node.pid"
@@ -29,7 +29,6 @@ CLEAN_RUNTIME=0
 CLEAN_DATA=0
 FORCE=1
 GRPC_PORT="${RAG_GRPC_PORT:-50051}"
-PROJECT_GRPC_PORT="${RAG_PROJECT_GRPC_PORT:-50052}"
 QDRANT_CONTAINER="${RAG_QDRANT_CONTAINER:-qdrant-rag-local}"
 QDRANT_VOLUME="${RAG_QDRANT_VOLUME:-qdrant-rag-local-data}"
 REDPANDA_CONTAINER="${RAG_REDPANDA_CONTAINER:-redpanda-rag-local}"
@@ -64,8 +63,6 @@ Options:
   --redis-insight-container VALUE
                         Docker container name. Default: redis-insight-rag-local.
   --grpc-port VALUE     Extra cleanup check for this gRPC port. Default: 50051.
-  --project-grpc-port VALUE
-                        Extra cleanup check for project gRPC port. Default: 50052.
   --no-force            Do not send SIGKILL if graceful stop times out.
   --help                Show this help.
 
@@ -114,10 +111,6 @@ while [[ $# -gt 0 ]]; do
       GRPC_PORT="${2:?--grpc-port requires a value}"
       shift 2
       ;;
-    --project-grpc-port)
-      PROJECT_GRPC_PORT="${2:?--project-grpc-port requires a value}"
-      shift 2
-      ;;
     --no-force)
       FORCE=0
       shift
@@ -138,7 +131,6 @@ if [[ -f "$STATE_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$STATE_FILE"
   GRPC_PORT="${RAG_GRPC_PORT:-$GRPC_PORT}"
-  PROJECT_GRPC_PORT="${RAG_PROJECT_GRPC_PORT:-$PROJECT_GRPC_PORT}"
   QDRANT_CONTAINER="${QDRANT_CONTAINER:-qdrant-rag-local}"
   QDRANT_VOLUME="${QDRANT_VOLUME:-qdrant-rag-local-data}"
   REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-redpanda-rag-local}"
@@ -203,21 +195,17 @@ fallback_stop_python_services() {
     return 0
   fi
   local patterns=(
-    "python -m local_runtime.manager_app"
     "python -m manager_service.worker"
     "python -m task_manager_service.worker"
+    "python -m task_service.worker"
     "python -m redis_status_node.worker"
     "python -m sqlite_node.worker"
     "python -m storage_node.worker"
     "python -m workflow_log_service.worker"
-    "python manager_service/server/app.py"
     "python -m ingestion_service.server.worker"
     "python -m retrieval_service.indexing.worker"
     "python -m retrieval_service.server.worker"
     "python -m project_service.domain_app"
-    "python -m project_service.server.app"
-    "python project_service/server/app.py"
-    "python -m server.app"
   )
   local pattern pid
   for pattern in "${patterns[@]}"; do
@@ -239,18 +227,15 @@ fallback_stop_port_listener() {
     return 0
   fi
   local pid command_line
-  local port
-  for port in "$GRPC_PORT" "$PROJECT_GRPC_PORT"; do
-    while read -r pid; do
-      [[ -z "$pid" || "$pid" == "$$" ]] && continue
-      command_line="$(ps -p "$pid" -o args= 2>/dev/null || true)"
-      case "$command_line" in
-        *local_runtime.manager_app*|*project_service.server.app*|*server.app*)
-          stop_pid "$pid" "gRPC listener on port ${port}"
-          ;;
-      esac
-    done < <(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
-  done
+  while read -r pid; do
+    [[ -z "$pid" || "$pid" == "$$" ]] && continue
+    command_line="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+    case "$command_line" in
+      *manager_service.worker*)
+        stop_pid "$pid" "manager gRPC listener on port ${GRPC_PORT}"
+        ;;
+    esac
+  done < <(lsof -tiTCP:"$GRPC_PORT" -sTCP:LISTEN 2>/dev/null || true)
 }
 
 stop_qdrant() {
@@ -288,12 +273,12 @@ stop_docker_container() {
 
 stop_pid_file "$INGESTION_WORKER_PID_FILE" "ingestion worker"
 stop_pid_file "$RETRIEVAL_INDEX_WORKER_PID_FILE" "retrieval index worker"
-stop_pid_file "$RETRIEVAL_HTTP_PID_FILE" "retrieval HTTP server"
 stop_pid_file "$RETRIEVAL_WORKER_PID_FILE" "retrieval worker"
 stop_pid_file "$STORAGE_NODE_PID_FILE" "storage node"
 stop_pid_file "$SQLITE_NODE_PID_FILE" "SQLite node"
 stop_pid_file "$REDIS_STATUS_PID_FILE" "Redis status node"
 stop_pid_file "$TASK_MANAGER_PID_FILE" "task manager"
+stop_pid_file "$TASK_SERVICE_PID_FILE" "task service"
 stop_pid_file "$WORKFLOW_LOG_PID_FILE" "workflow log service"
 stop_pid_file "$MANAGER_PID_FILE" "manager"
 stop_pid_file "$PROJECT_SERVICE_PID_FILE" "project service"

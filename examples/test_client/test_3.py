@@ -41,12 +41,12 @@ def _parse_args() -> argparse.Namespace:
         help="Repeat to pass multiple kb_ids. Defaults to --kb-id/RAG_TEST_KB_ID.",
     )
     parser.add_argument(
-        "--allow-empty",
+        "--require-chunks",
         dest="require_chunks",
-        action="store_false",
-        help="Allow a valid search response with zero chunks.",
+        action="store_true",
+        help="Fail if the search response contains zero chunks.",
     )
-    parser.set_defaults(require_chunks=True)
+    parser.set_defaults(require_chunks=False)
     return parser.parse_args()
 
 

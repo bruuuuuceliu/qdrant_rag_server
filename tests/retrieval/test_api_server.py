@@ -1,20 +1,24 @@
-"""Retrieval API server context tests."""
+"""Retrieval broker-helper API context tests."""
 
 from __future__ import annotations
 
 import unittest
 from unittest.mock import AsyncMock
 
-from retrieval_service.retrieval import RetrievalSearchResult
-from retrieval_service.server import create_app
+from retrieval_service.retrieval import RetrievalApiHandler, RetrievalSearchResult, create_app
+from retrieval_service.server import RetrievalHelperApiContext
 
 
-class RetrievalApiServerTest(unittest.IsolatedAsyncioTestCase):
-    async def test_server_context_exposes_search_delete_and_raw_payload_methods(self) -> None:
+class RetrievalHelperApiContextTest(unittest.IsolatedAsyncioTestCase):
+    async def test_context_exposes_search_delete_and_raw_payload_methods(self) -> None:
         service = _RetrievalService(raw_document=b"raw")
-        server = await create_app(retrieval_service=service)
+        app = await create_app(retrieval_service=service)
+        context = RetrievalHelperApiContext(
+            app=app,
+            handler=RetrievalApiHandler(app=app),
+        )
 
-        search_response = await server.search(
+        search_response = await context.search(
             {
                 "request_id": "req-search",
                 "request": {
@@ -30,7 +34,7 @@ class RetrievalApiServerTest(unittest.IsolatedAsyncioTestCase):
             },
             fallback_request_id="fallback-search",
         )
-        delete_response = await server.delete_document(
+        delete_response = await context.delete_document(
             {
                 "project_id": "p1",
                 "user_id": "u1",
@@ -40,7 +44,7 @@ class RetrievalApiServerTest(unittest.IsolatedAsyncioTestCase):
             },
             fallback_request_id="req-delete",
         )
-        raw_response = await server.get_raw_document(
+        raw_response = await context.get_raw_document(
             {
                 "project_id": "p1",
                 "user_id": "u1",
@@ -71,9 +75,13 @@ class RetrievalApiServerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_shutdown_delegates_to_retrieval_service(self) -> None:
         service = _RetrievalService()
-        server = await create_app(retrieval_service=service)
+        app = await create_app(retrieval_service=service)
+        context = RetrievalHelperApiContext(
+            app=app,
+            handler=RetrievalApiHandler(app=app),
+        )
 
-        await server.shutdown()
+        await context.shutdown()
 
         service.shutdown.assert_awaited_once()
 

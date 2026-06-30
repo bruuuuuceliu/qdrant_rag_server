@@ -16,8 +16,11 @@ the architecture or development rules.
 - `manager_service.server.app`: manager app can be composed with task producer
   and status store instead of a project client for broker-first runtime.
 - `task_manager_service`: dispatcher and server context for task intake,
-  domain command dispatch, helper command dispatch, helper-result finalization,
-  shared-contract status updates, and final task-result publication.
+  `task.requests` publication, task event/result consumption, and
+  shared-contract status updates.
+- `task_service`: executor dispatcher, project plan request/result handling,
+  helper command dispatch, helper-result fan-in, retries/dead letters, and
+  final task-result publication.
 - `project_service.domain_handler`: project-domain command handler that returns
   project plan/info results without dispatching helper work.
 - `ingestion_service.server.domain_handler`: ingestion helper command handler.
@@ -33,16 +36,18 @@ the architecture or development rules.
 
 ```text
 manager task intake envelope
-  -> task manager dispatches domain command
+  -> task manager publishes task request
+  -> task service dispatches project plan request
   -> project service publishes project result
-  -> task manager dispatches helper command
+  -> task service dispatches helper command
   -> ingestion/retrieval helper publishes helper result
-  -> task manager writes Redis status with TTL and publishes task result
+  -> task service publishes task events/results
+  -> task manager writes Redis status with TTL
 ```
 
 The implemented path is transport-neutral and uses injected producers/consumers
-in tests. Live Redpanda startup, topic bootstrap, process supervision, and full
-local-runner wiring are still pending.
+in tests. Local runtime now starts the broker-first process topology; stronger
+live Redpanda plus Redis transition coverage is still pending.
 
 ## Verification
 
@@ -62,13 +67,6 @@ pytest tests/test_message_contracts.py \
 
 ## Known Gaps
 
-- Redpanda adapter is not yet wired into every server runtime.
-- Local runner still contains compatibility paths.
-- Task manager fan-in is single-helper-result for now.
 - Redis adapter shell exists, but live Redis integration tests are pending.
-- Project, ingestion, and retrieval handlers are not yet started as real
-  Redpanda consumer processes.
 - Workflow-log domain handler exists, but manager-facing workflow query/result
   flow is not fully integrated.
-- Task manager server context has injectable consumer loops, but production
-  process startup and topic assignment are not fully wired yet.

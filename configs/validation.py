@@ -109,10 +109,7 @@ def _validate_paths(
     issues: list[ConfigValidationIssue],
 ) -> None:
     path_fields = {
-        "config_db_path": settings.config_db_path,
         "response_cache_db_path": settings.response_cache_db_path,
-        "ingest_job_db_path": settings.ingest_job_db_path,
-        "workflow_log_db_path": settings.workflow_log_db_path,
         "retrieval_placement_db_path": settings.retrieval_placement_db_path,
     }
     for field, path in path_fields.items():
@@ -185,13 +182,7 @@ def _validate_production(
                 severity="warning",
             )
         )
-    for field in (
-        "config_db_path",
-        "response_cache_db_path",
-        "ingest_job_db_path",
-        "workflow_log_db_path",
-        "retrieval_placement_db_path",
-    ):
+    for field in ("response_cache_db_path", "retrieval_placement_db_path"):
         value = getattr(settings, field)
         if isinstance(value, Path) and str(value) == ":memory:":
             issues.append(

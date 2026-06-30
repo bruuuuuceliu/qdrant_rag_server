@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import unittest
+from dataclasses import dataclass
 from pathlib import Path
+import unittest
 from unittest.mock import AsyncMock, patch
 
 import grpc
@@ -22,35 +23,37 @@ from manager_service import (
 from manager_service.service import ManagerService
 from manager_service.service import ManagerTaskAccepted
 from manager_service.server.grpc.server import ManagerRagServiceServicer
-from project_service.schemas import IngestResult, SearchResult
-from project_service.server.grpc.generated import retrieval_service_pb2
-from retrieval_service.core.schemas import JobStatus
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.transport.grpc.generated import retrieval_service_pb2
+from shared.contracts import JobStatus, MessageEnvelope, MessageType, TOPICS
 from shared.contracts import TaskStatusRecord
-from shared.queue import QueueFullError
 
 
 class ManagerRouterTest(unittest.TestCase):
-    def test_routes_project_document_ingest_to_project_service(self) -> None:
-        decision = ManagerRouter(ingest_topic="docs.ingest").route(
+    def test_routes_project_document_ingest_to_task_manager(self) -> None:
+        decision = ManagerRouter().route(
             RouteRequest(operation="ingest", data_type="project_document")
         )
 
         self.assertEqual(decision.operation, Operation.INGEST)
         self.assertEqual(decision.data_type, DataType.PROJECT_DOCUMENT)
-        self.assertEqual(decision.target_service, ServiceTarget.PROJECT)
+        self.assertEqual(decision.target_service, ServiceTarget.TASK_MANAGER)
         self.assertTrue(decision.executable)
-        self.assertTrue(decision.async_required)
-        self.assertEqual(decision.queue_topic, "")
 
-    def test_routes_project_document_search_to_project_service(self) -> None:
+    def test_routes_project_document_search_to_task_manager(self) -> None:
         decision = ManagerRouter().route(
             RouteRequest(operation="search", data_type="project_document")
         )
 
-        self.assertEqual(decision.target_service, ServiceTarget.PROJECT)
+        self.assertEqual(decision.target_service, ServiceTarget.TASK_MANAGER)
         self.assertTrue(decision.executable)
-        self.assertFalse(decision.async_required)
+
+    def test_routes_project_document_status_to_task_status_store(self) -> None:
+        decision = ManagerRouter().route(
+            RouteRequest(operation="status", data_type="project_document")
+        )
+
+        self.assertEqual(decision.target_service, ServiceTarget.TASK_STATUS)
+        self.assertTrue(decision.executable)
 
     def test_reserves_future_agent_memory_service(self) -> None:
         decision = ManagerRouter().route(
@@ -61,15 +64,13 @@ class ManagerRouterTest(unittest.TestCase):
         self.assertFalse(decision.executable)
         self.assertTrue(decision.reserved)
 
-    def test_reserves_future_workflow_log_topic(self) -> None:
-        decision = ManagerRouter(workflow_topic="logs.events").route(
+    def test_reserves_future_workflow_log_service(self) -> None:
+        decision = ManagerRouter().route(
             RouteRequest(operation="ingest", data_type="workflow_log")
         )
 
         self.assertEqual(decision.target_service, ServiceTarget.WORKFLOW_LOG)
-        self.assertEqual(decision.queue_topic, "logs.events")
         self.assertFalse(decision.executable)
-        self.assertTrue(decision.async_required)
 
     def test_rejects_unknown_data_type(self) -> None:
         with self.assertRaises(ValueError):
@@ -85,16 +86,12 @@ class ManagerSettingsTest(unittest.TestCase):
         settings = load_manager_settings(
             {
                 "MANAGER_SERVICE_NAME": "edge",
-                "MANAGER_INGEST_TOPIC": "docs.in",
-                "MANAGER_WORKFLOW_TOPIC": "logs.in",
-                "MANAGER_LOCAL_QUEUE_MAXSIZE": "25",
+                "MANAGER_TASK_INTAKE_TOPIC": "task.in",
             }
         )
 
         self.assertEqual(settings.service_name, "edge")
-        self.assertEqual(settings.ingest_topic, "docs.in")
-        self.assertEqual(settings.workflow_topic, "logs.in")
-        self.assertEqual(settings.local_queue_maxsize, 25)
+        self.assertEqual(settings.task_intake_topic, "task.in")
 
 
 class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -166,13 +163,6 @@ class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
         envelope = task_producer.published[0][1]
         self.assertEqual(envelope.payload["operation"], "delete")
 
-    async def test_broker_first_runtime_rejects_direct_project_client(self) -> None:
-        with self.assertRaisesRegex(ValueError, "broker-first"):
-            ManagerService(
-                project_documents=_FakeProjectDocumentClient(),
-                task_producer=_FakeTaskProducer(),
-            )
-
     async def test_broker_first_status_requires_status_store(self) -> None:
         manager = ManagerService(task_producer=_FakeTaskProducer())
 
@@ -217,10 +207,10 @@ class ManagerServiceTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
-    async def test_manager_service_app_requires_injected_project_client(self) -> None:
+    async def test_manager_service_app_requires_injected_task_producer(self) -> None:
         from manager_service.server import app as manager_app
 
-        with self.assertRaisesRegex(ValueError, "project-document client or task producer"):
+        with self.assertRaisesRegex(ValueError, "task producer"):
             await manager_app.create_app(_settings())
 
     async def test_manager_service_app_can_use_task_producer_without_project_client(self) -> None:
@@ -245,7 +235,6 @@ class ManagerAppTest(unittest.IsolatedAsyncioTestCase):
 
         result = await context.manager.search({"metadata": {"data_type": "project_document"}})
 
-        self.assertIsNone(context.project_client)
         self.assertEqual(task_producer.published[0][0], "task.custom")
         self.assertEqual(result.task_id, task_producer.published[0][2])
         await context.shutdown()
@@ -295,6 +284,81 @@ class ManagerGrpcServicerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.search_request.project_id, "p1")
         self.assertEqual(manager.search_request.kb_ids, ("kb1",))
 
+    async def test_search_waits_for_broker_first_task_result(self) -> None:
+        manager = _FakeManager()
+        manager.search_result = ManagerTaskAccepted(
+            task_id="task-search",
+            correlation_id="corr-search",
+        )
+        manager.status_result = TaskStatusRecord(
+            task_id="task-search",
+            status="completed",
+            operation="search",
+            result={
+                "ok": True,
+                "result": {
+                    "chunks": [
+                        {
+                            "project_id": "p1",
+                            "user_id": "u1",
+                            "kb_id": "kb",
+                            "doc_id": "d1",
+                            "chunk_id": "chunk-from-task",
+                            "chunk_index": 0,
+                            "text": "task result",
+                            "score": 0.9,
+                        }
+                    ],
+                    "elapsed_ms": 11,
+                    "cache_hit": False,
+                },
+            },
+        )
+        servicer = ManagerRagServiceServicer(manager=manager)
+
+        response = await servicer.Search(
+            retrieval_service_pb2.SearchRequest(
+                project_id="p1",
+                user_id="u1",
+                query="hello",
+                kb_ids=["kb"],
+                include_shared=False,
+            ),
+            _FakeGrpcContext(),
+        )
+
+        self.assertEqual(response.chunks[0].chunk_id, "chunk-from-task")
+        self.assertEqual(response.elapsed_ms, 11)
+        self.assertEqual(manager.status_job_id, "task-search")
+
+    async def test_search_maps_failed_broker_first_task_to_grpc_error(self) -> None:
+        manager = _FakeManager()
+        manager.search_result = ManagerTaskAccepted(
+            task_id="task-search",
+            correlation_id="corr-search",
+        )
+        manager.status_result = TaskStatusRecord(
+            task_id="task-search",
+            status="failed",
+            operation="search",
+            result={"error": "retrieval failed"},
+        )
+        context = _FakeGrpcContext()
+        servicer = ManagerRagServiceServicer(manager=manager)
+
+        with self.assertRaises(_GrpcAbort):
+            await servicer.Search(
+                retrieval_service_pb2.SearchRequest(
+                    project_id="p1",
+                    user_id="u1",
+                    query="hello",
+                ),
+                context,
+            )
+
+        self.assertEqual(context.code, grpc.StatusCode.INTERNAL)
+        self.assertEqual(context.details, "retrieval failed")
+
     async def test_ingest_routes_through_manager(self) -> None:
         manager = _FakeManager()
         servicer = ManagerRagServiceServicer(manager=manager)
@@ -340,27 +404,6 @@ class ManagerGrpcServicerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.job_id, "task-1")
         self.assertEqual(response.status, "accepted")
-
-    async def test_ingest_queue_full_maps_to_resource_exhausted(self) -> None:
-        manager = _FakeManager()
-        manager.ingest_error = QueueFullError("queue is full")
-        servicer = ManagerRagServiceServicer(manager=manager)
-        context = _FakeGrpcContext()
-
-        with self.assertRaises(_GrpcAbort):
-            await servicer.Ingest(
-                retrieval_service_pb2.IngestRequest(
-                    project_id="p1",
-                    user_id="u1",
-                    kb_id="kb",
-                    doc_id="d1",
-                    source_uri="file:///tmp/doc.pdf",
-                    content_type="application/pdf",
-                ),
-                context,
-            )
-
-        self.assertEqual(context.code, grpc.StatusCode.RESOURCE_EXHAUSTED)
 
     async def test_get_ingest_status_routes_through_manager(self) -> None:
         manager = _FakeManager()
@@ -454,10 +497,6 @@ class _Request:
         self.metadata = metadata
 
 
-class _FakeProjectDocumentClient:
-    pass
-
-
 class _FakeTaskProducer:
     def __init__(self) -> None:
         self.published: list[tuple[str, MessageEnvelope, str]] = []
@@ -487,17 +526,35 @@ class _FakeServer:
         return None
 
 
+@dataclass(frozen=True, slots=True)
+class _SearchResult:
+    chunks: list[dict[str, object]]
+    elapsed_ms: int
+    cache_hit: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _IngestResult:
+    job_id: str
+    status: JobStatus
+    doc_id: str = ""
+    error: str | None = None
+
+
 class _FakeManager:
     search_request: object | None = None
     ingest_request: object | None = None
     status_job_id: str | None = None
     ingest_error: Exception | None = None
     ingest_result: object | None = None
+    search_result: object | None = None
     status_result: object | None = None
 
-    async def search(self, request: object) -> SearchResult:
+    async def search(self, request: object) -> _SearchResult:
         self.search_request = request
-        return SearchResult(
+        if self.search_result is not None:
+            return self.search_result
+        return _SearchResult(
             chunks=[
                 {
                     "project_id": "p1",
@@ -514,32 +571,26 @@ class _FakeManager:
             cache_hit=False,
         )
 
-    async def ingest(self, request: object) -> IngestResult:
+    async def ingest(self, request: object) -> _IngestResult:
         self.ingest_request = request
         if self.ingest_error is not None:
             raise self.ingest_error
         if self.ingest_result is not None:
             return self.ingest_result
-        return IngestResult(
+        return _IngestResult(
             job_id="job1",
             status=JobStatus.PENDING,
             doc_id="d1",
-            project_id="p1",
-            user_id="u1",
-            kb_id="kb",
         )
 
-    async def ingest_status(self, job_id: str) -> IngestResult:
+    async def ingest_status(self, job_id: str) -> _IngestResult:
         self.status_job_id = job_id
         if self.status_result is not None:
             return self.status_result
-        return IngestResult(
+        return _IngestResult(
             job_id=job_id,
             status=JobStatus.PENDING,
             doc_id="d1",
-            project_id="p1",
-            user_id="u1",
-            kb_id="kb",
         )
 
 
@@ -556,18 +607,17 @@ class _FakeGrpcContext:
         self.details = details
         raise _GrpcAbort(details)
 
+    def time_remaining(self) -> float:
+        return 10.0
+
 
 def _settings() -> AppSettings:
     return AppSettings(
-        config_db_path=Path("/tmp/test-config.db"),
         response_cache_db_path=Path("/tmp/test-cache.db"),
         grpc_port=0,
         qdrant_url=None,
         qdrant_host="localhost",
         qdrant_port=6333,
-        max_per_project=1,
-        max_per_user=1,
-        ingest_worker_count=1,
         embedding_provider="local",
         embedding_model="test",
         embedding_device="cpu",

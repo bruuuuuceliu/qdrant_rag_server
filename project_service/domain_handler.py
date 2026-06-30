@@ -6,24 +6,31 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from shared.contracts import (
-    DomainCommandPayload,
-    DomainResultPayload,
     MessageEnvelope,
     MessageProducer,
     MessageType,
+    ProjectPlanRequestPayload,
+    ProjectPlanResultPayload,
     TOPICS,
 )
 
 
 class ProjectDomainHandler:
-    """Handles task-manager project commands and returns project plans/info."""
+    """Handles project planning requests and returns executable project plans."""
 
-    def __init__(self, *, planning: Any, producer: MessageProducer | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        planning: Any,
+        producer: MessageProducer | None = None,
+        result_topic: str = TOPICS.project_plan_results,
+    ) -> None:
         self._planning = planning
         self._producer = producer
+        self._result_topic = result_topic
 
     async def handle(self, envelope: MessageEnvelope) -> MessageEnvelope:
-        payload = DomainCommandPayload.from_envelope(envelope)
+        payload = ProjectPlanRequestPayload.from_envelope(envelope)
         operation = payload.operation
         request = payload.request
         if operation == "ingest":
@@ -37,18 +44,18 @@ class ProjectDomainHandler:
 
         result = MessageEnvelope.create(
             producer="project_service",
-            message_type=MessageType.DOMAIN_RESULT,
+            message_type=MessageType.PROJECT_PLAN_RESULT,
             data_type=envelope.data_type,
             task_id=envelope.task_id,
             correlation_id=envelope.correlation_id,
-            payload=DomainResultPayload(
+            payload=ProjectPlanResultPayload(
                 operation=operation,
                 plan=_plan_payload(plan),
                 source_message_id=envelope.message_id,
             ).to_payload(),
         )
         if self._producer is not None:
-            await self._producer.publish(TOPICS.domain_project_results, result, key=envelope.task_id)
+            await self._producer.publish(self._result_topic, result, key=envelope.task_id)
         return result
 
 

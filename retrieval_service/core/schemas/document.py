@@ -116,4 +116,9 @@ class BaseChunkPayload:
         }
 
     def to_qdrant_payload(self) -> dict[str, Any]:
-        return self.to_payload()
+        payload = self.to_payload()
+        for key in ("project_id", "user_id", "kb_id", "doc_id", "visibility"):
+            value = self.metadata.get(key)
+            if value is not None and str(value).strip():
+                payload[key] = str(value)
+        return payload

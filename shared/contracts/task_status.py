@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 class TaskStatus(StrEnum):
     ACCEPTED = "accepted"
+    QUEUED = "queued"
     RUNNING = "running"
     DISPATCHED = "dispatched"
     COMPLETED = "completed"

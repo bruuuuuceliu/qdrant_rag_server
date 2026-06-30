@@ -24,13 +24,9 @@ envelope, assigns correlation/task IDs, and publishes authenticated task intake
 messages to the broker.
 
 The manager must not directly call or trigger project, workflow, ingestion,
-retrieval, storage, or other service internals. Existing typed service clients
-from `manager_service.clients` are compatibility migration paths and must be
-replaced by task intake publication plus Redis task-status reads by `task_id`.
-
-Current project-document operations routed through the client boundary are
-legacy relative to the corrected topology: `ingest`, `search`, `delete`, and
-`status`.
+retrieval, storage, or other service internals. The old typed service-client
+compatibility layer has been removed. Manager behavior is task intake
+publication plus Redis task-status reads by `task_id`.
 
 Target route publication:
 
@@ -53,24 +49,13 @@ Reserved routes validate intent but are not executable yet.
 ## Project Service
 
 Owns project configuration, project adapters, scope rules, user/KB visibility,
-and project-specific request planning. It is a domain task server that consumes
-task-manager-issued project-document commands from the broker, gets
+and project-specific request planning. It is a domain service that consumes
+task-service-issued project planning commands from the broker, gets
 project-related information, and publishes project plans/info results through
 the broker.
 
-It should not own Qdrant operations, document parsing, storage execution, or
-task lifecycle aggregation. During the compatibility phase it may still use
-retrieval/ingestion adapters, but those are migration scaffolding.
-
-The project service can run as its own process, but the current remote path
-still includes compatibility behavior. Delete remains local-only until the
-physical project task API has an explicit delete/status contract.
-
-Current local project-document execution has a project-owned task surface for
-ingest, search, status, and delete. This must move behind broker consumption of
-task-manager commands and broker publication of project plans/info so the
-project service is no longer a direct manager-facing executor or helper-work
-dispatcher.
+It should not own Qdrant operations, document parsing, storage execution, helper
+dispatch, or task lifecycle aggregation.
 
 Project planning now also creates optional retrieval placement plans from the
 local placement resolver. These plans are message metadata for the retrieval
@@ -80,25 +65,21 @@ selection.
 ## Ingestion Service
 
 Owns source fetch, MIME/extension routing, parsing, text cleanup, section/page
-metadata, chunking, and ingest job state. Workers should produce neutral chunks
-and either call retrieval indexing or publish an indexing request.
+metadata, chunking, and ingest job state. Workers produce neutral chunks and
+publish prepared-content results back to Redpanda.
 
-The ingestion service is a helper node. It owns the `ingestion.requests` broker
-consumer and must run as a standalone worker/server in both local and production
-runtime modes. Embedded manager/project ingestion execution is compatibility
-scaffolding and is not allowed in the target architecture. Workers prepare
-content generically and publish prepared chunks/results back to the broker.
+The ingestion service is a helper node. It owns helper ingestion command
+handling and must run as a standalone worker/server in both local and
+production runtime modes. Embedded manager/project ingestion execution is not
+allowed in the target architecture.
 
-Current queued ingestion creates ingestion-owned job records, runs
-`IngestionService.process(...)` for preparation metadata, and publishes prepared
-chunks to `retrieval.index.requests`. Ingestion waits for the retrieval index
-worker response and marks the ingestion-owned job completed or failed from that
-result. Compatibility project-document execution is no longer part of the
-ingestion worker path.
+Current broker ingestion creates ingestion-owned job records and runs
+`IngestionService.process(...)` for preparation metadata. The task service owns
+the orchestration that sends follow-up retrieval-index helper commands and
+emits task events/results from helper results.
 
-If the queued request metadata contains `placement_plan`, ingestion forwards it
-unchanged to the retrieval index request. Ingestion does not compute database
-placement.
+If the helper command metadata contains `placement_plan`, ingestion preserves it
+in the helper result. Ingestion does not compute database placement.
 
 Runtime config must provide at least one ingest worker. A successful indexing
 operation is treated as the durable document-write point: metadata, completion
@@ -114,17 +95,23 @@ the local durable database node, but it must not be used as the service broker.
 
 ## Task Manager Service
 
-The task manager owns task lifecycle, coordination, domain dispatch, helper
-dispatch, fan-out/fan-in state, status, and final task result aggregation. It
-consumes manager task intake events, publishes domain commands, consumes domain
-plans/info, publishes helper commands, consumes task events and helper results
-from the broker, persists task state, writes task status to Redis by `task_id`,
-and publishes final result events back to the broker when needed.
+The task manager owns task intake normalization and the Redis task-status read
+model. It consumes manager task intake events, writes the initial queued status,
+publishes normalized `task.requests`, consumes `task.events` and
+`task.results`, and writes task status to Redis by `task_id`.
 
 The manager/auth service reads task status directly from Redis by `task_id` for
 client status checks. Completed task statuses must have TTLs so Redis does not
 grow without bound. Domain services and helper nodes should publish lifecycle
 events instead of mutating Redis or task-manager state directly.
+
+## Task Service
+
+The task service owns orchestration. It consumes `task.requests`, publishes
+`project.plan.requests`, consumes `project.plan.results`, dispatches helper
+commands, owns durable fan-out/fan-in state, retries helper work, publishes dead
+letters when retries are exhausted, and emits `task.events` plus final
+`task.results`.
 
 ## Retrieval Service
 
@@ -142,8 +129,8 @@ Current internal facades:
   cleanup, raw-document reads, and optional lexical-index deletes.
 - `retrieval_service.indexing.IndexingService` owns embedding, sparse-vector,
   entity-enrichment, and Qdrant upsert for prepared chunks.
-- `retrieval_service.indexing.RetrievalIndexConsumer` consumes local
-  `retrieval.index.requests` messages and delegates to `IndexingService`.
+- `retrieval_service.indexing.domain_handler.RetrievalIndexDomainHandler`
+  handles helper index commands and delegates to `IndexingService`.
 
 Placement status:
 
@@ -168,7 +155,6 @@ Placement status:
 
 Allowed in `shared`:
 
-- queue protocols
 - transport-neutral message DTOs
 - protocol clients
 - correlation IDs and common error codes

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from configs.config import get_bool_value, get_float_value, get_int_value, get_value
+from configs.config import get_bool_value, get_int_value, get_value
 from shared.contracts import TOPICS
 
 
@@ -23,13 +23,6 @@ class RetrievalComponentSettings:
 
 
 @dataclass(frozen=True, slots=True)
-class RetrievalHttpSettings:
-    host: str
-    port: int
-    read_timeout: float
-
-
-@dataclass(frozen=True, slots=True)
 class RetrievalHelperSettings:
     service_name: str = "retrieval_service"
     command_topic: str = TOPICS.helper_retrieval_commands
@@ -39,11 +32,7 @@ class RetrievalHelperSettings:
 class RetrievalIndexWorkerSettings:
     enabled: bool = True
     service_name: str = "retrieval_index_worker"
-    request_topic: str = "retrieval.index.requests"
     command_topic: str = TOPICS.helper_retrieval_index_commands
-    queue_broker: str = "sqlite"
-    queue_db_path: Path = Path("/var/lib/rag/ingestion_queue.db")
-    queue_maxsize: int = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,14 +62,6 @@ def load_retrieval_component_settings(
     )
 
 
-def load_retrieval_http_settings(values: dict[str, str]) -> RetrievalHttpSettings:
-    return RetrievalHttpSettings(
-        host=get_value(values, "RETRIEVAL_HTTP_HOST", "127.0.0.1"),
-        port=get_int_value(values, "RETRIEVAL_HTTP_PORT", 8081),
-        read_timeout=get_float_value(values, "RETRIEVAL_HTTP_READ_TIMEOUT", 5.0),
-    )
-
-
 def load_retrieval_helper_settings(values: dict[str, str]) -> RetrievalHelperSettings:
     return RetrievalHelperSettings(
         service_name=get_value(values, "RETRIEVAL_HELPER_SERVICE_NAME", "retrieval_service"),
@@ -102,25 +83,11 @@ def load_retrieval_index_worker_settings(
             "RETRIEVAL_INDEX_WORKER_SERVICE_NAME",
             "retrieval_index_worker",
         ),
-        request_topic=get_value(
-            values,
-            "RETRIEVAL_INDEX_REQUEST_TOPIC",
-            "retrieval.index.requests",
-        ),
         command_topic=get_value(
             values,
             "RETRIEVAL_INDEX_HELPER_COMMAND_TOPIC",
             TOPICS.helper_retrieval_index_commands,
         ),
-        queue_broker=get_value(values, "RETRIEVAL_INDEX_QUEUE_BROKER", "sqlite"),
-        queue_db_path=Path(
-            get_value(
-                values,
-                "RETRIEVAL_INDEX_QUEUE_DB_PATH",
-                "/var/lib/rag/ingestion_queue.db",
-            )
-        ),
-        queue_maxsize=get_int_value(values, "RETRIEVAL_INDEX_QUEUE_MAXSIZE", 100),
     )
 
 

@@ -9,9 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 from broker_service import BrokerSettings
 from configs.ingestion import IngestionSettings
-from ingestion_service.server.worker import _build_retrieval_queue, create_worker_server
+from ingestion_service.server.worker import create_worker_server
 from shared.contracts import TOPICS
-from shared.queue import LocalQueueBroker
 
 
 class HelperApp:
@@ -68,20 +67,6 @@ class IngestionWorkerServerTest(unittest.IsolatedAsyncioTestCase):
         settings = IngestionSettings()
 
         self.assertEqual(settings.command_topic, TOPICS.helper_ingestion_commands)
-
-    def test_build_retrieval_queue_supports_local_legacy_queue(self) -> None:
-        queue = _build_retrieval_queue(
-            IngestionSettings(
-                retrieval_index_queue_broker="local",
-                retrieval_index_queue_maxsize=3,
-            )
-        )
-
-        self.assertIsInstance(queue, LocalQueueBroker)
-
-    def test_build_retrieval_queue_rejects_unknown_broker(self) -> None:
-        with self.assertRaisesRegex(ValueError, "INGESTION_RETRIEVAL_INDEX_QUEUE_BROKER"):
-            _build_retrieval_queue(IngestionSettings(retrieval_index_queue_broker="bad"))
 
 
 if __name__ == "__main__":

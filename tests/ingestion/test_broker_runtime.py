@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from ingestion_service.jobs import MemoryIngestionJobRepository
-from ingestion_service.server import BrokerIngestionApp
+from ingestion_service.server.broker_runtime import BrokerIngestionApp, IngestionPlan
 from ingestion_service.service import IngestionService
 
 
@@ -36,6 +36,10 @@ async def test_broker_ingestion_app_prepares_index_request() -> None:
     assert result["status"] == "running"
     assert result["index_request"]["collection_name"] == "rag_p1_v1"
     assert result["index_request"]["chunks"][0]["text"] == "broker raw text"
+    assert result["index_request"]["payloads"][0]["project_id"] == "p1"
+    assert result["index_request"]["payloads"][0]["user_id"] == "u1"
+    assert result["index_request"]["payloads"][0]["kb_id"] == "kb"
+    assert result["index_request"]["payloads"][0]["doc_id"] == "d1"
     assert result["storage_request"] == {
         "operation": "put",
         "key": "p1/u1/d1",
@@ -45,6 +49,32 @@ async def test_broker_ingestion_app_prepares_index_request() -> None:
     assert job is not None
     assert job.status.value == "running"
     assert job.metadata["prepared_chunk_count"] == 1
+
+
+def test_ingestion_plan_parses_helper_command_plan() -> None:
+    command = IngestionPlan.from_plan(
+        {
+            "request_id": "req1",
+            "project_id": "p1",
+            "user_id": "u1",
+            "kb_id": "kb",
+            "doc_id": "d1",
+            "source_uri": "memory://d1",
+            "content_type": "text/plain",
+            "raw_text": "hello",
+            "metadata": {"data_type": "project_document", "source": "test"},
+            "collection_name": "rag_p1_v1",
+        }
+    )
+
+    assert command.request_id == "req1"
+    assert command.project_id == "p1"
+    assert command.doc_id == "d1"
+    assert command.raw_text == "hello"
+    assert command.metadata["data_type"] == "project_document"
+    assert command.metadata["collection_name"] == "rag_p1_v1"
+    assert command.request_payload()["raw_text"] == "hello"
+    assert command.job_metadata()["request_id"] == "req1"
 
 
 @pytest.mark.asyncio

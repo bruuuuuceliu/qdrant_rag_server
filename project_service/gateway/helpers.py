@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from retrieval_service.core.schemas import DEFAULT_KB_ID as DEFAULT_KB_ID
 from project_service.gateway.errors import InvalidRequestError
+from project_service.schemas import DEFAULT_KB_ID
 
 FORBIDDEN_FILTER_KEYS = frozenset(
     {"filter", "filters", "qdrant_filter", "raw_filter", "raw_qdrant_filter"}

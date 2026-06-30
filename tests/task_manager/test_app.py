@@ -7,6 +7,7 @@ import pytest
 import task_manager_service.app as app_module
 from broker_service import BrokerSettings
 from redis_status_node import InMemoryTaskStatusStore
+from shared.contracts import TOPICS
 from task_manager_service import TaskManagerSettings
 
 
@@ -40,5 +41,7 @@ def test_create_task_manager_app_wires_broker_buses(monkeypatch: pytest.MonkeyPa
     assert context.dispatcher._status_store is status_store
     assert context.intake_consumer.topic == "task.in"
     assert context.intake_consumer.group_id == "tm"
-    assert len(context.domain_result_consumers) == 4
-    assert len(context.helper_result_consumers) == 4
+    assert context.task_event_consumer.topic == TOPICS.task_events
+    assert context.task_event_consumer.group_id == "tm.events"
+    assert context.task_result_consumer.topic == TOPICS.task_results
+    assert context.task_result_consumer.group_id == "tm.results"

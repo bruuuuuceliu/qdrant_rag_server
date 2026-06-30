@@ -1,6 +1,7 @@
 """Project-RAG schema package."""
 
 from project_service.schemas.cache import ProjectCacheScope
+from project_service.schemas.common import DEFAULT_KB_ID, SHARED_USER_ID
 from project_service.schemas.config import ProjectConfig
 from project_service.schemas.documents import (
     ProjectChunk,
@@ -16,26 +17,7 @@ from project_service.schemas.results import (
 )
 from project_service.schemas.scope import ProjectQueryScope, ProjectRetrievalFilter
 
-# Project-RAG compatibility names. The neutral core Base* classes live in
-# retrieval_service.core.schemas.
-BaseDocument = ProjectDocument
-BaseChunk = ProjectChunk
-BaseChunkPayload = ProjectChunkPayload
-BaseCacheScope = ProjectCacheScope
-BaseIngestJob = ProjectIngestJob
-BaseProjectConfig = ProjectConfig
-BaseQueryScope = ProjectQueryScope
-BaseRetrievalFilter = ProjectRetrievalFilter
-
 __all__ = [
-    "BaseChunk",
-    "BaseChunkPayload",
-    "BaseCacheScope",
-    "BaseDocument",
-    "BaseIngestJob",
-    "BaseProjectConfig",
-    "BaseQueryScope",
-    "BaseRetrievalFilter",
     "GenerateResult",
     "GenerationUnavailableError",
     "IngestResult",
@@ -48,4 +30,6 @@ __all__ = [
     "ProjectQueryScope",
     "ProjectRetrievalFilter",
     "SearchResult",
+    "DEFAULT_KB_ID",
+    "SHARED_USER_ID",
 ]

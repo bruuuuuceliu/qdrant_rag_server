@@ -15,7 +15,6 @@ from project_service.gateway.requests import (
     IngestRequest,
     SearchRequest,
 )
-from retrieval_service.ingest.ingester import Ingester
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +31,6 @@ class IngestPlan:
     request: IngestRequest
     adapter: ProjectAdapter
     config: ProjectConfig
-    ingester: Ingester | None = None
 
 
 @dataclass(frozen=True, slots=True)

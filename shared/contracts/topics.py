@@ -9,9 +9,11 @@ from dataclasses import dataclass
 class TopicSet:
     manager_request_accepted: str = "manager.request.accepted"
     manager_request_rejected: str = "manager.request.rejected"
+    task_requests: str = "task.requests"
+    task_events: str = "task.events"
     task_intake: str = "task.intake"
-    domain_project_commands: str = "domain.project.commands"
-    domain_project_results: str = "domain.project.results"
+    project_plan_requests: str = "project.plan.requests"
+    project_plan_results: str = "project.plan.results"
     domain_workflow_log_commands: str = "domain.workflow_log.commands"
     domain_workflow_log_results: str = "domain.workflow_log.results"
     domain_memory_commands: str = "domain.memory.commands"
@@ -44,7 +46,7 @@ TOPICS = TopicSet()
 def domain_command_topic(data_type: str) -> str:
     normalized = data_type.strip().lower()
     if normalized == "project_document":
-        return TOPICS.domain_project_commands
+        return TOPICS.project_plan_requests
     if normalized == "workflow_log":
         return TOPICS.domain_workflow_log_commands
     if normalized == "agent_memory":
@@ -55,7 +57,7 @@ def domain_command_topic(data_type: str) -> str:
 def domain_result_topic(data_type: str) -> str:
     normalized = data_type.strip().lower()
     if normalized == "project_document":
-        return TOPICS.domain_project_results
+        return TOPICS.project_plan_results
     if normalized == "workflow_log":
         return TOPICS.domain_workflow_log_results
     if normalized == "agent_memory":

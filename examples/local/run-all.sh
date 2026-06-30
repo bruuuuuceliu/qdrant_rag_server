@@ -9,10 +9,10 @@ STATE_FILE="${RUNTIME_DIR}/state.env"
 MANAGER_PID_FILE="${RUNTIME_DIR}/manager.pid"
 PROJECT_SERVICE_PID_FILE="${RUNTIME_DIR}/project-service.pid"
 TASK_MANAGER_PID_FILE="${RUNTIME_DIR}/task-manager.pid"
+TASK_SERVICE_PID_FILE="${RUNTIME_DIR}/task-service.pid"
 WORKFLOW_LOG_PID_FILE="${RUNTIME_DIR}/workflow-log.pid"
 INGESTION_WORKER_PID_FILE="${RUNTIME_DIR}/ingestion-worker.pid"
 RETRIEVAL_INDEX_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-index-worker.pid"
-RETRIEVAL_HTTP_PID_FILE="${RUNTIME_DIR}/retrieval-http.pid"
 RETRIEVAL_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-worker.pid"
 STORAGE_NODE_PID_FILE="${RUNTIME_DIR}/storage-node.pid"
 SQLITE_NODE_PID_FILE="${RUNTIME_DIR}/sqlite-node.pid"
@@ -32,12 +32,6 @@ START_QDRANT=auto
 FOREGROUND=0
 START_SERVER=1
 INFRA_ONLY=0
-EXTERNAL_INGESTION=0
-EXTERNAL_RETRIEVAL_INDEX=0
-EXTERNAL_RETRIEVAL_HTTP=0
-EXTERNAL_PROJECT_SERVICE=0
-BROKER_FIRST=1
-COMPAT_LOCAL=0
 START_REDPANDA_CONSOLE=1
 START_REDIS_INSIGHT=1
 BROKER_TYPE_ARG=""
@@ -67,14 +61,7 @@ Options:
   --reset                        Stop existing local services before starting.
   --foreground                   Run manager in the foreground after setup.
   --no-server                    Run setup/init only; do not start services.
-  --infra-only                   Start/verify broker-first infrastructure and exit.
-  --external-ingestion           Start ingestion worker as a separate process.
-  --external-retrieval-index     Start retrieval index worker as a separate process.
-  --external-retrieval-http      Start retrieval HTTP API as a separate process and use manager HTTP mode.
-  --external-project-service     Start project/RAG service as a separate process.
-  --split-services               Shortcut for external project, ingestion, and retrieval index workers.
-  --broker-first                 Configure broker-first topology settings for the Docker broker,
-                                 task manager, domain services, helpers, storage, and SQLite nodes.
+  --infra-only                   Start/verify local broker infrastructure and exit.
   --broker VALUE                 Local Docker broker to use: redpanda or kafka. Default: redpanda.
   --ui                           Start local broker and Redis visualization UIs. Enabled by default.
   --no-ui                        Do not start local visualization UIs.
@@ -82,12 +69,10 @@ Options:
   --no-redpanda-console          Do not start Redpanda Console.
   --redis-insight                Start Redis Insight for Redis task-status keys. Enabled by default.
   --no-redis-insight             Do not start Redis Insight.
-  --compat-local                 Use the legacy embedded/local queue composition.
   --env-file PATH                Source extra env vars before starting.
   --project-id VALUE             Project ID for --init. Default: demo.
   --project-type VALUE           Project type for --init. Default: website.
   --grpc-port VALUE              Manager gRPC port. Default: 50051.
-  --project-grpc-port VALUE      Project service gRPC port. Default: 50052.
   --embedding-provider VALUE     local, openrouter, or remote. Default: local.
   --embedding-model VALUE        Embedding model name.
   --embedding-dimension VALUE    Embedding vector dimension. Default: 768.
@@ -107,7 +92,6 @@ Options:
 Examples:
   examples/local/run-all.sh --init
   examples/local/run-all.sh --reset --init --grpc-port 50051
-  examples/local/run-all.sh --reset --init --split-services
   examples/local/run-all.sh --init --embedding-provider openrouter
 EOF
 }
@@ -133,37 +117,7 @@ while [[ $# -gt 0 ]]; do
     --infra-only)
       INFRA_ONLY=1
       START_SERVER=1
-      BROKER_FIRST=1
       START_QDRANT=no
-      shift
-      ;;
-    --external-ingestion)
-      EXTERNAL_INGESTION=1
-      shift
-      ;;
-    --external-retrieval-index)
-      EXTERNAL_RETRIEVAL_INDEX=1
-      shift
-      ;;
-    --external-retrieval-http)
-      EXTERNAL_RETRIEVAL_HTTP=1
-      shift
-      ;;
-    --external-project-service)
-      EXTERNAL_PROJECT_SERVICE=1
-      shift
-      ;;
-    --split-services)
-      EXTERNAL_PROJECT_SERVICE=1
-      EXTERNAL_INGESTION=1
-      EXTERNAL_RETRIEVAL_INDEX=1
-      shift
-      ;;
-    --broker-first)
-      BROKER_FIRST=1
-      EXTERNAL_PROJECT_SERVICE=1
-      EXTERNAL_INGESTION=1
-      EXTERNAL_RETRIEVAL_INDEX=1
       shift
       ;;
     --broker)
@@ -196,11 +150,6 @@ while [[ $# -gt 0 ]]; do
       START_REDIS_INSIGHT=0
       shift
       ;;
-    --compat-local)
-      BROKER_FIRST=0
-      COMPAT_LOCAL=1
-      shift
-      ;;
     --env-file)
       ENV_FILE="${2:?--env-file requires a value}"
       shift 2
@@ -215,10 +164,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --grpc-port)
       export RAG_GRPC_PORT="${2:?--grpc-port requires a value}"
-      shift 2
-      ;;
-    --project-grpc-port)
-      export RAG_PROJECT_GRPC_PORT="${2:?--project-grpc-port requires a value}"
       shift 2
       ;;
     --embedding-provider)
@@ -293,11 +238,9 @@ fi
 
 export RAG_LOCAL_DATA_DIR="${RAG_LOCAL_DATA_DIR:-${RUNTIME_DIR}/data}"
 export RAG_CONFIG_PROFILE="${RAG_CONFIG_PROFILE:-local}"
-export RAG_CONFIG_DB_PATH="${RAG_CONFIG_DB_PATH:-${RAG_LOCAL_DATA_DIR}/config.db}"
-export PROJECT_CONFIG_DB_PATH="${PROJECT_CONFIG_DB_PATH:-${RAG_CONFIG_DB_PATH}}"
+export PROJECT_CONFIG_DB_PATH="${PROJECT_CONFIG_DB_PATH:-${RAG_LOCAL_DATA_DIR}/project_config.db}"
 export RAG_RESPONSE_CACHE_DB_PATH="${RAG_RESPONSE_CACHE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/response_cache.db}"
-export RAG_INGEST_JOB_DB_PATH="${RAG_INGEST_JOB_DB_PATH:-${RAG_LOCAL_DATA_DIR}/ingestion_jobs.db}"
-export INGESTION_JOB_DB_PATH="${INGESTION_JOB_DB_PATH:-${RAG_INGEST_JOB_DB_PATH}}"
+export INGESTION_JOB_DB_PATH="${INGESTION_JOB_DB_PATH:-${RAG_LOCAL_DATA_DIR}/ingestion_jobs.db}"
 export WORKFLOW_LOG_DB_PATH="${WORKFLOW_LOG_DB_PATH:-${RAG_LOCAL_DATA_DIR}/workflow_log.db}"
 export RAG_OBJECT_STORAGE_BASE_PATH="${RAG_OBJECT_STORAGE_BASE_PATH:-${RAG_LOCAL_DATA_DIR}/raw_storage}"
 export RETRIEVAL_PLACEMENT_ENABLED="${RETRIEVAL_PLACEMENT_ENABLED:-true}"
@@ -308,49 +251,18 @@ export RETRIEVAL_PLACEMENT_REPLICATION_FACTOR="${RETRIEVAL_PLACEMENT_REPLICATION
 export RETRIEVAL_PLACEMENT_SHARD_ID="${RETRIEVAL_PLACEMENT_SHARD_ID:-local-qdrant}"
 export RETRIEVAL_PLACEMENT_CLUSTER_ID="${RETRIEVAL_PLACEMENT_CLUSTER_ID:-local}"
 export RAG_GRPC_PORT="${RAG_GRPC_PORT:-50051}"
-export RAG_PROJECT_GRPC_PORT="${RAG_PROJECT_GRPC_PORT:-50052}"
 export RAG_QDRANT_HOST="${RAG_QDRANT_HOST:-localhost}"
 export RAG_QDRANT_PORT="${RAG_QDRANT_PORT:-6333}"
 export RAG_QDRANT_GRPC_PORT="${RAG_QDRANT_GRPC_PORT:-6334}"
-export RETRIEVAL_HTTP_HOST="${RETRIEVAL_HTTP_HOST:-127.0.0.1}"
-export RETRIEVAL_HTTP_PORT="${RETRIEVAL_HTTP_PORT:-8081}"
-export RETRIEVAL_HTTP_READ_TIMEOUT="${RETRIEVAL_HTTP_READ_TIMEOUT:-5.0}"
-export RAG_MAX_PER_PROJECT="${RAG_MAX_PER_PROJECT:-20}"
-export RAG_MAX_PER_USER="${RAG_MAX_PER_USER:-5}"
-export RAG_MAX_CONCURRENT_SEARCHES="${RAG_MAX_CONCURRENT_SEARCHES:-32}"
-export RAG_MAX_CONCURRENT_INGEST_SCHEDULES="${RAG_MAX_CONCURRENT_INGEST_SCHEDULES:-32}"
-export RAG_INGEST_WORKERS="${RAG_INGEST_WORKERS:-1}"
-export RAG_INGEST_QUEUE_MAXSIZE="${RAG_INGEST_QUEUE_MAXSIZE:-100}"
-export RAG_INGEST_EVENT_TOPIC="${RAG_INGEST_EVENT_TOPIC:-ingestion.events}"
-export RAG_INGEST_EVENT_QUEUE_MAXSIZE="${RAG_INGEST_EVENT_QUEUE_MAXSIZE:-1000}"
-export WORKFLOW_LOG_SERVICE_ENABLED="${WORKFLOW_LOG_SERVICE_ENABLED:-true}"
-export WORKFLOW_LOG_TOPIC="${WORKFLOW_LOG_TOPIC:-ingestion.events}"
-export MANAGER_INGEST_TOPIC="${MANAGER_INGEST_TOPIC:-ingestion.requests}"
-export MANAGER_WORKFLOW_TOPIC="${MANAGER_WORKFLOW_TOPIC:-workflow.events}"
-export MANAGER_LOCAL_QUEUE_MAXSIZE="${MANAGER_LOCAL_QUEUE_MAXSIZE:-1000}"
-export MANAGER_INGESTION_WORKER_MODE="${MANAGER_INGESTION_WORKER_MODE:-embedded}"
-export MANAGER_QUEUE_BROKER="${MANAGER_QUEUE_BROKER:-local}"
-export MANAGER_QUEUE_DB_PATH="${MANAGER_QUEUE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/ingestion_queue.db}"
-export MANAGER_PROJECT_CLIENT_MODE="${MANAGER_PROJECT_CLIENT_MODE:-local}"
-export MANAGER_PROJECT_GRPC_TARGET="${MANAGER_PROJECT_GRPC_TARGET:-localhost:${RAG_PROJECT_GRPC_PORT}}"
-export MANAGER_RETRIEVAL_CLIENT_MODE="${MANAGER_RETRIEVAL_CLIENT_MODE:-local}"
-export MANAGER_RETRIEVAL_HTTP_BASE_URL="${MANAGER_RETRIEVAL_HTTP_BASE_URL:-http://${RETRIEVAL_HTTP_HOST}:${RETRIEVAL_HTTP_PORT}}"
-export MANAGER_RETRIEVAL_HTTP_TIMEOUT="${MANAGER_RETRIEVAL_HTTP_TIMEOUT:-30}"
-export INGESTION_QUEUE_BROKER="${INGESTION_QUEUE_BROKER:-sqlite}"
-export INGESTION_QUEUE_DB_PATH="${INGESTION_QUEUE_DB_PATH:-${MANAGER_QUEUE_DB_PATH}}"
-export INGESTION_REQUEST_TOPIC="${INGESTION_REQUEST_TOPIC:-${MANAGER_INGEST_TOPIC}}"
-export INGESTION_QUEUE_MAXSIZE="${INGESTION_QUEUE_MAXSIZE:-${MANAGER_LOCAL_QUEUE_MAXSIZE}}"
-export INGESTION_RETRIEVAL_INDEX_ENABLED="${INGESTION_RETRIEVAL_INDEX_ENABLED:-true}"
-export INGESTION_RETRIEVAL_INDEX_TOPIC="${INGESTION_RETRIEVAL_INDEX_TOPIC:-retrieval.index.requests}"
-export INGESTION_RETRIEVAL_INDEX_QUEUE_BROKER="${INGESTION_RETRIEVAL_INDEX_QUEUE_BROKER:-sqlite}"
-export INGESTION_RETRIEVAL_INDEX_QUEUE_DB_PATH="${INGESTION_RETRIEVAL_INDEX_QUEUE_DB_PATH:-${MANAGER_QUEUE_DB_PATH}}"
-export INGESTION_RETRIEVAL_INDEX_QUEUE_MAXSIZE="${INGESTION_RETRIEVAL_INDEX_QUEUE_MAXSIZE:-${MANAGER_LOCAL_QUEUE_MAXSIZE}}"
-export INGESTION_RETRIEVAL_INDEX_RESPONSE_TIMEOUT="${INGESTION_RETRIEVAL_INDEX_RESPONSE_TIMEOUT:-30}"
+export PROJECT_MAX_PER_PROJECT="${PROJECT_MAX_PER_PROJECT:-20}"
+export PROJECT_MAX_PER_USER="${PROJECT_MAX_PER_USER:-5}"
+export INGESTION_WORKER_COUNT="${INGESTION_WORKER_COUNT:-1}"
+export INGESTION_QUEUE_MAXSIZE="${INGESTION_QUEUE_MAXSIZE:-100}"
+export INGESTION_HELPER_COMMAND_TOPIC="${INGESTION_HELPER_COMMAND_TOPIC:-helper.ingestion.commands}"
+export WORKFLOW_LOG_DOMAIN_COMMAND_TOPIC="${WORKFLOW_LOG_DOMAIN_COMMAND_TOPIC:-domain.workflow_log.commands}"
+export RETRIEVAL_HELPER_COMMAND_TOPIC="${RETRIEVAL_HELPER_COMMAND_TOPIC:-helper.retrieval.commands}"
 export RETRIEVAL_INDEX_WORKER_ENABLED="${RETRIEVAL_INDEX_WORKER_ENABLED:-true}"
-export RETRIEVAL_INDEX_REQUEST_TOPIC="${RETRIEVAL_INDEX_REQUEST_TOPIC:-retrieval.index.requests}"
-export RETRIEVAL_INDEX_QUEUE_BROKER="${RETRIEVAL_INDEX_QUEUE_BROKER:-sqlite}"
-export RETRIEVAL_INDEX_QUEUE_DB_PATH="${RETRIEVAL_INDEX_QUEUE_DB_PATH:-${MANAGER_QUEUE_DB_PATH}}"
-export RETRIEVAL_INDEX_QUEUE_MAXSIZE="${RETRIEVAL_INDEX_QUEUE_MAXSIZE:-${MANAGER_LOCAL_QUEUE_MAXSIZE}}"
+export RETRIEVAL_INDEX_HELPER_COMMAND_TOPIC="${RETRIEVAL_INDEX_HELPER_COMMAND_TOPIC:-helper.retrieval_index.commands}"
 export RAG_EMBEDDING_PROVIDER="${RAG_EMBEDDING_PROVIDER:-local}"
 export RAG_EMBEDDING_MODEL="${RAG_EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}"
 export RAG_EMBEDDING_DEVICE="${RAG_EMBEDDING_DEVICE:-cpu}"
@@ -367,17 +279,27 @@ export BROKER_TOPIC_PARTITIONS="${BROKER_TOPIC_PARTITIONS:-1}"
 export BROKER_LAG_TARGETS="${BROKER_LAG_TARGETS:-}"
 export REDPANDA_CONSOLE_PORT="${REDPANDA_CONSOLE_PORT:-8088}"
 export REDIS_INSIGHT_PORT="${REDIS_INSIGHT_PORT:-5540}"
-export BROKER_FIRST
 export INFRA_ONLY
 export MANAGER_TASK_INTAKE_TOPIC="${MANAGER_TASK_INTAKE_TOPIC:-task.intake}"
 export TASK_MANAGER_SERVICE_NAME="${TASK_MANAGER_SERVICE_NAME:-task_manager_service}"
 export TASK_MANAGER_TASK_INTAKE_TOPIC="${TASK_MANAGER_TASK_INTAKE_TOPIC:-${MANAGER_TASK_INTAKE_TOPIC}}"
+export TASK_MANAGER_TASK_REQUEST_TOPIC="${TASK_MANAGER_TASK_REQUEST_TOPIC:-task.requests}"
+export TASK_MANAGER_TASK_EVENT_TOPIC="${TASK_MANAGER_TASK_EVENT_TOPIC:-task.events}"
+export TASK_MANAGER_TASK_RESULT_TOPIC="${TASK_MANAGER_TASK_RESULT_TOPIC:-task.results}"
+export TASK_SERVICE_NAME="${TASK_SERVICE_NAME:-task_service}"
+export TASK_SERVICE_TASK_REQUEST_TOPIC="${TASK_SERVICE_TASK_REQUEST_TOPIC:-${TASK_MANAGER_TASK_REQUEST_TOPIC}}"
+export TASK_SERVICE_PROJECT_PLAN_REQUEST_TOPIC="${TASK_SERVICE_PROJECT_PLAN_REQUEST_TOPIC:-project.plan.requests}"
+export TASK_SERVICE_PROJECT_PLAN_RESULT_TOPIC="${TASK_SERVICE_PROJECT_PLAN_RESULT_TOPIC:-project.plan.results}"
+export TASK_SERVICE_TASK_EVENT_TOPIC="${TASK_SERVICE_TASK_EVENT_TOPIC:-${TASK_MANAGER_TASK_EVENT_TOPIC}}"
+export TASK_SERVICE_TASK_RESULT_TOPIC="${TASK_SERVICE_TASK_RESULT_TOPIC:-${TASK_MANAGER_TASK_RESULT_TOPIC}}"
+export PROJECT_PLAN_REQUEST_TOPIC="${PROJECT_PLAN_REQUEST_TOPIC:-${TASK_SERVICE_PROJECT_PLAN_REQUEST_TOPIC}}"
+export PROJECT_PLAN_RESULT_TOPIC="${PROJECT_PLAN_RESULT_TOPIC:-${TASK_SERVICE_PROJECT_PLAN_RESULT_TOPIC}}"
 export REDIS_TASK_STATUS_URL="${REDIS_TASK_STATUS_URL:-redis://127.0.0.1:6379/0}"
 export REDIS_TASK_STATUS_KEY_PREFIX="${REDIS_TASK_STATUS_KEY_PREFIX:-task:}"
 export REDIS_TASK_COMPLETED_TTL_SECONDS="${REDIS_TASK_COMPLETED_TTL_SECONDS:-86400}"
 export STORAGE_NODE_ROOT="${STORAGE_NODE_ROOT:-${RAG_LOCAL_DATA_DIR}/storage_node}"
 export SQLITE_NODE_DATABASE_ROOT="${SQLITE_NODE_DATABASE_ROOT:-${RAG_LOCAL_DATA_DIR}/sqlite}"
-export TASK_MANAGER_STATE_DB_PATH="${TASK_MANAGER_STATE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/task_manager_state.db}"
+export TASK_SERVICE_STATE_DB_PATH="${TASK_SERVICE_STATE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/task_service_state.db}"
 
 allocate_sqlite_databases() {
   "$PYTHON_BIN" - <<'PY'
@@ -388,12 +310,12 @@ from sqlite_node import SQLiteNodeSettings, SQLiteNodeService
 
 
 DATABASES = (
-    ("project_service", "project_config", "project domain configuration", "RAG_CONFIG_DB_PATH"),
+    ("project_service", "project_config", "project domain configuration", "PROJECT_CONFIG_DB_PATH"),
     ("retrieval_service", "response_cache", "retrieval response cache", "RAG_RESPONSE_CACHE_DB_PATH"),
-    ("ingestion_service", "ingestion_jobs", "ingestion job metadata", "RAG_INGEST_JOB_DB_PATH"),
+    ("ingestion_service", "ingestion_jobs", "ingestion job metadata", "INGESTION_JOB_DB_PATH"),
     ("workflow_log_service", "workflow_log", "workflow audit log", "WORKFLOW_LOG_DB_PATH"),
     ("retrieval_service", "retrieval_placement", "retrieval shard placement", "RETRIEVAL_PLACEMENT_DB_PATH"),
-    ("task_manager_service", "task_manager_state", "task-manager durable fan-in state", "TASK_MANAGER_STATE_DB_PATH"),
+    ("task_service", "task_service_state", "task-service durable fan-in state", "TASK_SERVICE_STATE_DB_PATH"),
 )
 
 
@@ -425,13 +347,9 @@ asyncio.run(main())
 PY
 }
 
-if [[ "$BROKER_FIRST" -eq 1 ]]; then
-  while IFS= read -r assignment; do
-    export "${assignment#export }"
-  done < <(allocate_sqlite_databases)
-  export PROJECT_CONFIG_DB_PATH="$RAG_CONFIG_DB_PATH"
-  export INGESTION_JOB_DB_PATH="$RAG_INGEST_JOB_DB_PATH"
-fi
+while IFS= read -r assignment; do
+  export "${assignment#export }"
+done < <(allocate_sqlite_databases)
 
 normalize_proxy_env() {
   local name value fixed
@@ -463,23 +381,6 @@ validate_mode_combination() {
       exit 2
       ;;
   esac
-  if [[ "$BROKER_FIRST" -eq 1 && "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 ]]; then
-    cat >&2 <<'EOF'
-Unsupported local runner mode: --external-retrieval-http is a compatibility option.
-
-Use --compat-local --external-retrieval-http for the legacy local composition.
-EOF
-    exit 2
-  fi
-  if [[ "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 && "$EXTERNAL_PROJECT_SERVICE" -eq 1 ]]; then
-    cat >&2 <<'EOF'
-Unsupported local runner mode: --external-retrieval-http requires manager project planning to stay local.
-
-Do not combine --external-retrieval-http with --external-project-service or --split-services yet.
-Project config/scope APIs must be extracted before remote project planning can drive remote retrieval HTTP execution.
-EOF
-    exit 2
-  fi
 }
 
 validate_mode_combination
@@ -747,20 +648,18 @@ start_qdrant_log_collector() {
 check_runtime_dependencies() {
   "$PYTHON_BIN" - <<'PY'
 import importlib.util
-import os
 import sys
 
 required = {
     "grpc": "grpcio",
+    "aiokafka": "aiokafka",
+    "redis": "redis",
 }
-if os.environ.get("BROKER_FIRST") == "1":
-    required["aiokafka"] = "aiokafka"
-    required["redis"] = "redis"
-if os.environ.get("INFRA_ONLY") != "1":
+if __import__("os").environ.get("INFRA_ONLY") != "1":
     required["qdrant_client"] = "qdrant-client"
 if (
-    os.environ.get("INFRA_ONLY") != "1"
-    and os.environ.get("RAG_EMBEDDING_PROVIDER", "local").lower() == "local"
+    __import__("os").environ.get("INFRA_ONLY") != "1"
+    and __import__("os").environ.get("RAG_EMBEDDING_PROVIDER", "local").lower() == "local"
 ):
     required["sentence_transformers"] = "sentence-transformers"
 missing = [package for module, package in required.items() if importlib.util.find_spec(module) is None]
@@ -789,19 +688,7 @@ validate_provider_config() {
 }
 
 validate_runtime_config() {
-  if [[ "$BROKER_FIRST" -eq 1 ]]; then
-    return 0
-  fi
-  "$PYTHON_BIN" - <<'PY'
-import os
-
-from configs.config import load_settings
-from configs.validation import validate_settings_or_raise
-
-profile = os.environ.get("RAG_CONFIG_PROFILE", "local")
-settings = load_settings(profile=profile)
-validate_settings_or_raise(settings, profile=profile)
-PY
+  return 0
 }
 
 init_project_config() {
@@ -817,7 +704,7 @@ from project_service.schemas import ProjectConfig
 async def main() -> None:
     project_id = os.environ["PROJECT_ID"]
     project_type = os.environ["PROJECT_TYPE"]
-    repo = SQLiteProjectConfigRepository(Path(os.environ["RAG_CONFIG_DB_PATH"]))
+    repo = SQLiteProjectConfigRepository(Path(os.environ["PROJECT_CONFIG_DB_PATH"]))
     await repo.initialize()
     await repo.upsert_project(
         ProjectConfig(
@@ -911,15 +798,6 @@ ensure_not_already_running() {
     fi
     rm -f "$RETRIEVAL_INDEX_WORKER_PID_FILE"
   fi
-  if [[ -f "$RETRIEVAL_HTTP_PID_FILE" ]]; then
-    local old_retrieval_http_pid
-    old_retrieval_http_pid="$(cat "$RETRIEVAL_HTTP_PID_FILE" 2>/dev/null || true)"
-    if is_pid_alive "$old_retrieval_http_pid"; then
-      echo "Retrieval HTTP server is already running with PID ${old_retrieval_http_pid}. Use examples/local/stop-all.sh first." >&2
-      exit 1
-    fi
-    rm -f "$RETRIEVAL_HTTP_PID_FILE"
-  fi
   if [[ -f "$PROJECT_SERVICE_PID_FILE" ]]; then
     local old_project_pid
     old_project_pid="$(cat "$PROJECT_SERVICE_PID_FILE" 2>/dev/null || true)"
@@ -931,6 +809,7 @@ ensure_not_already_running() {
   fi
   for pid_file in \
     "$TASK_MANAGER_PID_FILE" \
+    "$TASK_SERVICE_PID_FILE" \
     "$WORKFLOW_LOG_PID_FILE" \
     "$RETRIEVAL_WORKER_PID_FILE" \
     "$STORAGE_NODE_PID_FILE" \
@@ -956,7 +835,6 @@ RAG_LOCAL_DATA_DIR=${RAG_LOCAL_DATA_DIR}
 PROJECT_CONFIG_DB_PATH=${PROJECT_CONFIG_DB_PATH}
 INGESTION_JOB_DB_PATH=${INGESTION_JOB_DB_PATH}
 RAG_GRPC_PORT=${RAG_GRPC_PORT}
-RAG_PROJECT_GRPC_PORT=${RAG_PROJECT_GRPC_PORT}
 RAG_QDRANT_HOST=${RAG_QDRANT_HOST}
 RAG_QDRANT_PORT=${RAG_QDRANT_PORT}
 RAG_QDRANT_GRPC_PORT=${RAG_QDRANT_GRPC_PORT}
@@ -968,9 +846,6 @@ REDIS_CONTAINER=${REDIS_CONTAINER}
 REDPANDA_CONSOLE_CONTAINER=${REDPANDA_CONSOLE_CONTAINER}
 REDIS_INSIGHT_CONTAINER=${REDIS_INSIGHT_CONTAINER}
 REDIS_INSIGHT_VOLUME=${REDIS_INSIGHT_VOLUME}
-RETRIEVAL_INDEX_REQUEST_TOPIC=${RETRIEVAL_INDEX_REQUEST_TOPIC}
-RETRIEVAL_HTTP_PORT=${RETRIEVAL_HTTP_PORT}
-BROKER_FIRST=${BROKER_FIRST}
 BROKER_TYPE=${BROKER_TYPE}
 BROKER_BOOTSTRAP_SERVERS=${BROKER_BOOTSTRAP_SERVERS}
 BROKER_CLIENT_ID=${BROKER_CLIENT_ID}
@@ -981,14 +856,22 @@ REDIS_INSIGHT_PORT=${REDIS_INSIGHT_PORT}
 MANAGER_TASK_INTAKE_TOPIC=${MANAGER_TASK_INTAKE_TOPIC}
 TASK_MANAGER_SERVICE_NAME=${TASK_MANAGER_SERVICE_NAME}
 TASK_MANAGER_TASK_INTAKE_TOPIC=${TASK_MANAGER_TASK_INTAKE_TOPIC}
+TASK_MANAGER_TASK_REQUEST_TOPIC=${TASK_MANAGER_TASK_REQUEST_TOPIC}
+TASK_MANAGER_TASK_EVENT_TOPIC=${TASK_MANAGER_TASK_EVENT_TOPIC}
+TASK_MANAGER_TASK_RESULT_TOPIC=${TASK_MANAGER_TASK_RESULT_TOPIC}
+TASK_SERVICE_NAME=${TASK_SERVICE_NAME}
+TASK_SERVICE_TASK_REQUEST_TOPIC=${TASK_SERVICE_TASK_REQUEST_TOPIC}
+TASK_SERVICE_PROJECT_PLAN_REQUEST_TOPIC=${TASK_SERVICE_PROJECT_PLAN_REQUEST_TOPIC}
+TASK_SERVICE_PROJECT_PLAN_RESULT_TOPIC=${TASK_SERVICE_PROJECT_PLAN_RESULT_TOPIC}
+TASK_SERVICE_TASK_EVENT_TOPIC=${TASK_SERVICE_TASK_EVENT_TOPIC}
+TASK_SERVICE_TASK_RESULT_TOPIC=${TASK_SERVICE_TASK_RESULT_TOPIC}
+PROJECT_PLAN_REQUEST_TOPIC=${PROJECT_PLAN_REQUEST_TOPIC}
+PROJECT_PLAN_RESULT_TOPIC=${PROJECT_PLAN_RESULT_TOPIC}
 REDIS_TASK_STATUS_URL=${REDIS_TASK_STATUS_URL}
 REDIS_TASK_STATUS_KEY_PREFIX=${REDIS_TASK_STATUS_KEY_PREFIX}
 STORAGE_NODE_ROOT=${STORAGE_NODE_ROOT}
 SQLITE_NODE_DATABASE_ROOT=${SQLITE_NODE_DATABASE_ROOT}
-TASK_MANAGER_STATE_DB_PATH=${TASK_MANAGER_STATE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/task_manager_state.db}
-MANAGER_QUEUE_DB_PATH=${MANAGER_QUEUE_DB_PATH}
-INGESTION_RETRIEVAL_INDEX_QUEUE_DB_PATH=${INGESTION_RETRIEVAL_INDEX_QUEUE_DB_PATH}
-RETRIEVAL_INDEX_QUEUE_DB_PATH=${RETRIEVAL_INDEX_QUEUE_DB_PATH}
+TASK_SERVICE_STATE_DB_PATH=${TASK_SERVICE_STATE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/task_service_state.db}
 EOF
 }
 
@@ -1054,23 +937,6 @@ verify_broker_first_readiness() {
   fi
 }
 
-start_project_service_background() {
-  local project_log="${LOG_DIR}/project-service.log"
-  : > "$project_log"
-  if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c 'RAG_GRPC_PORT="$1" exec "$PYTHON_BIN" -m project_service.server.app' _ "$RAG_PROJECT_GRPC_PORT" > "$project_log" 2>&1 &
-  else
-    RAG_GRPC_PORT="$RAG_PROJECT_GRPC_PORT" "$PYTHON_BIN" -m project_service.server.app > "$project_log" 2>&1 &
-  fi
-  local pid=$!
-  echo "$pid" > "$PROJECT_SERVICE_PID_FILE"
-  if ! wait_for_service_port "Project service" "$pid" "127.0.0.1" "$RAG_PROJECT_GRPC_PORT" "$project_log" 120; then
-    rm -f "$PROJECT_SERVICE_PID_FILE"
-    exit 1
-  fi
-  echo "Project/RAG gRPC service started with PID ${pid}. Log: ${project_log}"
-}
-
 start_module_background() {
   local label="$1"
   local module="$2"
@@ -1100,140 +966,34 @@ start_broker_first_background() {
   start_module_background "SQLite node" "sqlite_node.worker" "$SQLITE_NODE_PID_FILE" "sqlite-node"
   start_module_background "Storage node" "storage_node.worker" "$STORAGE_NODE_PID_FILE" "storage-node"
   start_module_background "Task manager" "task_manager_service.worker" "$TASK_MANAGER_PID_FILE" "task-manager"
-  start_module_background "Project domain service" "project_service.domain_app" "$PROJECT_SERVICE_PID_FILE" "project-service"
+  start_module_background "Task service" "task_service.worker" "$TASK_SERVICE_PID_FILE" "task-service"
+  start_module_background "Project planning service" "project_service.domain_app" "$PROJECT_SERVICE_PID_FILE" "project-service"
   start_module_background "Workflow log service" "workflow_log_service.worker" "$WORKFLOW_LOG_PID_FILE" "workflow-log"
   start_module_background "Ingestion helper" "ingestion_service.server.worker" "$INGESTION_WORKER_PID_FILE" "ingestion-worker"
   start_module_background "Retrieval helper" "retrieval_service.server.worker" "$RETRIEVAL_WORKER_PID_FILE" "retrieval-worker"
   start_module_background "Retrieval index helper" "retrieval_service.indexing.worker" "$RETRIEVAL_INDEX_WORKER_PID_FILE" "retrieval-index-worker"
 }
 
-start_ingestion_worker_background() {
-  local worker_log="${LOG_DIR}/ingestion-worker.log"
-  : > "$worker_log"
-  if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c 'exec "$PYTHON_BIN" -m ingestion_service.server.worker' > "$worker_log" 2>&1 &
-  else
-    "$PYTHON_BIN" -m ingestion_service.server.worker > "$worker_log" 2>&1 &
-  fi
-  local pid=$!
-  echo "$pid" > "$INGESTION_WORKER_PID_FILE"
-  sleep 2
-  if ! is_pid_alive "$pid"; then
-    echo "Ingestion worker failed to stay running. Log follows:" >&2
-    sed -n '1,160p' "$worker_log" >&2 || true
-    rm -f "$INGESTION_WORKER_PID_FILE"
-    exit 1
-  fi
-  echo "Ingestion worker server started with PID ${pid}. Log: ${worker_log}"
-}
-
-start_retrieval_index_worker_background() {
-  local worker_log="${LOG_DIR}/retrieval-index-worker.log"
-  : > "$worker_log"
-  if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c 'exec "$PYTHON_BIN" -m retrieval_service.indexing.worker' > "$worker_log" 2>&1 &
-  else
-    "$PYTHON_BIN" -m retrieval_service.indexing.worker > "$worker_log" 2>&1 &
-  fi
-  local pid=$!
-  echo "$pid" > "$RETRIEVAL_INDEX_WORKER_PID_FILE"
-  sleep 2
-  if ! is_pid_alive "$pid"; then
-    echo "Retrieval index worker failed to stay running. Log follows:" >&2
-    sed -n '1,160p' "$worker_log" >&2 || true
-    rm -f "$RETRIEVAL_INDEX_WORKER_PID_FILE"
-    exit 1
-  fi
-  echo "Retrieval index worker started with PID ${pid}. Log: ${worker_log}"
-}
-
-start_retrieval_http_background() {
-  local retrieval_log="${LOG_DIR}/retrieval-http.log"
-  : > "$retrieval_log"
-  if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c 'exec "$PYTHON_BIN" -m retrieval_service.server.worker' > "$retrieval_log" 2>&1 &
-  else
-    "$PYTHON_BIN" -m retrieval_service.server.worker > "$retrieval_log" 2>&1 &
-  fi
-  local pid=$!
-  echo "$pid" > "$RETRIEVAL_HTTP_PID_FILE"
-  if ! wait_for_service_port "Retrieval HTTP server" "$pid" "${RETRIEVAL_HTTP_HOST:-127.0.0.1}" "${RETRIEVAL_HTTP_PORT:-8081}" "$retrieval_log" 120; then
-    rm -f "$RETRIEVAL_HTTP_PID_FILE"
-    exit 1
-  fi
-  echo "Retrieval HTTP server started with PID ${pid}. Log: ${retrieval_log}"
-}
-
-start_manager_background() {
-  local manager_log="${LOG_DIR}/manager.log"
-  : > "$manager_log"
-  if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c 'exec "$PYTHON_BIN" -m local_runtime.manager_app' > "$manager_log" 2>&1 &
-  else
-    "$PYTHON_BIN" -m local_runtime.manager_app > "$manager_log" 2>&1 &
-  fi
-  local pid=$!
-  echo "$pid" > "$MANAGER_PID_FILE"
-  if ! wait_for_service_port "Manager" "$pid" "127.0.0.1" "$RAG_GRPC_PORT" "$manager_log" 120; then
-    rm -f "$MANAGER_PID_FILE"
-    exit 1
-  fi
-  echo "Manager gRPC server started with PID ${pid}. Log: ${manager_log}"
-}
-
-if [[ "$EXTERNAL_PROJECT_SERVICE" -eq 1 ]]; then
-  export MANAGER_PROJECT_CLIENT_MODE=grpc
-  export MANAGER_PROJECT_GRPC_TARGET="localhost:${RAG_PROJECT_GRPC_PORT}"
-fi
-if [[ "$EXTERNAL_INGESTION" -eq 1 ]]; then
-  export MANAGER_INGESTION_WORKER_MODE=external
-  export MANAGER_QUEUE_BROKER=sqlite
-  export INGESTION_QUEUE_BROKER=sqlite
-fi
-if [[ "$EXTERNAL_RETRIEVAL_INDEX" -eq 1 ]]; then
-  export INGESTION_RETRIEVAL_INDEX_ENABLED=true
-  export INGESTION_RETRIEVAL_INDEX_QUEUE_BROKER=sqlite
-  export INGESTION_RETRIEVAL_INDEX_QUEUE_DB_PATH="${RETRIEVAL_INDEX_QUEUE_DB_PATH}"
-  export INGESTION_RETRIEVAL_INDEX_TOPIC="${RETRIEVAL_INDEX_REQUEST_TOPIC}"
-  export INGESTION_RETRIEVAL_INDEX_RESPONSE_TIMEOUT="${INGESTION_RETRIEVAL_INDEX_RESPONSE_TIMEOUT:-30}"
-  export RETRIEVAL_INDEX_QUEUE_BROKER=sqlite
-fi
-if [[ "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 ]]; then
-  export MANAGER_RETRIEVAL_CLIENT_MODE=http
-  export MANAGER_RETRIEVAL_HTTP_BASE_URL="http://${RETRIEVAL_HTTP_HOST:-127.0.0.1}:${RETRIEVAL_HTTP_PORT:-8081}"
-fi
-
-if [[ "$BROKER_FIRST" -eq 1 ]]; then
-  export MANAGER_PROJECT_CLIENT_MODE=broker
-  export MANAGER_INGESTION_WORKER_MODE=external
-  export MANAGER_RETRIEVAL_CLIENT_MODE=broker
-  export MANAGER_QUEUE_BROKER="$BROKER_TYPE"
-fi
-
 validate_provider_config
 validate_runtime_config
 
 if [[ "$START_SERVER" -eq 1 ]]; then
   check_runtime_dependencies
-  if [[ "$BROKER_FIRST" -eq 1 ]]; then
-    start_broker_if_needed
-    start_redis_if_needed
-    start_redpanda_console_if_needed
-    start_redis_insight_if_needed
-    bootstrap_broker_topics
-    verify_redis_status
-    verify_broker_first_readiness 1
-  fi
+  start_broker_if_needed
+  start_redis_if_needed
+  start_redpanda_console_if_needed
+  start_redis_insight_if_needed
+  bootstrap_broker_topics
+  verify_redis_status
+  verify_broker_first_readiness 1
   if [[ "$INFRA_ONLY" -eq 1 ]]; then
     write_state
-    echo "Broker-first infrastructure is ready."
+    echo "Broker infrastructure is ready."
     echo "Run live smoke tests with: RAG_LIVE_INFRA=1 pytest -m live_infra tests/integration/test_live_infra_smoke.py"
     exit 0
   fi
   start_qdrant_if_needed
-  if [[ "$BROKER_FIRST" -eq 1 ]]; then
-    verify_broker_first_readiness 0
-  fi
+  verify_broker_first_readiness 0
   ensure_not_already_running
 fi
 
@@ -1250,35 +1010,27 @@ Local RAG service settings:
   runtime_dir:         ${RUNTIME_DIR}
   data_dir:            ${RAG_LOCAL_DATA_DIR}
   config_profile:      ${RAG_CONFIG_PROFILE}
-  config_db:           ${RAG_CONFIG_DB_PATH}
   project_config_db:   ${PROJECT_CONFIG_DB_PATH}
   response_cache_db:   ${RAG_RESPONSE_CACHE_DB_PATH}
-  ingest_jobs_db:      ${RAG_INGEST_JOB_DB_PATH}
   ingestion_job_db:    ${INGESTION_JOB_DB_PATH}
   workflow_log_db:     ${WORKFLOW_LOG_DB_PATH}
   placement_db:        ${RETRIEVAL_PLACEMENT_DB_PATH}
   placement_mode:      ${RETRIEVAL_PLACEMENT_ROUTING_MODE}
   grpc_port:           ${RAG_GRPC_PORT}
-  project_grpc_port:   ${RAG_PROJECT_GRPC_PORT}
   qdrant:              ${RAG_QDRANT_HOST}:${RAG_QDRANT_PORT}
-  ingestion_mode:      ${MANAGER_INGESTION_WORKER_MODE}
-  queue_broker:        ${MANAGER_QUEUE_BROKER}
-  queue_db:            ${MANAGER_QUEUE_DB_PATH}
-  retrieval_index:     ${RETRIEVAL_INDEX_REQUEST_TOPIC}
-  retrieval_index_db:  ${RETRIEVAL_INDEX_QUEUE_DB_PATH}
-  ingestion_index_pub: ${INGESTION_RETRIEVAL_INDEX_ENABLED}
-  retrieval_http:      ${RETRIEVAL_HTTP_HOST:-127.0.0.1}:${RETRIEVAL_HTTP_PORT:-8081}
-  retrieval_mode:      ${MANAGER_RETRIEVAL_CLIENT_MODE:-local}
-  project_client_mode: ${MANAGER_PROJECT_CLIENT_MODE}
-  project_target:      ${MANAGER_PROJECT_GRPC_TARGET}
-  broker_first:        ${BROKER_FIRST}
   broker_type:         ${BROKER_TYPE}
   broker:              ${BROKER_BOOTSTRAP_SERVERS}
   redpanda_console:    http://127.0.0.1:${REDPANDA_CONSOLE_PORT} $([[ "$START_REDPANDA_CONSOLE" -eq 1 ]] && printf '(enabled)' || printf '(disabled)')
   redis_insight:       http://127.0.0.1:${REDIS_INSIGHT_PORT} $([[ "$START_REDIS_INSIGHT" -eq 1 ]] && printf '(enabled)' || printf '(disabled)')
   task_intake_topic:   ${MANAGER_TASK_INTAKE_TOPIC}
   task_manager:        ${TASK_MANAGER_SERVICE_NAME}
+  task_service:        ${TASK_SERVICE_NAME}
+  task_requests:       ${TASK_SERVICE_TASK_REQUEST_TOPIC}
+  project_plans:       ${PROJECT_PLAN_REQUEST_TOPIC} -> ${PROJECT_PLAN_RESULT_TOPIC}
   redis_status:        ${REDIS_TASK_STATUS_URL}
+  ingestion_helper:    ${INGESTION_HELPER_COMMAND_TOPIC}
+  retrieval_helper:    ${RETRIEVAL_HELPER_COMMAND_TOPIC}
+  index_helper:        ${RETRIEVAL_INDEX_HELPER_COMMAND_TOPIC}
   storage_node_root:   ${STORAGE_NODE_ROOT}
   sqlite_node_root:    ${SQLITE_NODE_DATABASE_ROOT}
   embedding_provider:  ${RAG_EMBEDDING_PROVIDER}
@@ -1291,44 +1043,15 @@ if [[ "$START_SERVER" -eq 0 ]]; then
   exit 0
 fi
 
-if [[ "$BROKER_FIRST" -eq 1 ]]; then
-  start_broker_first_background
-  start_module_background "Manager" "manager_service.worker" "$MANAGER_PID_FILE" "manager"
-  echo "Stop everything with: examples/local/stop-all.sh"
-  exit 0
-fi
-
 if [[ "$FOREGROUND" -eq 1 ]]; then
-  if [[ "$EXTERNAL_PROJECT_SERVICE" -eq 1 ]]; then
-    start_project_service_background
-  fi
-  if [[ "$EXTERNAL_INGESTION" -eq 1 ]]; then
-    start_ingestion_worker_background
-  fi
-  if [[ "$EXTERNAL_RETRIEVAL_INDEX" -eq 1 ]]; then
-    start_retrieval_index_worker_background
-  fi
-  if [[ "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 ]]; then
-    start_retrieval_http_background
-  fi
+  start_broker_first_background
   manager_log="${LOG_DIR}/manager.log"
   : > "$manager_log"
   echo "Starting manager in foreground. Log: ${manager_log}"
   echo "Press Ctrl-C to stop; then run examples/local/stop-all.sh for cleanup."
-  exec "$PYTHON_BIN" -m local_runtime.manager_app 2>&1 | tee -a "$manager_log"
+  exec "$PYTHON_BIN" -m manager_service.worker 2>&1 | tee -a "$manager_log"
 fi
 
-if [[ "$EXTERNAL_PROJECT_SERVICE" -eq 1 ]]; then
-  start_project_service_background
-fi
-if [[ "$EXTERNAL_INGESTION" -eq 1 ]]; then
-  start_ingestion_worker_background
-fi
-if [[ "$EXTERNAL_RETRIEVAL_INDEX" -eq 1 ]]; then
-  start_retrieval_index_worker_background
-fi
-if [[ "$EXTERNAL_RETRIEVAL_HTTP" -eq 1 ]]; then
-  start_retrieval_http_background
-fi
-start_manager_background
+start_broker_first_background
+start_module_background "Manager" "manager_service.worker" "$MANAGER_PID_FILE" "manager"
 echo "Stop everything with: examples/local/stop-all.sh"

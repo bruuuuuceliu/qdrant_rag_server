@@ -24,8 +24,12 @@ class MessageValidationError(ValueError):
 class MessageType(StrEnum):
     REQUEST_ACCEPTED = "request.accepted"
     REQUEST_REJECTED = "request.rejected"
+    TASK_REQUEST = "task.request"
+    TASK_EVENT = "task.event"
     DOMAIN_COMMAND = "domain.command"
     DOMAIN_RESULT = "domain.result"
+    PROJECT_PLAN_REQUEST = "project.plan.request"
+    PROJECT_PLAN_RESULT = "project.plan.result"
     HELPER_COMMAND = "helper.command"
     HELPER_RESULT = "helper.result"
     TASK_STARTED = "task.started"

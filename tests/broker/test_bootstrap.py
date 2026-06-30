@@ -39,8 +39,11 @@ class _Health:
 def test_required_topics_uses_canonical_topic_set() -> None:
     topics = required_topics()
 
+    assert TOPICS.task_requests in topics
+    assert TOPICS.task_events in topics
     assert TOPICS.task_intake in topics
-    assert TOPICS.domain_project_commands in topics
+    assert TOPICS.project_plan_requests in topics
+    assert TOPICS.project_plan_results in topics
     assert TOPICS.helper_retrieval_results in topics
     assert len(topics) == len(set(topics))
 

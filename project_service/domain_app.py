@@ -22,7 +22,7 @@ from shared.runtime_health import RuntimeHealth
 class ProjectDomainServerContext:
     handler: ProjectDomainHandler
     consumer: MessageConsumer
-    command_topic: str = TOPICS.domain_project_commands
+    command_topic: str = TOPICS.project_plan_requests
     producer: MessageProducer | None = None
     _task: asyncio.Task[None] | None = field(default=None, init=False)
 
@@ -71,7 +71,8 @@ def create_domain_app(
     producer: MessageProducer | None = None,
     consumer: MessageConsumer | None = None,
     service_name: str = "project_service",
-    command_topic: str = TOPICS.domain_project_commands,
+    command_topic: str = TOPICS.project_plan_requests,
+    result_topic: str = TOPICS.project_plan_results,
 ) -> ProjectDomainServerContext:
     broker_settings = broker_settings or BrokerSettings.from_values(dict(os.environ))
     producer = producer or create_redpanda_bus(broker_settings)
@@ -81,7 +82,11 @@ def create_domain_app(
         group_id=service_name,
     )
     return ProjectDomainServerContext(
-        handler=ProjectDomainHandler(planning=planning, producer=producer),
+        handler=ProjectDomainHandler(
+            planning=planning,
+            producer=producer,
+            result_topic=result_topic,
+        ),
         producer=producer,
         consumer=consumer,
         command_topic=command_topic,
@@ -91,7 +96,8 @@ def create_domain_app(
 @dataclass(frozen=True, slots=True)
 class ProjectDomainSettings:
     service_name: str = "project_service"
-    command_topic: str = TOPICS.domain_project_commands
+    command_topic: str = TOPICS.project_plan_requests
+    result_topic: str = TOPICS.project_plan_results
     config_db_path: str = "/var/lib/rag/config.db"
     max_per_project: int = 20
     max_per_user: int = 5
@@ -102,8 +108,13 @@ class ProjectDomainSettings:
             service_name=get_value(values, "PROJECT_SERVICE_NAME", "project_service"),
             command_topic=get_value(
                 values,
-                "PROJECT_DOMAIN_COMMAND_TOPIC",
-                TOPICS.domain_project_commands,
+                "PROJECT_PLAN_REQUEST_TOPIC",
+                TOPICS.project_plan_requests,
+            ),
+            result_topic=get_value(
+                values,
+                "PROJECT_PLAN_RESULT_TOPIC",
+                TOPICS.project_plan_results,
             ),
             config_db_path=get_value(values, "PROJECT_CONFIG_DB_PATH", "/var/lib/rag/config.db"),
             max_per_project=get_int_value(values, "PROJECT_MAX_PER_PROJECT", 20),
@@ -137,6 +148,7 @@ async def create_default_domain_app(
         broker_settings=broker_settings,
         service_name=settings.service_name,
         command_topic=settings.command_topic,
+        result_topic=settings.result_topic,
     )
 
 

@@ -57,7 +57,7 @@ async def test_storage_helper_handler_uses_plan_operation_for_ingest_followup(tm
 
 def _command(*, operation: str, plan: dict[str, object]) -> MessageEnvelope:
     return MessageEnvelope.create(
-        producer="task_manager_service",
+        producer="task_service",
         message_type=MessageType.HELPER_COMMAND,
         data_type="project_document",
         task_id="task-1",

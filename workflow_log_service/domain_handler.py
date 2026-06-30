@@ -53,13 +53,22 @@ class WorkflowLogDomainHandler:
         command: DomainCommandPayload,
     ) -> dict[str, Any]:
         payload = command.request
-        entry = WorkflowLogEntry.from_message(
-            _Message(
-                topic=TOPICS.audit_events,
-                key=envelope.task_id,
-                payload=payload,
-                headers={"correlation_id": envelope.correlation_id},
-            )
+        entry = WorkflowLogEntry(
+            event=str(payload.get("event", "")),
+            job_id=str(payload.get("job_id", envelope.task_id)),
+            status=str(payload.get("status", "")),
+            project_id=str(payload.get("project_id", "")),
+            user_id=str(payload.get("user_id", "")),
+            kb_id=str(payload.get("kb_id", "")),
+            doc_id=str(payload.get("doc_id", "")),
+            data_type=str(payload.get("data_type", "")),
+            content_hash=str(payload.get("content_hash", "")),
+            raw_storage_key=str(payload.get("raw_storage_key", "")),
+            error=str(payload.get("error", "")),
+            topic=TOPICS.audit_events,
+            key=envelope.task_id,
+            headers={"correlation_id": envelope.correlation_id},
+            payload=dict(payload),
         )
         await self._repository.append(entry)
         return {"ok": True, "job_id": entry.job_id, "event": entry.event}
@@ -68,14 +77,6 @@ class WorkflowLogDomainHandler:
         job_id = str(command.request.get("job_id", ""))
         entries = await self._repository.list_by_job(job_id) if job_id else await self._repository.list_all()
         return {"ok": True, "entries": [_entry_payload(entry) for entry in entries]}
-
-
-class _Message:
-    def __init__(self, *, topic: str, key: str, payload: dict[str, Any], headers: dict[str, str]) -> None:
-        self.topic = topic
-        self.key = key
-        self.payload = payload
-        self.headers = headers
 
 
 def _entry_payload(entry: WorkflowLogEntry) -> dict[str, Any]:

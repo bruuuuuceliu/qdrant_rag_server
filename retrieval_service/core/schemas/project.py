@@ -29,30 +29,3 @@ class BaseServiceConfig:
     @property
     def collection_name(self) -> str:
         return f"{self.service_type}_{self.service_id}_{self.active_embedding_version}"
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class BaseProjectConfig(BaseServiceConfig):
-    """Compatibility project config.
-
-    Concrete project implementations should define their own service config.
-    This class remains so older imports keep working during the migration.
-    """
-
-    project_id: str = ""
-    project_type: str = ""
-
-    def __post_init__(self) -> None:
-        require_non_empty("project_id", self.project_id)
-        require_non_empty("project_type", self.project_type)
-        if self.project_id:
-            object.__setattr__(self, "service_id", self.project_id)
-        if self.project_type:
-            object.__setattr__(self, "service_type", self.project_type)
-        BaseServiceConfig.__post_init__(self)
-        object.__setattr__(self, "project_id", self.service_id)
-        object.__setattr__(self, "project_type", self.service_type)
-
-    @property
-    def collection_name(self) -> str:
-        return f"rag_{self.project_id}_{self.active_embedding_version}"

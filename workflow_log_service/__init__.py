@@ -1,6 +1,5 @@
 """Workflow execution log service."""
 
-from workflow_log_service.consumer import WorkflowLogConsumer
 from workflow_log_service.domain_app import (
     WorkflowLogDomainServerContext,
     WorkflowLogDomainSettings,
@@ -19,7 +18,6 @@ from workflow_log_service.worker import WorkflowLogWorkerContext, create_worker_
 __all__ = [
     "MemoryWorkflowLogRepository",
     "SQLiteWorkflowLogRepository",
-    "WorkflowLogConsumer",
     "WorkflowLogDomainHandler",
     "WorkflowLogDomainServerContext",
     "WorkflowLogDomainSettings",

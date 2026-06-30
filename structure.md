@@ -34,10 +34,11 @@ Each major part must be an independent server or node:
 Each independent server must live in its own independent top-level folder.
 
 Service code must not cross-reference another service's internal modules,
-repositories, handlers, runtime objects, or implementation details. A service may
-only communicate with another service through explicit external contracts such
-as HTTP APIs, broker topics/events, protobuf/OpenAPI schemas, shared message
-schemas, or configuration values.
+repositories, handlers, runtime objects, or implementation details. Runtime
+node-to-node work must communicate through Redpanda topics/events and stable
+message schemas. The direct exceptions are the public manager API, manager
+status reads from Redis, health checks, and a service's private database or
+storage access.
 
 Shared code must be limited to stable cross-service contracts and small generic
 utilities. Shared packages must not contain business logic that belongs to a
@@ -56,8 +57,8 @@ The intended structure follows standard microservice design:
 - Each service owns its source code, configuration, tests, runtime entrypoint,
   and deployment definition.
 - Each service can be built, tested, started, and deployed independently.
-- Service-to-service communication goes through the broker or public service
-  APIs, never direct imports into another service folder.
+- Service-to-service work goes through the broker, never direct imports into
+  another service folder.
 - Data ownership is explicit. A service must not directly read or mutate another
   service's private database, storage files, queues, or in-memory state.
 - Local development uses the same service boundaries as production.
@@ -107,11 +108,13 @@ The broker should provide the communication path between independent services,
 including at minimum:
 
 - Manager-authenticated public requests to the task manager intake stream.
-- Task-manager-issued commands to the selected domain service.
-- Task-manager-issued helper commands to nodes such as ingestion, storage,
-  retrieval, or other helpers after domain services return plans/info.
+- Task-manager-issued normalized task requests for the task service.
+- Task-service-issued project plan requests and helper commands to nodes such
+  as ingestion, storage, retrieval, indexing, or other helpers after project
+  planning returns.
 - Helper-node results and events back to the broker.
-- Task lifecycle, status, fan-out, and fan-in messages to the task manager.
+- Task lifecycle events and final results back to the task manager status
+  read model.
 - Service event publication for workflow logging.
 
 Retries, leases, attempt counts, backoff, and dead-letter queues are explicitly
@@ -131,7 +134,8 @@ The local runner must start real local servers/nodes, not embedded shortcuts:
 - Workflow logging service server when enabled.
 - Ingestion worker server/process.
 - Retrieval index worker server/process.
-- Retrieval HTTP/search/delete server.
+- Retrieval search/delete helper worker server/process.
+- Storage helper worker server/process.
 
 Local and production should differ only by config values such as hostnames,
 ports, credentials, and paths.
@@ -152,33 +156,41 @@ client
   -> broker
   -> task manager
   -> broker
+  -> task service
+  -> broker
   -> domain service, such as project service, workflow logging service, memory service
   -> broker
-  -> task manager
+  -> task service
   -> broker
   -> helper nodes, such as ingestion, storage, retrieval, or other helpers
+  -> broker
+  -> task service
   -> broker
   -> task manager
 ```
 
 Domain services own service-specific information, policy, config, and planning,
-but they are triggered by task-manager messages, not by the public manager. For
+but they are triggered by task-service messages, not by the public manager. For
 project-document work, the project service owns project config, scope, and
 request planning. It returns domain plans/info through the broker. Workflow
 logging owns workflow-log records and queries. Other domain services own their
 own service-specific information.
 
-Helper nodes perform concrete work from task-manager-issued broker commands.
+Helper nodes perform concrete work from task-service-issued broker commands.
 Ingestion owns source handling, parsing, preparation, and chunking. Retrieval
 owns retrieval/index/search/delete execution and placement. Storage nodes own
 durable storage operations. Helper nodes communicate through the broker and must
 not be called by direct imports.
 
-The task manager owns task lifecycle, coordination, dispatch, fan-out/fan-in
-state, status, and final task result aggregation. It receives manager intake
-events, triggers domain task servers through Redpanda, dispatches helper-node
-work after domain planning, receives service/helper results through the broker,
-and keeps Redis task status updated by `task_id`.
+The task manager owns task intake normalization and the Redis status read
+model. It receives manager intake events, publishes normalized `task.requests`,
+consumes `task.events` and `task.results`, and keeps Redis task status updated
+by `task_id`.
+
+The task service owns execution orchestration. It receives `task.requests`,
+requests project plans through Redpanda, dispatches helper-node work after
+planning, handles retries/dead letters/fan-in, and publishes task lifecycle
+events plus final task results.
 
 Redis is the fast task-status store. The manager may read Redis directly for
 client status checks by `task_id`. Completed task statuses must have a TTL so

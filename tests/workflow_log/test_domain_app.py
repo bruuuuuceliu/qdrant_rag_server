@@ -58,7 +58,7 @@ async def test_workflow_log_domain_server_start_stop() -> None:
 
 def _command() -> MessageEnvelope:
     return MessageEnvelope.create(
-        producer="task_manager_service",
+        producer="task_service",
         message_type=MessageType.DOMAIN_COMMAND,
         data_type="workflow_log",
         task_id="task-1",

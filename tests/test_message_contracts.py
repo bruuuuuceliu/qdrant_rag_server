@@ -13,7 +13,11 @@ from shared.contracts import (
     MessageEnvelope,
     MessageType,
     MessageValidationError,
+    ProjectPlanRequestPayload,
+    ProjectPlanResultPayload,
     TOPICS,
+    TaskEventPayload,
+    TaskRequestPayload,
     TaskIntakePayload,
     TaskResultPayload,
     TaskStartedPayload,
@@ -99,7 +103,11 @@ def test_message_envelope_rejects_unknown_message_type_and_schema_version() -> N
 def test_topic_set_has_unique_topic_names() -> None:
     topics = TOPICS.all()
 
+    assert TOPICS.task_requests == "task.requests"
+    assert TOPICS.task_events == "task.events"
     assert TOPICS.task_intake == "task.intake"
+    assert TOPICS.project_plan_requests == "project.plan.requests"
+    assert TOPICS.project_plan_results == "project.plan.results"
     assert TOPICS.task_dead_letters == "task.dead_letters"
     assert len(topics) == len(set(topics))
 
@@ -107,7 +115,7 @@ def test_topic_set_has_unique_topic_names() -> None:
 @pytest.mark.parametrize(
     ("data_type", "command_topic", "result_topic"),
     [
-        ("project_document", TOPICS.domain_project_commands, TOPICS.domain_project_results),
+        ("project_document", TOPICS.project_plan_requests, TOPICS.project_plan_results),
         ("workflow_log", TOPICS.domain_workflow_log_commands, TOPICS.domain_workflow_log_results),
         ("agent_memory", TOPICS.domain_memory_commands, TOPICS.domain_memory_results),
         ("custom", TOPICS.domain_other_commands, TOPICS.domain_other_results),
@@ -118,10 +126,15 @@ def test_domain_topic_routing(data_type: str, command_topic: str, result_topic: 
     assert domain_result_topic(data_type) == result_topic
 
 
+def test_project_plan_topic_aliases_are_canonical_for_new_project_flow() -> None:
+    assert TOPICS.project_plan_requests == "project.plan.requests"
+    assert TOPICS.project_plan_results == "project.plan.results"
+
+
 def test_task_intake_payload_validates_envelope_type_and_request_mapping() -> None:
     envelope = MessageEnvelope.create(
         producer="manager_service",
-        message_type=MessageType.REQUEST_ACCEPTED,
+        message_type=MessageType.TASK_REQUEST,
         data_type="project_document",
         task_id="task-1",
         correlation_id="corr-1",
@@ -132,33 +145,35 @@ def test_task_intake_payload_validates_envelope_type_and_request_mapping() -> No
         },
     )
 
-    payload = TaskIntakePayload.from_envelope(envelope)
+    payload = TaskRequestPayload.from_envelope(envelope)
 
     assert payload.operation == "ingest"
     assert payload.request == {"project_id": "p1"}
     assert payload.context == {"request_id": "req-1"}
+    assert TaskIntakePayload.from_payload(payload.to_payload()).operation == "ingest"
 
 
 def test_domain_command_payload_round_trips_payload() -> None:
-    payload = DomainCommandPayload(
+    payload = ProjectPlanRequestPayload(
         operation="search",
         request={"query": "hello"},
         context={"request_id": "req-1"},
         source_message_id="msg-1",
     )
 
-    parsed = DomainCommandPayload.from_payload(payload.to_payload())
+    parsed = ProjectPlanRequestPayload.from_payload(payload.to_payload())
 
     assert parsed == payload
+    assert DomainCommandPayload.from_payload(payload.to_payload()).operation == "search"
 
 
 def test_domain_result_payload_rejects_non_mapping_plan() -> None:
     with pytest.raises(MessageValidationError, match="plan"):
-        DomainResultPayload.from_payload({"operation": "search", "plan": []})
+        ProjectPlanResultPayload.from_payload({"operation": "search", "plan": []})
 
 
 def test_domain_result_payload_carries_failure_metadata() -> None:
-    payload = DomainResultPayload.from_payload(
+    payload = ProjectPlanResultPayload.from_payload(
         {
             "operation": "search",
             "result": {"ok": False},
@@ -172,6 +187,22 @@ def test_domain_result_payload_carries_failure_metadata() -> None:
     assert payload.retryable is True
     assert payload.error == "timeout"
     assert payload.to_payload()["attempt"] == 2
+    assert DomainResultPayload.from_payload(payload.to_payload()).attempt == 2
+
+
+def test_task_event_payload_round_trips_status_update() -> None:
+    payload = TaskEventPayload.from_payload(
+        {
+            "operation": "search",
+            "status": "running",
+            "event": "task.waiting_helpers",
+            "result": {"ok": True},
+        }
+    )
+
+    assert payload.event == "task.waiting_helpers"
+    assert payload.status == "running"
+    assert payload.result == {"ok": True}
 
 
 def test_helper_command_payload_requires_helper() -> None:

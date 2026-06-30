@@ -6,8 +6,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from shared.queue import QueueMessage
-
 
 @dataclass(frozen=True, slots=True)
 class WorkflowLogEntry:
@@ -29,7 +27,7 @@ class WorkflowLogEntry:
     created_at: float = field(default_factory=time.time)
 
     @classmethod
-    def from_message(cls, message: QueueMessage) -> "WorkflowLogEntry":
+    def from_message(cls, message: Any) -> "WorkflowLogEntry":
         payload = dict(message.payload)
         return cls(
             event=str(payload.get("event", "")),

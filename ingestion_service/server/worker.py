@@ -5,17 +5,14 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 from broker_service import BrokerSettings
 from configs.ingestion import IngestionSettings, load_ingestion_settings
 from ingestion_service.jobs import SQLiteIngestionJobRepository
 from ingestion_service.server.broker_runtime import BrokerIngestionApp
-from ingestion_service.server.app import IngestionAppContext, create_app as create_ingestion_app
 from ingestion_service.server.helper_app import IngestionHelperServerContext, create_helper_app
 from ingestion_service.service import IngestionService
 from shared.logging import configure_logging
-from shared.queue import LocalQueueBroker, QueueBroker, SQLiteQueueBroker
 from shared.runtime_health import RuntimeHealth
 
 
@@ -78,35 +75,6 @@ async def serve_forever() -> None:
 def main() -> None:
     configure_logging()
     asyncio.run(serve_forever())
-
-
-def _build_queue(settings: IngestionSettings) -> QueueBroker:
-    broker = os.environ.get("INGESTION_QUEUE_BROKER", "sqlite").strip().lower()
-    if broker == "local":
-        return LocalQueueBroker(maxsize=settings.queue_maxsize)
-    if broker == "sqlite":
-        db_path = Path(
-            os.environ.get(
-                "INGESTION_QUEUE_DB_PATH",
-                str(Path(settings.job_db_path).with_name("ingestion_queue.db")),
-            )
-        )
-        return SQLiteQueueBroker(db_path, maxsize=settings.queue_maxsize)
-    raise ValueError("INGESTION_QUEUE_BROKER must be one of: sqlite, local")
-
-
-def _build_retrieval_queue(settings: IngestionSettings) -> QueueBroker:
-    broker = settings.retrieval_index_queue_broker.strip().lower()
-    if broker == "local":
-        return LocalQueueBroker(maxsize=settings.retrieval_index_queue_maxsize)
-    if broker == "sqlite":
-        return SQLiteQueueBroker(
-            settings.retrieval_index_queue_db_path,
-            maxsize=settings.retrieval_index_queue_maxsize,
-        )
-    raise ValueError(
-        "INGESTION_RETRIEVAL_INDEX_QUEUE_BROKER must be one of: sqlite, local"
-    )
 
 
 if __name__ == "__main__":

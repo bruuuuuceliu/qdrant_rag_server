@@ -4,24 +4,23 @@ Section status: implementation accepted for the eleventh development loop sectio
 
 ## Requirement Document
 
-The manager core now dispatches through service-specific clients, but this
+The manager core now publishes task intake and reads Redis task status. This
 boundary can regress if future edits import parser, Qdrant, embedding,
 retrieval, or project/RAG internals into manager core modules. The repo needs a
-small automated guard that keeps manager service core code thin while still
-allowing composition roots to import local compatibility apps and clients.
+small automated guard that keeps manager service core code thin.
 
 Scope:
 
 - Add an import-boundary test for manager core modules.
-- Guard `manager_service.service` and `manager_service.clients` against imports
+- Guard `manager_service.service` and `manager_service.server.app` against imports
   from service implementation internals.
-- Allow manager server composition roots to keep compatibility wiring for now.
+- Keep manager composition limited to injected broker and Redis dependencies.
 
 Out of scope:
 
 - Full architectural lint framework.
 - Enforcing boundaries across every package.
-- Removing existing compatibility imports from composition roots.
+- Full runtime dependency validation.
 
 ## Acceptance Criteria
 
@@ -50,14 +49,14 @@ progress.md
 1. Add an AST helper that collects `import` and `from ... import ...` module
    roots from target files.
 2. Define guarded files: `manager_service/service.py` and
-   `manager_service/clients.py`.
+   `manager_service/server/app.py`.
 3. Define forbidden module prefixes for implementation internals.
 4. Add a focused test with clear failure output.
 5. Run the boundary test and manager tests.
 
 ## Review Checklist
 
-- The guard is narrow enough not to block composition-root compatibility.
+- The guard is narrow enough not to block broker/Redis composition.
 - The guard is broad enough to catch direct dependency regressions in manager
   core modules.
 - The test is simple and does not require third-party lint tools.

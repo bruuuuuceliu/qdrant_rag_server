@@ -23,17 +23,17 @@ class FakeLagAdmin:
 
 def test_parse_broker_lag_targets_accepts_semicolon_groups() -> None:
     targets = parse_broker_lag_targets(
-        "task_manager:task.intake,domain.project.results;project_service:domain.project.commands"
+        "task_manager:task.intake,project.plan.results;project_service:project.plan.requests"
     )
 
     assert targets == (
         BrokerLagTarget(
             group_id="task_manager",
-            topics=(TOPICS.task_intake, TOPICS.domain_project_results),
+            topics=(TOPICS.task_intake, TOPICS.project_plan_results),
         ),
         BrokerLagTarget(
             group_id="project_service",
-            topics=(TOPICS.domain_project_commands,),
+            topics=(TOPICS.project_plan_requests,),
         ),
     )
 
