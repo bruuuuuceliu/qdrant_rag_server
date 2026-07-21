@@ -28,6 +28,12 @@ From the repository root:
 examples/local/run-all.sh --reset --init
 ```
 
+To start and verify the complete public flow in one command:
+
+```bash
+examples/local/run-all.sh --reset --smoke
+```
+
 This starts local Redpanda, Redis, Qdrant when needed, task services, domain
 services, helper workers, and the manager gRPC API on `127.0.0.1:50051`.
 

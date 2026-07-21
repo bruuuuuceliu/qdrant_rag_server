@@ -157,7 +157,12 @@ class RagTestClient:
     ) -> dict[str, Any]:
         last_status: dict[str, Any] = {}
         for _ in range(max_attempts):
-            last_status = await self.ingest_status(job_id)
+            try:
+                last_status = await self.ingest_status(job_id)
+            except grpc.RpcError as exc:
+                if exc.code() != grpc.StatusCode.NOT_FOUND:
+                    raise
+                last_status = {"job_id": job_id, "status": "pending"}
             status = str(last_status.get("status", "")).lower()
             if status in TERMINAL_INGEST_STATUSES:
                 return last_status

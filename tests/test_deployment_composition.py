@@ -125,6 +125,36 @@ async def test_manager_composition_wires_broker_and_redis(monkeypatch: pytest.Mo
     assert captured["task_status_store"].settings.url == "redis://redis:6379/2"
 
 
+@pytest.mark.asyncio
+async def test_manager_composition_loads_redis_namespace_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    def fake_create_bus(settings: BrokerSettings):
+        return "bus"
+
+    async def fake_create_manager_app(settings, *, task_producer, task_status_store, manager_settings):
+        captured["task_status_store"] = task_status_store
+        captured["manager_settings"] = manager_settings
+        return "manager-context"
+
+    monkeypatch.setenv("REDIS_TASK_STATUS_URL", "redis://redis:6379/4")
+    monkeypatch.setenv("REDIS_TASK_STATUS_KEY_PREFIX", "local-rag:task:")
+    monkeypatch.setattr(manager_composition, "create_redpanda_bus", fake_create_bus)
+    monkeypatch.setattr(manager_composition, "RedisTaskStatusStore", FakeRedisStore)
+    monkeypatch.setattr(manager_composition, "create_manager_app", fake_create_manager_app)
+
+    context = await manager_composition.create_manager_context(
+        _settings(),
+        broker_settings=BrokerSettings(client_id="manager-env-test"),
+    )
+
+    assert context == "manager-context"
+    assert captured["manager_settings"].task_status_key_prefix == "local-rag:task:"
+    assert captured["task_status_store"].settings.key_prefix == "local-rag:task:"
+
+
 def _settings() -> AppSettings:
     return AppSettings(
         response_cache_db_path=Path("/tmp/test-cache.db"),

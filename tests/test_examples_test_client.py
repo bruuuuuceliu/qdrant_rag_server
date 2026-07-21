@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import grpc
 import pytest
 
 from examples.test_client import test_2
@@ -15,6 +16,28 @@ from examples.test_client.test_client import (
     require_ingest_status_response,
     require_search_response,
 )
+from shared.transport.grpc.generated import retrieval_service_pb2
+
+
+class _NotFoundRpcError(grpc.RpcError):
+    def code(self) -> grpc.StatusCode:
+        return grpc.StatusCode.NOT_FOUND
+
+
+class _EventuallyVisibleStatusStub:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def GetIngestJobStatus(self, request, *, timeout):
+        del timeout
+        self.calls += 1
+        if self.calls == 1:
+            raise _NotFoundRpcError()
+        return retrieval_service_pb2.GetIngestJobStatusResponse(
+            job_id=request.job_id,
+            status="completed",
+            doc_id="doc-1",
+        )
 
 
 def test_config_from_env_supports_local_and_remote_targets() -> None:
@@ -132,6 +155,21 @@ def test_search_response_validation_can_require_chunks() -> None:
     require_search_response({"chunks": [{"text": "answer"}], "elapsed_ms": 1})
     with pytest.raises(RuntimeError, match="chunks"):
         require_search_response({"chunks": []}, require_chunks=True)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_ingest_status_tolerates_initial_not_found() -> None:
+    stub = _EventuallyVisibleStatusStub()
+    client = RagTestClient(RagTestClientConfig(), grpc_stub=stub)
+
+    status = await client.wait_for_ingest_status(
+        "task-1",
+        poll_seconds=0,
+        max_attempts=3,
+    )
+
+    assert status["status"] == "completed"
+    assert stub.calls == 2
 
 
 def test_test_2_writes_loadable_local_source(tmp_path, monkeypatch) -> None:

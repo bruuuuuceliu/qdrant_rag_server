@@ -8,6 +8,11 @@ against Apache Kafka when compatibility testing is useful. In both cases,
 services should point at a locally running Docker broker rather than in-memory,
 file-based, or SQLite queue substitutes.
 
+The local runner defaults to the `qdrant-rag-local.` topic prefix. This keeps
+the project isolated when another Kafka-compatible broker is already using the
+standard local port. Production leaves namespace selection to deployment
+configuration.
+
 Supported local Docker brokers:
 
 - `BROKER_TYPE=redpanda`, the default, starts `redpanda-rag-local`.

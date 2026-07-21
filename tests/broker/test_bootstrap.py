@@ -32,8 +32,24 @@ class FakeAdmin:
 
 
 class _Health:
+    ok = True
+    error = ""
+
     def to_payload(self) -> dict[str, object]:
         return {"ok": True, "topics": ["task.intake"]}
+
+
+class EventuallyHealthyAdmin(FakeAdmin):
+    def __init__(self) -> None:
+        super().__init__()
+        self.health_checks = 0
+
+    async def health(self, *, required_topics: tuple[str, ...]):
+        self.health_topics = required_topics
+        self.health_checks += 1
+        if self.health_checks < 3:
+            return type("Health", (), {"ok": False, "error": "missing topics: task.events"})()
+        return _Health()
 
 
 def test_required_topics_uses_canonical_topic_set() -> None:
@@ -55,6 +71,19 @@ async def test_bootstrap_topics_uses_configured_partitions() -> None:
     await bootstrap_topics(admin)
 
     assert admin.calls == [(required_topics(), 4)]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_topics_waits_for_created_topics_to_become_visible() -> None:
+    admin = EventuallyHealthyAdmin()
+
+    await bootstrap_topics(
+        admin,
+        readiness_timeout_seconds=1,
+        poll_interval_seconds=0,
+    )
+
+    assert admin.health_checks == 3
 
 
 def test_broker_settings_loads_topic_partitions() -> None:

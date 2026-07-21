@@ -1,6 +1,6 @@
 # Responsibility Shift Progress
 
-Reviewed: 2026-06-30
+Reviewed: 2026-07-21
 
 This file only tracks the implementation of the responsibility shift:
 
@@ -16,14 +16,14 @@ helpers = narrow capability workers
 | Area | Progress | Completed | Missing |
 | --- | ---: | --- | --- |
 | Responsibility boundary | 82% | Manager, task manager, task service, project planning, and helper ownership are split in code; generated gRPC stubs moved to `shared.transport.grpc.generated`; project service no longer imports retrieval internals; retrieval ingest compatibility pipeline and project schema aliases were removed. | Keep tightening import-boundary coverage as service-owned modules evolve. |
-| Task manager intake/status | 80% | Task manager consumes intake, publishes only `task.requests`, consumes `task.events`/`task.results`, and writes Redis status through the shared status store contract. | Add stronger live-runtime coverage for Redis updates from real task-service events. |
+| Task manager intake/status | 90% | Task manager consumes intake, publishes only `task.requests`, consumes `task.events`/`task.results`, and writes Redis status through the shared status store contract. The local end-to-end smoke verifies accepted-to-completed status through the manager gRPC API. | Add longer-running recovery and failure-transition coverage. |
 | Task service executor | 75% | `task_service` owns project plan dispatch, helper fan-out/fan-in, retries, dead letters, final result publication, and SQLite execution state. | Add production-grade lease/backoff/retry timing and broader crash-recovery coverage. |
 | Project planning boundary | 85% | Project planning uses canonical `project.plan.requests/results`; old `domain.project.*` runtime aliases were removed from shared topics, config, task-service consumers, and tests; placement scope is project-owned and serialized through plan payloads. | Keep plan payloads JSON-safe as new project capabilities are added. |
 | Helper ownership | 75% | Ingestion, retrieval, retrieval-index, storage, and SQLite node worker/helper paths exist and consume helper topics; old retrieval ingest compatibility code that embedded ingestion/project adapter behavior was deleted. | Keep import-boundary tests strict as helper command contracts evolve. |
 | Execution state ownership | 70% | SQLite task-service state repository persists helper expectations, helper results, retry plans, and final publication markers. | Decide whether to split `task_states` into explicit execution/step tables. |
-| Status read model | 75% | Redis `TaskStatusRecord`, TTL writes, and status reads exist; task manager updates status from task events/results. | Add more live Redpanda + Redis status transition coverage. |
-| Local runtime | 70% | Local broker-first runner starts manager, task manager, task service, project service, helper workers, Redis, Redpanda, Qdrant, storage, SQLite node, and workflow log. | Add stricter readiness assertions around full ingest/search flows. |
-| Tests | 75% | Focused tests now assert task-manager intake/status-only behavior, task-service helper orchestration, project planning topics, service import boundaries, and broker-first integration flow. | Continue moving broad legacy tests under owning service folders. |
+| Status read model | 90% | Redis `TaskStatusRecord`, TTL writes, and status reads exist; task manager updates status from task events/results, and manager/task-manager composition now loads the same Redis namespace from environment settings. | Add broader failure and expiry transition coverage. |
+| Local runtime | 90% | Local broker-first runner starts manager, task manager, task service, project service, helper workers, Redis, a Kafka-compatible broker, Qdrant, storage, SQLite node, and workflow log. Local topics and Redis keys are namespaced, startup waits for broker metadata and manager gRPC readiness, partial failures are cleaned up, and `--smoke` verifies health, ingest/status, and strict search. | Add clean-host CI coverage for Docker image pulls and uncached embedding-model startup. |
+| Tests | 80% | Focused tests assert task-manager intake/status-only behavior, task-service helper orchestration, project planning topics, service import boundaries, broker-first integration flow, broker topic propagation, local runner defaults, and asynchronous status polling. | Continue moving broad legacy tests under owning service folders and add a managed Docker runtime job. |
 
 ## Steps
 
@@ -38,8 +38,8 @@ helpers = narrow capability workers
 | 7 | Reduce task manager code | Strip task manager normal path down to raw task intake, request normalization, `task.requests` publication, status event/result consumption, Redis updates, and status reads. | Task manager normal code has no helper command topic references. | Complete |
 | 8 | Recontract project planning | Use only `project.plan.requests/results` for project planning; remove `domain.project.commands/results` runtime aliases. | Project service returns JSON-safe project plans; it does not publish helper commands. | Complete |
 | 9 | Keep helpers narrow | Validate ingestion, retrieval, retrieval-index, storage, and SQLite/database helpers only consume their helper commands and return helper results. | Helpers do not import task manager, task service, or project internals. | Pending |
-| 10 | Update Redis status flow | Update task manager to consume `task.events` and `task.results` and upsert Redis task status. | Redis status reflects accepted/running/failed/completed states from task-service messages. | Pending |
-| 11 | Update local runtime | Start task manager/intake and task service/executor separately in broker-first local runtime. | Local startup validates both processes and runs ingest/search through the new split. | In progress |
+| 10 | Update Redis status flow | Update task manager to consume `task.events` and `task.results` and upsert Redis task status. | Redis status reflects accepted/running/failed/completed states from task-service messages. | Complete |
+| 11 | Update local runtime | Start task manager/intake and task service/executor separately in broker-first local runtime. | Local startup validates both processes and runs ingest/search through the new split. | Complete |
 | 12 | Rewrite tests | Move old task-manager orchestration tests under task-service coverage and add task-manager intake/status-only tests. | Tests assert sender/receiver ownership for every topic. | In progress |
 | 13 | Remove compatibility orchestration | Remove old task-manager helper dispatch after task-service path passes. | `task_manager_service` cannot create ingestion/retrieval/storage/index helper commands in normal runtime. | Complete |
 

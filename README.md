@@ -229,6 +229,13 @@ Start the local stack:
 examples/local/run-all.sh --reset --init
 ```
 
+For a first run, add `--smoke` to seed the project and verify the public health,
+ingest, completed-status, and strict search flow before the command succeeds:
+
+```bash
+examples/local/run-all.sh --reset --smoke
+```
+
 Stop it:
 
 ```bash
@@ -247,6 +254,12 @@ The default local embedding provider may download a sentence-transformers model
 from Hugging Face. In restricted-network environments, pre-cache the model or
 switch to an OpenAI-compatible remote embedding provider with
 `RAG_EMBEDDING_API_KEY`.
+
+Local broker topics and Redis task-status keys use the
+`qdrant-rag-local.` / `qdrant-rag-local:task:` namespaces by default, so the
+runner can safely reuse Kafka-compatible and Redis services already listening
+on the standard local ports. Override `BROKER_TOPIC_PREFIX` or
+`REDIS_TASK_STATUS_KEY_PREFIX` when a different namespace is required.
 
 ## Configuration
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from time import monotonic
+
 from broker_service.config import BrokerSettings
 from broker_service.lag import BrokerLagTarget, broker_lag
 from broker_service.redpanda import RedpandaAdmin
@@ -16,9 +19,24 @@ async def bootstrap_topics(
     admin: RedpandaAdmin,
     *,
     settings: BrokerSettings | None = None,
+    readiness_timeout_seconds: float = 10.0,
+    poll_interval_seconds: float = 0.2,
 ) -> None:
     settings = settings or admin.settings
-    await admin.ensure_topics(required_topics(), partitions=settings.topic_partitions)
+    required = required_topics()
+    await admin.ensure_topics(required, partitions=settings.topic_partitions)
+
+    deadline = monotonic() + readiness_timeout_seconds
+    while True:
+        health = await admin.health(required_topics=required)
+        if health.ok:
+            return
+        if monotonic() >= deadline:
+            raise RuntimeError(
+                "broker topics did not become ready within "
+                f"{readiness_timeout_seconds:g}s: {health.error or 'unknown broker error'}"
+            )
+        await asyncio.sleep(poll_interval_seconds)
 
 
 async def broker_health(

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -32,6 +32,7 @@ START_QDRANT=auto
 FOREGROUND=0
 START_SERVER=1
 INFRA_ONLY=0
+RUN_SMOKE=0
 START_REDPANDA_CONSOLE=1
 START_REDIS_INSIGHT=1
 BROKER_TYPE_ARG=""
@@ -62,6 +63,7 @@ Options:
   --foreground                   Run manager in the foreground after setup.
   --no-server                    Run setup/init only; do not start services.
   --infra-only                   Start/verify local broker infrastructure and exit.
+  --smoke                        Seed the project and verify health, ingest, and search.
   --broker VALUE                 Local Docker broker to use: redpanda or kafka. Default: redpanda.
   --ui                           Start local broker and Redis visualization UIs. Enabled by default.
   --no-ui                        Do not start local visualization UIs.
@@ -118,6 +120,11 @@ while [[ $# -gt 0 ]]; do
       INFRA_ONLY=1
       START_SERVER=1
       START_QDRANT=no
+      shift
+      ;;
+    --smoke)
+      RUN_SMOKE=1
+      INIT_PROJECT=1
       shift
       ;;
     --broker)
@@ -226,6 +233,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$RUN_SMOKE" -eq 1 && "$FOREGROUND" -eq 1 ]]; then
+  echo "--smoke cannot be combined with --foreground." >&2
+  exit 2
+fi
+if [[ "$RUN_SMOKE" -eq 1 && "$INFRA_ONLY" -eq 1 ]]; then
+  echo "--smoke cannot be combined with --infra-only." >&2
+  exit 2
+fi
+if [[ "$RUN_SMOKE" -eq 1 && "$START_SERVER" -eq 0 ]]; then
+  echo "--smoke cannot be combined with --no-server." >&2
+  exit 2
+fi
+
 if [[ -f "$ENV_FILE" ]]; then
   set -a
   # shellcheck disable=SC1090
@@ -274,7 +294,7 @@ export BROKER_TYPE
 export BROKER_BOOTSTRAP_SERVERS="${BROKER_BOOTSTRAP_SERVERS:-127.0.0.1:9092}"
 export BROKER_CLIENT_ID="${BROKER_CLIENT_ID:-qdrant-rag-local}"
 export BROKER_REQUEST_TIMEOUT_SECONDS="${BROKER_REQUEST_TIMEOUT_SECONDS:-30}"
-export BROKER_TOPIC_PREFIX="${BROKER_TOPIC_PREFIX:-}"
+export BROKER_TOPIC_PREFIX="${BROKER_TOPIC_PREFIX:-qdrant-rag-local.}"
 export BROKER_TOPIC_PARTITIONS="${BROKER_TOPIC_PARTITIONS:-1}"
 export BROKER_LAG_TARGETS="${BROKER_LAG_TARGETS:-}"
 export REDPANDA_CONSOLE_PORT="${REDPANDA_CONSOLE_PORT:-8088}"
@@ -295,7 +315,7 @@ export TASK_SERVICE_TASK_RESULT_TOPIC="${TASK_SERVICE_TASK_RESULT_TOPIC:-${TASK_
 export PROJECT_PLAN_REQUEST_TOPIC="${PROJECT_PLAN_REQUEST_TOPIC:-${TASK_SERVICE_PROJECT_PLAN_REQUEST_TOPIC}}"
 export PROJECT_PLAN_RESULT_TOPIC="${PROJECT_PLAN_RESULT_TOPIC:-${TASK_SERVICE_PROJECT_PLAN_RESULT_TOPIC}}"
 export REDIS_TASK_STATUS_URL="${REDIS_TASK_STATUS_URL:-redis://127.0.0.1:6379/0}"
-export REDIS_TASK_STATUS_KEY_PREFIX="${REDIS_TASK_STATUS_KEY_PREFIX:-task:}"
+export REDIS_TASK_STATUS_KEY_PREFIX="${REDIS_TASK_STATUS_KEY_PREFIX:-qdrant-rag-local:task:}"
 export REDIS_TASK_COMPLETED_TTL_SECONDS="${REDIS_TASK_COMPLETED_TTL_SECONDS:-86400}"
 export STORAGE_NODE_ROOT="${STORAGE_NODE_ROOT:-${RAG_LOCAL_DATA_DIR}/storage_node}"
 export SQLITE_NODE_DATABASE_ROOT="${SQLITE_NODE_DATABASE_ROOT:-${RAG_LOCAL_DATA_DIR}/sqlite}"
@@ -469,7 +489,7 @@ start_qdrant_if_needed() {
 
 start_redpanda_if_needed() {
   if is_tcp_port_open "127.0.0.1" "9092"; then
-    echo "Redpanda already reachable at 127.0.0.1:9092."
+    echo "Kafka-compatible broker already reachable at 127.0.0.1:9092; using topic prefix '${BROKER_TOPIC_PREFIX}'."
     return 0
   fi
   require_docker "Redpanda"
@@ -497,7 +517,7 @@ start_redpanda_if_needed() {
 
 start_kafka_if_needed() {
   if is_tcp_port_open "127.0.0.1" "9092"; then
-    echo "Kafka already reachable at 127.0.0.1:9092."
+    echo "Kafka-compatible broker already reachable at 127.0.0.1:9092; using topic prefix '${BROKER_TOPIC_PREFIX}'."
     return 0
   fi
   require_docker "Kafka"
@@ -974,6 +994,32 @@ start_broker_first_background() {
   start_module_background "Retrieval index helper" "retrieval_service.indexing.worker" "$RETRIEVAL_INDEX_WORKER_PID_FILE" "retrieval-index-worker"
 }
 
+run_end_to_end_smoke() {
+  echo "Running local health, ingest, and strict search smoke checks..."
+  RAG_TEST_PROJECT_ID="$PROJECT_ID" \
+    RAG_TEST_TIMEOUT_SECONDS=90 \
+    "$PYTHON_BIN" -m examples.test_client.test_1
+  RAG_TEST_PROJECT_ID="$PROJECT_ID" \
+    RAG_TEST_TIMEOUT_SECONDS=90 \
+    "$PYTHON_BIN" -m examples.test_client.test_2 \
+      --doc-id local_startup_smoke \
+      --max-attempts 90
+  RAG_TEST_PROJECT_ID="$PROJECT_ID" \
+    RAG_TEST_TIMEOUT_SECONDS=90 \
+    "$PYTHON_BIN" -m examples.test_client.test_3 \
+      --doc-id local_startup_smoke \
+      --require-chunks
+  echo "Local end-to-end smoke checks passed."
+}
+
+cleanup_failed_startup() {
+  local exit_code=$?
+  trap - ERR
+  echo "Local startup failed; stopping processes started by this runner. Logs remain under ${LOG_DIR}." >&2
+  "$SCRIPT_DIR/stop-all.sh" >/dev/null 2>&1 || true
+  exit "$exit_code"
+}
+
 validate_provider_config
 validate_runtime_config
 
@@ -1020,6 +1066,7 @@ Local RAG service settings:
   qdrant:              ${RAG_QDRANT_HOST}:${RAG_QDRANT_PORT}
   broker_type:         ${BROKER_TYPE}
   broker:              ${BROKER_BOOTSTRAP_SERVERS}
+  broker_topic_prefix: ${BROKER_TOPIC_PREFIX}
   redpanda_console:    http://127.0.0.1:${REDPANDA_CONSOLE_PORT} $([[ "$START_REDPANDA_CONSOLE" -eq 1 ]] && printf '(enabled)' || printf '(disabled)')
   redis_insight:       http://127.0.0.1:${REDIS_INSIGHT_PORT} $([[ "$START_REDIS_INSIGHT" -eq 1 ]] && printf '(enabled)' || printf '(disabled)')
   task_intake_topic:   ${MANAGER_TASK_INTAKE_TOPIC}
@@ -1044,14 +1091,30 @@ if [[ "$START_SERVER" -eq 0 ]]; then
 fi
 
 if [[ "$FOREGROUND" -eq 1 ]]; then
+  trap cleanup_failed_startup ERR
   start_broker_first_background
   manager_log="${LOG_DIR}/manager.log"
   : > "$manager_log"
   echo "Starting manager in foreground. Log: ${manager_log}"
   echo "Press Ctrl-C to stop; then run examples/local/stop-all.sh for cleanup."
+  trap - ERR
   exec "$PYTHON_BIN" -m manager_service.worker 2>&1 | tee -a "$manager_log"
 fi
 
+trap cleanup_failed_startup ERR
 start_broker_first_background
 start_module_background "Manager" "manager_service.worker" "$MANAGER_PID_FILE" "manager"
+manager_pid="$(cat "$MANAGER_PID_FILE")"
+wait_for_service_port \
+  "Manager" \
+  "$manager_pid" \
+  "127.0.0.1" \
+  "$RAG_GRPC_PORT" \
+  "${LOG_DIR}/manager.log" \
+  90
+echo "Manager gRPC ready at 127.0.0.1:${RAG_GRPC_PORT}."
+if [[ "$RUN_SMOKE" -eq 1 ]]; then
+  run_end_to_end_smoke
+fi
+trap - ERR
 echo "Stop everything with: examples/local/stop-all.sh"

@@ -11,6 +11,15 @@ status, and Qdrant as separate processes when services are enabled.
 examples/local/run-all.sh --init
 ```
 
+For a verified first run:
+
+```bash
+examples/local/run-all.sh --reset --smoke
+```
+
+`--smoke` implies `--init` and returns success only after the manager health,
+ingest/status, and strict search client checks pass.
+
 Useful options:
 
 ```bash
@@ -20,6 +29,7 @@ examples/local/run-all.sh --foreground --init
 examples/local/run-all.sh --init --no-server
 examples/local/run-all.sh --infra-only
 examples/local/run-all.sh --no-ui
+examples/local/run-all.sh --reset --smoke --no-ui
 ```
 
 `--no-server` is a setup mode: it resolves local env defaults, writes
@@ -47,6 +57,10 @@ examples/local/run-all.sh --infra-only --broker kafka
 ```
 
 Both modes use Docker and expose the broker on `127.0.0.1:9092`.
+The local runner applies `qdrant-rag-local.` as the default topic prefix, so it
+can reuse an existing Kafka-compatible broker without colliding with another
+project's topics. Redis task-status keys similarly default to the
+`qdrant-rag-local:task:` prefix.
 
 Local visualization UIs are started by default:
 
@@ -105,5 +119,7 @@ removes local Docker infra containers by recorded ID or configured name.
 - `run-all.sh` uses the broker readiness command for dependency checks. If
   startup times out, inspect `.run/logs/*.log`; common blockers are Docker
   socket access, Qdrant not reachable, and embedding model downloads.
+- If service startup or `--smoke` fails, the runner stops the processes it
+  started and leaves `.run/logs/` available for diagnosis.
 - Set `PYTHON_BIN=/path/to/python` when the desired interpreter is not named
   `python` on `PATH`; the runner falls back to `python3` when available.
