@@ -75,7 +75,7 @@ Options:
   --project-id VALUE             Project ID for --init. Default: demo.
   --project-type VALUE           Project type for --init. Default: website.
   --grpc-port VALUE              Manager gRPC port. Default: 50051.
-  --embedding-provider VALUE     local, openrouter, or remote. Default: local.
+  --embedding-provider VALUE     local, deterministic, openrouter, or remote. Default: local.
   --embedding-model VALUE        Embedding model name.
   --embedding-dimension VALUE    Embedding vector dimension. Default: 768.
   --qdrant                       Require/start local Docker Qdrant.
@@ -280,6 +280,7 @@ export INGESTION_WORKER_COUNT="${INGESTION_WORKER_COUNT:-1}"
 export INGESTION_QUEUE_MAXSIZE="${INGESTION_QUEUE_MAXSIZE:-100}"
 export INGESTION_HELPER_COMMAND_TOPIC="${INGESTION_HELPER_COMMAND_TOPIC:-helper.ingestion.commands}"
 export WORKFLOW_LOG_DOMAIN_COMMAND_TOPIC="${WORKFLOW_LOG_DOMAIN_COMMAND_TOPIC:-domain.workflow_log.commands}"
+export WORKFLOW_LOG_AUDIT_TOPIC="${WORKFLOW_LOG_AUDIT_TOPIC:-audit.events}"
 export RETRIEVAL_HELPER_COMMAND_TOPIC="${RETRIEVAL_HELPER_COMMAND_TOPIC:-helper.retrieval.commands}"
 export RETRIEVAL_INDEX_WORKER_ENABLED="${RETRIEVAL_INDEX_WORKER_ENABLED:-true}"
 export RETRIEVAL_INDEX_HELPER_COMMAND_TOPIC="${RETRIEVAL_INDEX_HELPER_COMMAND_TOPIC:-helper.retrieval_index.commands}"
@@ -287,6 +288,9 @@ export RAG_EMBEDDING_PROVIDER="${RAG_EMBEDDING_PROVIDER:-local}"
 export RAG_EMBEDDING_MODEL="${RAG_EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}"
 export RAG_EMBEDDING_DEVICE="${RAG_EMBEDDING_DEVICE:-cpu}"
 export RAG_EMBEDDING_DIMENSION="${RAG_EMBEDDING_DIMENSION:-768}"
+if [[ "$RUN_SMOKE" -eq 1 && -z "${RAG_EXAMPLE_EMBEDDING_VERSION:-}" ]]; then
+  export RAG_EXAMPLE_EMBEDDING_VERSION="smoke_${RAG_EMBEDDING_PROVIDER}_${RAG_EMBEDDING_DIMENSION}"
+fi
 export RAG_EMBEDDING_BASE_URL="${RAG_EMBEDDING_BASE_URL:-https://openrouter.ai/api/v1/embeddings}"
 export RAG_GENERATION_ENABLED="${RAG_GENERATION_ENABLED:-false}"
 BROKER_TYPE="$(printf '%s' "${BROKER_TYPE:-redpanda}" | tr '[:upper:]' '[:lower:]')"
@@ -312,6 +316,13 @@ export TASK_SERVICE_PROJECT_PLAN_REQUEST_TOPIC="${TASK_SERVICE_PROJECT_PLAN_REQU
 export TASK_SERVICE_PROJECT_PLAN_RESULT_TOPIC="${TASK_SERVICE_PROJECT_PLAN_RESULT_TOPIC:-project.plan.results}"
 export TASK_SERVICE_TASK_EVENT_TOPIC="${TASK_SERVICE_TASK_EVENT_TOPIC:-${TASK_MANAGER_TASK_EVENT_TOPIC}}"
 export TASK_SERVICE_TASK_RESULT_TOPIC="${TASK_SERVICE_TASK_RESULT_TOPIC:-${TASK_MANAGER_TASK_RESULT_TOPIC}}"
+export TASK_SERVICE_DEAD_LETTER_TOPIC="${TASK_SERVICE_DEAD_LETTER_TOPIC:-task.dead_letters}"
+export TASK_SERVICE_MAX_ATTEMPTS="${TASK_SERVICE_MAX_ATTEMPTS:-3}"
+export TASK_SERVICE_HELPER_LEASE_SECONDS="${TASK_SERVICE_HELPER_LEASE_SECONDS:-300}"
+export TASK_SERVICE_RETRY_BACKOFF_SECONDS="${TASK_SERVICE_RETRY_BACKOFF_SECONDS:-0}"
+export TASK_SERVICE_RECOVERY_ENABLED="${TASK_SERVICE_RECOVERY_ENABLED:-true}"
+export TASK_SERVICE_RECOVERY_POLL_SECONDS="${TASK_SERVICE_RECOVERY_POLL_SECONDS:-2.0}"
+export TASK_SERVICE_RECOVERY_BATCH_SIZE="${TASK_SERVICE_RECOVERY_BATCH_SIZE:-25}"
 export PROJECT_PLAN_REQUEST_TOPIC="${PROJECT_PLAN_REQUEST_TOPIC:-${TASK_SERVICE_PROJECT_PLAN_REQUEST_TOPIC}}"
 export PROJECT_PLAN_RESULT_TOPIC="${PROJECT_PLAN_RESULT_TOPIC:-${TASK_SERVICE_PROJECT_PLAN_RESULT_TOPIC}}"
 export REDIS_TASK_STATUS_URL="${REDIS_TASK_STATUS_URL:-redis://127.0.0.1:6379/0}"
@@ -692,7 +703,7 @@ PY
 
 validate_provider_config() {
   case "${RAG_EMBEDDING_PROVIDER}" in
-    local)
+    local|deterministic|hash|smoke)
       ;;
     openrouter|remote|openai_compatible)
       if [[ -z "${RAG_EMBEDDING_API_KEY:-}" ]]; then
@@ -701,7 +712,7 @@ validate_provider_config() {
       fi
       ;;
     *)
-      echo "RAG_EMBEDDING_PROVIDER must be one of: local, openrouter, remote, openai_compatible" >&2
+      echo "RAG_EMBEDDING_PROVIDER must be one of: local, deterministic, hash, smoke, openrouter, remote, openai_compatible" >&2
       exit 1
       ;;
   esac
@@ -724,13 +735,16 @@ from project_service.schemas import ProjectConfig
 async def main() -> None:
     project_id = os.environ["PROJECT_ID"]
     project_type = os.environ["PROJECT_TYPE"]
+    active_embedding_version = _safe_identifier(
+        os.environ.get("RAG_EXAMPLE_EMBEDDING_VERSION", "v1")
+    )
     repo = SQLiteProjectConfigRepository(Path(os.environ["PROJECT_CONFIG_DB_PATH"]))
     await repo.initialize()
     await repo.upsert_project(
         ProjectConfig(
             project_id=project_id,
             project_type=project_type,
-            active_embedding_version="v1",
+            active_embedding_version=active_embedding_version,
             embedding_model=os.environ["RAG_EMBEDDING_MODEL"],
             reranker_model="none",
             chunker_config={
@@ -741,6 +755,14 @@ async def main() -> None:
         )
     )
     print(f"Initialized project {project_id!r} as type {project_type!r}")
+
+
+def _safe_identifier(value: str) -> str:
+    cleaned = "".join(
+        char if char.isalnum() or char == "_" else "_"
+        for char in value.strip()
+    ).strip("_")
+    return cleaned or "v1"
 
 
 asyncio.run(main())
@@ -885,8 +907,17 @@ TASK_SERVICE_PROJECT_PLAN_REQUEST_TOPIC=${TASK_SERVICE_PROJECT_PLAN_REQUEST_TOPI
 TASK_SERVICE_PROJECT_PLAN_RESULT_TOPIC=${TASK_SERVICE_PROJECT_PLAN_RESULT_TOPIC}
 TASK_SERVICE_TASK_EVENT_TOPIC=${TASK_SERVICE_TASK_EVENT_TOPIC}
 TASK_SERVICE_TASK_RESULT_TOPIC=${TASK_SERVICE_TASK_RESULT_TOPIC}
+TASK_SERVICE_DEAD_LETTER_TOPIC=${TASK_SERVICE_DEAD_LETTER_TOPIC}
+TASK_SERVICE_MAX_ATTEMPTS=${TASK_SERVICE_MAX_ATTEMPTS}
+TASK_SERVICE_HELPER_LEASE_SECONDS=${TASK_SERVICE_HELPER_LEASE_SECONDS}
+TASK_SERVICE_RETRY_BACKOFF_SECONDS=${TASK_SERVICE_RETRY_BACKOFF_SECONDS}
+TASK_SERVICE_RECOVERY_ENABLED=${TASK_SERVICE_RECOVERY_ENABLED}
+TASK_SERVICE_RECOVERY_POLL_SECONDS=${TASK_SERVICE_RECOVERY_POLL_SECONDS}
+TASK_SERVICE_RECOVERY_BATCH_SIZE=${TASK_SERVICE_RECOVERY_BATCH_SIZE}
 PROJECT_PLAN_REQUEST_TOPIC=${PROJECT_PLAN_REQUEST_TOPIC}
 PROJECT_PLAN_RESULT_TOPIC=${PROJECT_PLAN_RESULT_TOPIC}
+WORKFLOW_LOG_DOMAIN_COMMAND_TOPIC=${WORKFLOW_LOG_DOMAIN_COMMAND_TOPIC}
+WORKFLOW_LOG_AUDIT_TOPIC=${WORKFLOW_LOG_AUDIT_TOPIC}
 REDIS_TASK_STATUS_URL=${REDIS_TASK_STATUS_URL}
 REDIS_TASK_STATUS_KEY_PREFIX=${REDIS_TASK_STATUS_KEY_PREFIX}
 STORAGE_NODE_ROOT=${STORAGE_NODE_ROOT}
@@ -1073,7 +1104,13 @@ Local RAG service settings:
   task_manager:        ${TASK_MANAGER_SERVICE_NAME}
   task_service:        ${TASK_SERVICE_NAME}
   task_requests:       ${TASK_SERVICE_TASK_REQUEST_TOPIC}
+  task_dead_letters:   ${TASK_SERVICE_DEAD_LETTER_TOPIC}
+  task_max_attempts:   ${TASK_SERVICE_MAX_ATTEMPTS}
+  task_helper_lease_s: ${TASK_SERVICE_HELPER_LEASE_SECONDS}
+  task_retry_backoff_s:${TASK_SERVICE_RETRY_BACKOFF_SECONDS}
+  task_recovery:       ${TASK_SERVICE_RECOVERY_ENABLED}
   project_plans:       ${PROJECT_PLAN_REQUEST_TOPIC} -> ${PROJECT_PLAN_RESULT_TOPIC}
+  workflow_log:        ${WORKFLOW_LOG_DOMAIN_COMMAND_TOPIC} + ${WORKFLOW_LOG_AUDIT_TOPIC}
   redis_status:        ${REDIS_TASK_STATUS_URL}
   ingestion_helper:    ${INGESTION_HELPER_COMMAND_TOPIC}
   retrieval_helper:    ${RETRIEVAL_HELPER_COMMAND_TOPIC}
@@ -1083,6 +1120,7 @@ Local RAG service settings:
   embedding_provider:  ${RAG_EMBEDDING_PROVIDER}
   embedding_model:     ${RAG_EMBEDDING_MODEL}
   embedding_dimension: ${RAG_EMBEDDING_DIMENSION}
+  embedding_version:   ${RAG_EXAMPLE_EMBEDDING_VERSION:-v1}
 EOF
 
 if [[ "$START_SERVER" -eq 0 ]]; then

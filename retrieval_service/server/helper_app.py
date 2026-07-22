@@ -40,6 +40,7 @@ class RetrievalHelperServerContext:
     async def run_once(self) -> None:
         envelope = await self.consumer.consume(self.command_topic)
         await self.handler.handle(envelope)
+        await _commit_component(self.consumer)
 
     async def _run(self) -> None:
         while True:
@@ -80,3 +81,9 @@ async def _stop_component(component: object | None) -> None:
     stop = getattr(component, "stop", None)
     if stop is not None:
         await stop()
+
+
+async def _commit_component(component: object | None) -> None:
+    commit = getattr(component, "commit", None)
+    if commit is not None:
+        await commit()

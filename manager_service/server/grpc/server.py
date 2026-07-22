@@ -5,8 +5,8 @@ It depends only on shared contracts, manager types, and the generated
 proto stubs (which are pure transport code, not business logic).
 
 Compatibility note:
-- The generated proto package still lives under project_service until the
-  transport package is moved to a neutral shared namespace.
+- The generated proto package lives under the neutral shared transport
+  namespace.
 """
 
 from __future__ import annotations

@@ -36,6 +36,7 @@ async def test_ingestion_helper_handler_runs_ingest_and_publishes_result() -> No
     assert app.plan == {"project_id": "p1"}
     assert result.message_type == MessageType.HELPER_RESULT
     assert result.payload["helper"] == TOPICS.helper_ingestion_commands
+    assert result.payload["attempt"] == 2
     assert result.payload["result"] == {"ok": True, "job_id": "job-1"}
     assert producer.published == [(TOPICS.helper_ingestion_results, result, "task-1")]
 
@@ -72,5 +73,5 @@ def _command(*, operation: str, helper: str = TOPICS.helper_ingestion_commands) 
         data_type="project_document",
         task_id="task-1",
         correlation_id="corr-1",
-        payload={"operation": operation, "helper": helper, "plan": {"project_id": "p1"}},
+        payload={"operation": operation, "helper": helper, "plan": {"project_id": "p1"}, "attempt": 2},
     )

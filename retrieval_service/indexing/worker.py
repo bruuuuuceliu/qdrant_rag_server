@@ -96,6 +96,7 @@ async def create_worker_server(
             device=settings.embedding_device,
             api_key=settings.embedding_api_key,
             base_url=settings.embedding_base_url,
+            dimension=settings.embedding_dimension,
         )
         await embedding_provider.initialize()
 

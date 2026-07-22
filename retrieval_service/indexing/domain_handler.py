@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+import logging
 from typing import Any
 
 from retrieval_service.indexing.commands import RetrievalIndexCommand
@@ -16,8 +17,11 @@ from shared.contracts import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 class RetrievalIndexHelperHandler:
-    """Handles task-manager-issued retrieval-index helper commands."""
+    """Handles task-service-issued retrieval-index helper commands."""
 
     def __init__(self, *, indexing_service: Any, producer: MessageProducer | None = None) -> None:
         self._indexing_service = indexing_service
@@ -38,6 +42,9 @@ class RetrievalIndexHelperHandler:
                 operation=payload.operation,
                 helper=TOPICS.helper_retrieval_index_commands,
                 result=result,
+                attempt=payload.attempt,
+                retryable=bool(result.get("retryable", False)),
+                error=str(result.get("error", "")) if result.get("ok") is False else "",
                 source_message_id=envelope.message_id,
             ).to_payload(),
         )
@@ -53,11 +60,19 @@ class RetrievalIndexHelperHandler:
         index_chunks = getattr(self._indexing_service, "index_chunks", None)
         if index_chunks is None:
             return {"ok": False, "error": "retrieval indexing service is not configured"}
-        command = RetrievalIndexCommand.from_payload(
-            payload.plan,
-            fallback_request_id=envelope.task_id,
-        )
-        result = await index_chunks(command.to_index_request())
+        try:
+            command = RetrievalIndexCommand.from_payload(
+                payload.plan,
+                fallback_request_id=envelope.task_id,
+            )
+            result = await index_chunks(command.to_index_request())
+        except Exception as exc:
+            logger.exception(
+                "retrieval-index helper failed task_id=%s source_message_id=%s",
+                envelope.task_id,
+                envelope.message_id,
+            )
+            return {"ok": False, "error": str(exc), "retryable": False}
         return {"ok": True, **_result_to_payload(result)}
 
 

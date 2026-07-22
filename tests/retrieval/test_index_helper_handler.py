@@ -25,6 +25,11 @@ class FakeIndexingService:
         return IndexChunksResult(chunk_count=1, dense_enabled=True, sparse_enabled=False)
 
 
+class FailingIndexingService:
+    async def index_chunks(self, request):
+        raise RuntimeError("qdrant schema mismatch")
+
+
 @pytest.mark.asyncio
 async def test_retrieval_index_helper_handler_indexes_and_publishes_result() -> None:
     indexing_service = FakeIndexingService()
@@ -36,6 +41,7 @@ async def test_retrieval_index_helper_handler_indexes_and_publishes_result() -> 
     assert indexing_service.request.collection_name == "docs"
     assert result.message_type == MessageType.HELPER_RESULT
     assert result.payload["helper"] == TOPICS.helper_retrieval_index_commands
+    assert result.payload["attempt"] == 2
     assert result.payload["result"] == {
         "ok": True,
         "chunk_count": 1,
@@ -52,6 +58,27 @@ async def test_retrieval_index_helper_handler_reports_missing_runtime() -> None:
     result = await handler.handle(_command())
 
     assert result.payload["result"]["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_retrieval_index_helper_handler_publishes_indexing_failures() -> None:
+    producer = FakeProducer()
+    handler = RetrievalIndexHelperHandler(
+        indexing_service=FailingIndexingService(),
+        producer=producer,
+    )
+
+    result = await handler.handle(_command())
+
+    assert result.payload["attempt"] == 2
+    assert result.payload["retryable"] is False
+    assert result.payload["error"] == "qdrant schema mismatch"
+    assert result.payload["result"] == {
+        "ok": False,
+        "error": "qdrant schema mismatch",
+        "retryable": False,
+    }
+    assert producer.published == [(TOPICS.helper_retrieval_index_results, result, "task-1")]
 
 
 @pytest.mark.asyncio
@@ -72,6 +99,7 @@ def _command(*, operation: str = "ingest") -> MessageEnvelope:
         payload={
             "operation": operation,
             "helper": TOPICS.helper_retrieval_index_commands,
+            "attempt": 2,
             "plan": {
                 "collection_name": "docs",
                 "chunks": [

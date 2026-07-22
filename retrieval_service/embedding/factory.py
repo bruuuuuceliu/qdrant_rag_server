@@ -22,12 +22,16 @@ class EmbeddingProviderFactory:
         device: str = "cpu",
         api_key: str = "",
         base_url: str = OPENROUTER_EMBEDDINGS_URL,
+        dimension: int = 768,
     ) -> EmbeddingProvider:
+        from retrieval_service.embedding.deterministic import DeterministicHashEmbedding
         from retrieval_service.embedding.local import LocalSentenceTransformerEmbedding
         from retrieval_service.embedding.openai_compatible import OpenAICompatibleEmbedding
         from retrieval_service.embedding.openrouter import OpenRouterEmbedding
 
         normalized = provider.strip().lower()
+        if normalized in {"deterministic", "hash", "smoke"}:
+            return DeterministicHashEmbedding(dimension=dimension)
         if normalized in {"local", "sentence_transformer", "sentence-transformer"}:
             return LocalSentenceTransformerEmbedding(model_name=model_name, device=device)
         if normalized == "openrouter":
@@ -44,5 +48,6 @@ class EmbeddingProviderFactory:
             )
         raise ValueError(
             "RAG_EMBEDDING_PROVIDER must be one of: "
-            "local, sentence_transformer, openrouter, openai, remote, openai_compatible"
+            "local, sentence_transformer, deterministic, hash, openrouter, "
+            "openai, remote, openai_compatible"
         )

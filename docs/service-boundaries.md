@@ -148,8 +148,8 @@ Placement status:
 - Routing policies and versioned placement records are persisted in the
   placement registry, including explicit moving/stale/active rebalance states.
 - Data migration/reindex orchestration remains outside the current implemented
-  runtime. Production broker retry/dead-letter behavior is intentionally out of
-  scope for now.
+  runtime. Task-service retry/dead-letter behavior, active lease reclamation,
+  and scheduled retry dispatch are implemented in task-service state recovery.
 
 ## Shared Code
 

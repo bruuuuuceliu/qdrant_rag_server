@@ -4,7 +4,8 @@ This runbook covers the broker-first local/production-equivalent shape.
 
 ## Start
 
-- For local parity, use `examples/local/run-all.sh --broker-first`.
+- For local parity, use `examples/local/run-all.sh --reset --init`, or
+  `examples/local/run-all.sh --reset --smoke` for a verified ingest/search run.
 - For an infrastructure-only gate, use `examples/local/run-all.sh --infra-only`.
 - The broker-first runner starts or verifies Docker Redpanda, Redis, Qdrant,
   manager, task manager, task service, project planning, workflow log, ingestion helper,
@@ -18,6 +19,9 @@ This runbook covers the broker-first local/production-equivalent shape.
 - To validate live infrastructure outside the runner, use:
   `examples/local/run-all.sh --infra-only`, then
   `RAG_LIVE_INFRA=1 pytest -m live_infra tests/integration/test_live_infra_smoke.py -q`.
+- The GitHub Actions workflow runs the full non-live suite on pushes and pull
+  requests. Its manual `workflow_dispatch` inputs can run either the
+  Docker-backed live-infra tests or the full local ingest/search smoke.
 
 ## Readiness
 
@@ -58,6 +62,11 @@ This runbook covers the broker-first local/production-equivalent shape.
 - Terminal helper failures publish repair context to `task.dead_letters` by
   default. Retryable helper failures are republished until
   `TASK_SERVICE_MAX_ATTEMPTS`.
+- Helper commands and results carry `attempt`; task-service SQLite state records
+  dispatch/result attempt history in `task_step_attempts`.
 - The broker service owns Redpanda transport, topic bootstrap, health, and lag
   visibility. Task leases, retries, backoff, attempt counts, and dead-letter
-  decisions remain task-service responsibilities.
+  decisions remain task-service responsibilities. The task-service recovery loop
+  claims due `next_attempt_at` retries and expired helper leases from SQLite,
+  redispatches while attempts remain, and terminally fails expired max-attempt
+  helper steps.

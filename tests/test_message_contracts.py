@@ -210,6 +210,21 @@ def test_helper_command_payload_requires_helper() -> None:
         HelperCommandPayload.from_payload({"operation": "search", "plan": {}})
 
 
+def test_helper_command_payload_carries_attempt() -> None:
+    payload = HelperCommandPayload.from_payload(
+        {
+            "operation": "search",
+            "helper": "helper.retrieval.commands",
+            "plan": {"project_id": "p1"},
+            "attempt": 2,
+            "source_message_id": "plan-1",
+        }
+    )
+
+    assert payload.attempt == 2
+    assert payload.to_payload()["attempt"] == 2
+
+
 def test_helper_result_payload_uses_producer_as_helper_fallback() -> None:
     envelope = MessageEnvelope.create(
         producer="retrieval_service",

@@ -57,5 +57,5 @@ group_id:topic,topic;group_id:topic
 Example local broker-first groups are documented in `local.env.example`.
 
 Retries, leases, attempt counts, backoff, and dead-letter decisions are outside
-the broker boundary. The task manager owns those semantics; the broker owns
+the broker boundary. The task service owns those semantics; the broker owns
 transport, deterministic topic bootstrap, health, and optional lag visibility.

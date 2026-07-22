@@ -114,25 +114,27 @@ Acceptance:
 
 Move task execution state out of task manager.
 
-Current state table:
+Legacy state table:
 
 - `task_states`
 
-Target owner:
+Current owner:
 
 - `task_service`
 
-Recommended target tables:
+Implemented state tables:
 
 - `task_executions`
 - `task_steps`
-- `task_step_results`
+- `task_step_attempts`
+- `task_results`
 
 Acceptance:
 
 - task service can restart without losing expected helpers, completed helpers,
-  failed helpers, retry plans, or final result idempotency
+  failed helpers, retry plans, helper attempt history, or final result idempotency
 - task manager restart does not affect in-flight execution
+- legacy `task_states` rows migrate into explicit execution/step/attempt/result tables
 
 ### 5. Reduce Task Manager To Intake And Status
 

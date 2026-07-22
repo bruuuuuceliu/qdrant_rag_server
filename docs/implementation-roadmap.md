@@ -9,7 +9,9 @@ This roadmap tracks the current broker-first service split.
 - Task manager consumes task intake, publishes normalized task requests, and
   writes Redis task status from task events/results.
 - Task service consumes task requests, asks project service for planning, sends
-  helper commands, fans in helper results, and publishes task events/results.
+  helper commands with attempt metadata, fans in helper results, persists
+  execution state in explicit execution/step/attempt/result tables, recovers
+  due retries and expired helper leases, and publishes task events/results.
 - Project service owns project config, adapters, scope construction, placement
   planning, and project-document planning.
 - Ingestion helper owns source loading, parsing, chunking, ingestion job
@@ -17,11 +19,15 @@ This roadmap tracks the current broker-first service split.
 - Retrieval helper owns search/delete/raw-document work.
 - Retrieval index helper owns embedding, sparse encoding, NER enrichment, and
   Qdrant indexing.
-- Workflow log service owns audit/domain command handling and durable log
-  storage.
+- Deterministic hash embeddings are available for smoke/offline runs that must
+  avoid model downloads while preserving query/document token overlap.
+- Workflow log service owns passive `audit.events` consumption, domain command
+  handling, and durable log storage.
 - Local runner starts the same broker-first topology with Redpanda, Redis,
   Qdrant, task services, domain services, helper workers, storage, SQLite node,
   and manager gRPC.
+- GitHub Actions runs the full non-live test/compile/shell gate by default and
+  exposes manual Docker-backed live-infra and full local smoke jobs.
 - Placement execution and local placement registry are implemented for indexing,
   search, delete, cache namespacing, and primary/replica target resolution.
 - Config profile variants and component env examples live under `configs/`.
@@ -52,8 +58,10 @@ The current design no longer supports:
 
 - Continue tightening import-boundary tests around service-owned modules and the
   manager gRPC compatibility adapter.
-- Add production-grade retry, lease/claim timeout, attempt-count, backoff, and
-  dead-letter behavior.
+- Add transactional outbox/inbox support only if publish/DB atomicity becomes a
+  production requirement.
 - Add multi-endpoint placement smoke coverage and migration/reindex
   orchestration.
+- Execute the manual Docker smoke workflow periodically, especially after
+  runner, embedding, broker, or Qdrant dependency changes.
 - Split tests further by service ownership and runtime surface.

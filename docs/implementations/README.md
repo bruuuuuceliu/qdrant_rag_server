@@ -8,6 +8,7 @@ operational constraints.
 ## Implemented Areas
 
 - [Broker-First Message Foundation](broker-first-message-foundation.md)
+- [Database, Storage, And Message Reference](database-storage-message-reference.md)
 
 ## Current Retrieval Position
 

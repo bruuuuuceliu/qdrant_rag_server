@@ -1,4 +1,4 @@
-"""Helper/task-manager boundary tests."""
+"""Helper service-boundary tests."""
 
 from __future__ import annotations
 
@@ -15,14 +15,22 @@ HELPER_ROOTS = (
 )
 
 
-def test_helpers_do_not_depend_on_task_manager() -> None:
+FORBIDDEN_PREFIXES = (
+    "manager_service",
+    "project_service",
+    "task_manager_service",
+    "task_service",
+)
+
+
+def test_helpers_do_not_depend_on_orchestration_or_project_internals() -> None:
     violations: list[str] = []
     for root in HELPER_ROOTS:
         for path in root.rglob("*.py"):
             if "__pycache__" in path.parts:
                 continue
             for module in _imports(path):
-                if module.startswith("task_manager_service"):
+                if module.startswith(FORBIDDEN_PREFIXES):
                     violations.append(f"{path.relative_to(ROOT)} imports {module}")
 
     assert violations == []

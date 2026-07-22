@@ -79,20 +79,23 @@ class TaskManagerServerContext:
 
     async def run_intake_once(self) -> None:
         await self.dispatcher.run_once(self.intake_consumer)
+        await _commit_component(self.intake_consumer)
 
     async def run_task_event_once(self, consumer: MessageConsumer | None = None) -> None:
         consumer = consumer or self.task_event_consumer
         envelope = await consumer.consume(self.settings.task_event_topic)
         await self.dispatcher.update_from_task_event(envelope)
+        await _commit_component(consumer)
 
     async def run_task_result_once(self, consumer: MessageConsumer | None = None) -> None:
         consumer = consumer or self.task_result_consumer
         envelope = await consumer.consume(self.settings.task_result_topic)
         await self.dispatcher.update_from_task_result(envelope)
+        await _commit_component(consumer)
 
     async def _run_intake(self) -> None:
         while True:
-            await self.dispatcher.run_once(self.intake_consumer)
+            await self.run_intake_once()
 
     async def _run_task_events(self) -> None:
         while True:
@@ -113,3 +116,9 @@ async def _stop_component(component: object | None) -> None:
     stop = getattr(component, "stop", None)
     if stop is not None:
         await stop()
+
+
+async def _commit_component(component: object | None) -> None:
+    commit = getattr(component, "commit", None)
+    if commit is not None:
+        await commit()

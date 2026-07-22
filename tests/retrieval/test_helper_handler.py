@@ -46,6 +46,7 @@ async def test_retrieval_helper_handler_runs_search_and_publishes_result() -> No
     assert api.search_payload == {"project_id": "p1"}
     assert result.message_type == MessageType.HELPER_RESULT
     assert result.payload["helper"] == TOPICS.helper_retrieval_commands
+    assert result.payload["attempt"] == 2
     assert result.payload["result"] == {"ok": True, "hits": []}
     assert producer.published == [(TOPICS.helper_retrieval_results, result, "task-1")]
 
@@ -93,5 +94,5 @@ def _command(*, operation: str, helper: str = TOPICS.helper_retrieval_commands) 
         data_type="project_document",
         task_id="task-1",
         correlation_id="corr-1",
-        payload={"operation": operation, "helper": helper, "plan": {"project_id": "p1"}},
+        payload={"operation": operation, "helper": helper, "plan": {"project_id": "p1"}, "attempt": 2},
     )

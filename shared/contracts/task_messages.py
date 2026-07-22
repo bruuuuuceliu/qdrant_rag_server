@@ -113,6 +113,7 @@ class HelperCommandPayload:
     operation: str
     helper: str
     plan: dict[str, Any] = field(default_factory=dict)
+    attempt: int = 1
     source_message_id: str = ""
 
     @classmethod
@@ -129,6 +130,7 @@ class HelperCommandPayload:
             operation=_operation(payload),
             helper=helper,
             plan=_mapping(payload.get("plan", {}), "plan"),
+            attempt=_attempt(payload.get("attempt", 1)),
             source_message_id=str(payload.get("source_message_id", "")),
         )
 
@@ -137,6 +139,7 @@ class HelperCommandPayload:
             "operation": self.operation,
             "helper": self.helper,
             "plan": dict(self.plan),
+            "attempt": self.attempt,
             "source_message_id": self.source_message_id,
         }
 

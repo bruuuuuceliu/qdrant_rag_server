@@ -19,6 +19,11 @@ class TaskServiceSettings:
     dead_letter_topic: str = TOPICS.task_dead_letters
     state_db_path: str = "examples/local/.data/task_service_state.db"
     max_attempts: int = 3
+    helper_lease_seconds: int = 300
+    retry_backoff_seconds: int = 0
+    recovery_enabled: bool = True
+    recovery_poll_seconds: float = 2.0
+    recovery_batch_size: int = 25
 
     @classmethod
     def from_values(cls, values: dict[str, str]) -> "TaskServiceSettings":
@@ -41,4 +46,13 @@ class TaskServiceSettings:
                 str(Path(values.get("RAG_LOCAL_DATA_DIR", "examples/local/.data")) / "task_service_state.db"),
             ),
             max_attempts=int(values.get("TASK_SERVICE_MAX_ATTEMPTS", "3")),
+            helper_lease_seconds=int(values.get("TASK_SERVICE_HELPER_LEASE_SECONDS", "300")),
+            retry_backoff_seconds=int(values.get("TASK_SERVICE_RETRY_BACKOFF_SECONDS", "0")),
+            recovery_enabled=_bool_value(values.get("TASK_SERVICE_RECOVERY_ENABLED", "true")),
+            recovery_poll_seconds=float(values.get("TASK_SERVICE_RECOVERY_POLL_SECONDS", "2.0")),
+            recovery_batch_size=int(values.get("TASK_SERVICE_RECOVERY_BATCH_SIZE", "25")),
         )
+
+
+def _bool_value(value: str) -> bool:
+    return value.strip().lower() not in {"0", "false", "no", "off"}

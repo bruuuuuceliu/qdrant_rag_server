@@ -45,6 +45,25 @@ async def test_workflow_log_domain_handler_lists_entries() -> None:
 
 
 @pytest.mark.asyncio
+async def test_workflow_log_domain_handler_appends_audit_event_without_result_publish() -> None:
+    repository = MemoryWorkflowLogRepository()
+    producer = FakeProducer()
+    handler = WorkflowLogDomainHandler(repository=repository, producer=producer)
+
+    result = await handler.handle(_audit_event())
+
+    entries = await repository.list_by_job("task-1")
+    assert result.message_type == MessageType.AUDIT_EVENT
+    assert len(entries) == 1
+    assert entries[0].event == "manager.request.accepted"
+    assert entries[0].topic == TOPICS.audit_events
+    assert entries[0].key == "task-1"
+    assert entries[0].headers["correlation_id"] == "corr-1"
+    assert entries[0].payload["project_id"] == "p1"
+    assert producer.published == []
+
+
+@pytest.mark.asyncio
 async def test_workflow_log_domain_handler_rejects_unknown_operation() -> None:
     handler = WorkflowLogDomainHandler(repository=MemoryWorkflowLogRepository())
 
@@ -80,4 +99,22 @@ def _list_command(*, job_id: str = "", operation: str = "list") -> MessageEnvelo
         task_id="task-1",
         correlation_id="corr-1",
         payload={"operation": operation, "request": {"job_id": job_id}},
+    )
+
+
+def _audit_event() -> MessageEnvelope:
+    return MessageEnvelope.create(
+        producer="manager_service",
+        message_type=MessageType.AUDIT_EVENT,
+        data_type="project_document",
+        task_id="task-1",
+        correlation_id="corr-1",
+        payload={
+            "event": "manager.request.accepted",
+            "status": "accepted",
+            "project_id": "p1",
+            "user_id": "u1",
+            "doc_id": "d1",
+            "data_type": "project_document",
+        },
     )

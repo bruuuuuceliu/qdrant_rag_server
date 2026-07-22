@@ -15,7 +15,7 @@ from shared.contracts import (
 
 
 class IngestionHelperHandler:
-    """Handles task-manager-issued ingestion helper commands."""
+    """Handles task-service-issued ingestion helper commands."""
 
     def __init__(self, *, app: Any, producer: MessageProducer | None = None) -> None:
         self._app = app
@@ -37,6 +37,9 @@ class IngestionHelperHandler:
                 operation=operation,
                 helper=payload.helper,
                 result=result,
+                attempt=payload.attempt,
+                retryable=bool(result.get("retryable", False)),
+                error=str(result.get("error", "")) if result.get("ok") is False else "",
                 source_message_id=envelope.message_id,
             ).to_payload(),
         )

@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from shared.contracts import MessageEnvelope, MessageType, TOPICS
-from task_service import InMemoryTaskStateRepository, TaskServiceDispatcher, TaskServiceSettings
+from task_service import (
+    InMemoryTaskStateRepository,
+    SQLiteTaskStateRepository,
+    TaskServiceDispatcher,
+    TaskServiceSettings,
+)
 
 
 class FakeMessageProducer:
@@ -85,6 +90,9 @@ async def test_dispatches_project_plan_result_to_helper_commands(
     state = await state_repository.get("task-1")
     assert state is not None
     assert state.expected_helpers == set(topics)
+    for index, topic in enumerate(topics):
+        assert state.helper_attempts[topic][0]["event"] == "dispatch"
+        assert state.helper_attempts[topic][0]["source_message_id"] == producer.published[index][1].message_id
     assert result.helper_topics == topics
     assert [published[0] for published in producer.published] == [*topics, TOPICS.task_events]
     assert producer.published[0][1].message_type == MessageType.HELPER_COMMAND
@@ -210,6 +218,208 @@ async def test_retryable_helper_failure_republishes_helper_command_before_max_at
     assert retry.payload["attempt"] == 2
     assert retry.payload["plan"] == {"project_id": "p1"}
     assert retry.payload["source_message_id"] == "cmd-1"
+    state = await state_repository.get("task-1")
+    assert state is not None
+    assert [item["status"] for item in state.helper_attempts[TOPICS.helper_retrieval_commands]] == [
+        "retrying",
+        "dispatched",
+    ]
+    assert state.helper_attempts[TOPICS.helper_retrieval_commands][1]["source_message_id"] == retry.message_id
+
+
+@pytest.mark.asyncio
+async def test_duplicate_retryable_helper_failure_does_not_reschedule_attempt() -> None:
+    producer = FakeMessageProducer()
+    state_repository = InMemoryTaskStateRepository()
+    await state_repository.record_helper_plan(
+        "task-1",
+        TOPICS.helper_retrieval_commands,
+        operation="search",
+        plan={"project_id": "p1"},
+    )
+    dispatcher = TaskServiceDispatcher(
+        producer=producer,
+        state_repository=state_repository,
+        settings=TaskServiceSettings(max_attempts=3),
+    )
+    envelope = MessageEnvelope.create(
+        producer="retrieval_service",
+        message_type=MessageType.HELPER_RESULT,
+        data_type="project_document",
+        task_id="task-1",
+        correlation_id="corr-1",
+        message_id="result-1",
+        payload={
+            "operation": "search",
+            "helper": TOPICS.helper_retrieval_commands,
+            "result": {},
+            "attempt": 1,
+            "retryable": True,
+            "error": "timeout",
+            "source_message_id": "cmd-1",
+        },
+    )
+
+    first = await dispatcher.finalize_helper_result(envelope)
+    second = await dispatcher.finalize_helper_result(envelope)
+
+    state = await state_repository.get("task-1")
+    assert first.status == "running"
+    assert second.status == "running"
+    assert [published[0] for published in producer.published] == [
+        TOPICS.helper_retrieval_commands,
+        TOPICS.task_events,
+    ]
+    assert state is not None
+    assert [item["status"] for item in state.helper_attempts[TOPICS.helper_retrieval_commands]] == [
+        "retrying",
+        "dispatched",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retryable_helper_failure_can_be_scheduled_for_recovery(tmp_path) -> None:
+    producer = FakeMessageProducer()
+    state_repository = SQLiteTaskStateRepository(tmp_path / "task_state.db")
+    await state_repository.record_execution(
+        "task-1",
+        data_type="project_document",
+        correlation_id="corr-1",
+        operation="search",
+    )
+    await state_repository.record_helper_plan(
+        "task-1",
+        TOPICS.helper_retrieval_commands,
+        operation="search",
+        plan={"project_id": "p1"},
+    )
+    settings = TaskServiceSettings(max_attempts=3, retry_backoff_seconds=30)
+    dispatcher = TaskServiceDispatcher(
+        producer=producer,
+        state_repository=state_repository,
+        settings=settings,
+    )
+
+    result = await dispatcher.finalize_helper_result(
+        MessageEnvelope.create(
+            producer="retrieval_service",
+            message_type=MessageType.HELPER_RESULT,
+            data_type="project_document",
+            task_id="task-1",
+            correlation_id="corr-1",
+            payload={
+                "operation": "search",
+                "helper": TOPICS.helper_retrieval_commands,
+                "result": {},
+                "attempt": 1,
+                "retryable": True,
+                "error": "timeout",
+                "source_message_id": "cmd-1",
+            },
+        )
+    )
+
+    assert result.status == "running"
+    assert [published[0] for published in producer.published] == [TOPICS.task_events]
+    assert producer.published[0][1].payload["event"] == "task.retry_scheduled"
+
+    recovered = await dispatcher.recover_due_helpers(now="9999-01-01T00:00:00Z")
+
+    assert recovered.recovered == 1
+    assert [published[0] for published in producer.published] == [
+        TOPICS.task_events,
+        TOPICS.helper_retrieval_commands,
+        TOPICS.task_events,
+    ]
+    retry = producer.published[1][1]
+    assert retry.payload["attempt"] == 2
+    assert retry.payload["plan"] == {"project_id": "p1"}
+
+
+@pytest.mark.asyncio
+async def test_recovery_redispatches_expired_helper_leases(tmp_path) -> None:
+    producer = FakeMessageProducer()
+    state_repository = SQLiteTaskStateRepository(tmp_path / "task_state.db")
+    await state_repository.record_execution(
+        "task-1",
+        data_type="project_document",
+        correlation_id="corr-1",
+        operation="search",
+    )
+    await state_repository.record_helper_plan(
+        "task-1",
+        TOPICS.helper_retrieval_commands,
+        operation="search",
+        plan={"project_id": "p1"},
+    )
+    await state_repository.record_helper_dispatch(
+        "task-1",
+        TOPICS.helper_retrieval_commands,
+        attempt=1,
+        source_message_id="cmd-1",
+        lease_owner="task-service-old",
+        lease_expires_at="2026-07-22T00:00:05Z",
+    )
+    settings = TaskServiceSettings(max_attempts=3)
+    dispatcher = TaskServiceDispatcher(
+        producer=producer,
+        state_repository=state_repository,
+        settings=settings,
+    )
+
+    recovered = await dispatcher.recover_due_helpers(now="2026-07-22T00:00:06Z")
+
+    assert recovered.recovered == 1
+    assert [published[0] for published in producer.published] == [
+        TOPICS.helper_retrieval_commands,
+        TOPICS.task_events,
+    ]
+    retry = producer.published[0][1]
+    assert retry.payload["attempt"] == 2
+    assert retry.payload["source_message_id"] == "cmd-1"
+
+
+@pytest.mark.asyncio
+async def test_recovery_fails_expired_helper_lease_after_max_attempts(tmp_path) -> None:
+    producer = FakeMessageProducer()
+    state_repository = SQLiteTaskStateRepository(tmp_path / "task_state.db")
+    await state_repository.record_execution(
+        "task-1",
+        data_type="project_document",
+        correlation_id="corr-1",
+        operation="search",
+    )
+    await state_repository.record_helper_plan(
+        "task-1",
+        TOPICS.helper_retrieval_commands,
+        operation="search",
+        plan={"project_id": "p1"},
+    )
+    await state_repository.record_helper_dispatch(
+        "task-1",
+        TOPICS.helper_retrieval_commands,
+        attempt=2,
+        source_message_id="cmd-2",
+        lease_owner="task-service-old",
+        lease_expires_at="2026-07-22T00:00:05Z",
+    )
+    settings = TaskServiceSettings(max_attempts=2, dead_letter_topic="task.dead")
+    dispatcher = TaskServiceDispatcher(
+        producer=producer,
+        state_repository=state_repository,
+        settings=settings,
+    )
+
+    recovered = await dispatcher.recover_due_helpers(now="2026-07-22T00:00:06Z")
+
+    assert recovered.recovered == 1
+    assert [published[0] for published in producer.published] == [
+        "task.dead",
+        TOPICS.task_events,
+        TOPICS.task_results,
+    ]
+    assert producer.published[0][1].payload["error"] == "helper lease expired"
+    assert producer.published[-1][1].payload["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -320,6 +530,100 @@ async def test_duplicate_helper_result_does_not_publish_second_final_result() ->
     assert first.status == "completed"
     assert second.status == "completed"
     assert [published[0] for published in producer.published].count(TOPICS.task_results) == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_recorded_complete_result_can_republish_unpublished_final() -> None:
+    producer = FakeMessageProducer()
+    state_repository = InMemoryTaskStateRepository()
+    await state_repository.set_expected_helpers("task-1", (TOPICS.helper_retrieval_commands,))
+    await state_repository.mark_helper_result(
+        "task-1",
+        TOPICS.helper_retrieval_commands,
+        ok=True,
+        result={"ok": True, "hits": []},
+        source_message_id="cmd-1",
+        failed_message_id="result-1",
+    )
+    dispatcher = TaskServiceDispatcher(
+        producer=producer,
+        state_repository=state_repository,
+    )
+    envelope = MessageEnvelope.create(
+        producer="retrieval_service",
+        message_type=MessageType.HELPER_RESULT,
+        data_type="project_document",
+        task_id="task-1",
+        correlation_id="corr-1",
+        message_id="result-1",
+        payload={
+            "operation": "search",
+            "helper": TOPICS.helper_retrieval_commands,
+            "result": {"ok": True, "hits": []},
+            "source_message_id": "cmd-1",
+        },
+    )
+
+    result = await dispatcher.finalize_helper_result(envelope)
+
+    state = await state_repository.get("task-1")
+    assert result.status == "completed"
+    assert [published[0] for published in producer.published] == [
+        TOPICS.task_events,
+        TOPICS.task_results,
+    ]
+    assert state is not None
+    assert state.final_published is True
+    assert len(state.helper_attempts[TOPICS.helper_retrieval_commands]) == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_helper_result_after_complete_uses_persisted_aggregate() -> None:
+    producer = FakeMessageProducer()
+    state_repository = InMemoryTaskStateRepository()
+    await state_repository.set_expected_helpers("task-1", (TOPICS.helper_retrieval_commands,))
+    await state_repository.mark_helper_result(
+        "task-1",
+        TOPICS.helper_retrieval_commands,
+        ok=True,
+        result={"ok": True, "hits": [{"id": "doc-1"}]},
+        source_message_id="cmd-1",
+        failed_message_id="result-1",
+    )
+    dispatcher = TaskServiceDispatcher(
+        producer=producer,
+        state_repository=state_repository,
+        settings=TaskServiceSettings(max_attempts=3),
+    )
+    stale = MessageEnvelope.create(
+        producer="retrieval_service",
+        message_type=MessageType.HELPER_RESULT,
+        data_type="project_document",
+        task_id="task-1",
+        correlation_id="corr-1",
+        message_id="result-stale",
+        payload={
+            "operation": "search",
+            "helper": TOPICS.helper_retrieval_commands,
+            "result": {},
+            "attempt": 1,
+            "retryable": True,
+            "error": "late timeout",
+            "source_message_id": "cmd-stale",
+        },
+    )
+
+    result = await dispatcher.finalize_helper_result(stale)
+
+    assert result.status == "completed"
+    assert [published[0] for published in producer.published] == [
+        TOPICS.task_events,
+        TOPICS.task_results,
+    ]
+    assert producer.published[-1][1].payload["result"] == {
+        "ok": True,
+        "hits": [{"id": "doc-1"}],
+    }
 
 
 @pytest.mark.asyncio

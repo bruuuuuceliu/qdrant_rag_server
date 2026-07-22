@@ -578,8 +578,10 @@ Use Redpanda topics for work that can take variable time or needs backpressure:
 - lifecycle events
 - cache invalidation events
 
-Retries, leases, attempt counts, backoff, and dead-letter handling are outside
-the current broker scope.
+Retries, attempt counts, and dead-letter publication are task-service
+responsibilities. The current broker scope provides transport and manual
+post-handler offset commits; active lease reclamation and scheduled retry
+dispatch remain task-service recovery work.
 
 Queue messages should use a consistent envelope:
 
@@ -698,8 +700,8 @@ boundaries have collapsed.
 
 Ingestion and indexing are naturally variable-latency workflows. They should be
 Redpanda-backed so the system can absorb bursts and scale workers without
-changing public APIs. Retry, lease, attempt-count, backoff, and dead-letter
-semantics are intentionally deferred.
+changing public APIs. Task service owns retry, attempt-count, and dead-letter
+semantics, including active lease reclamation and scheduled retry dispatch.
 
 ### Services Own Their State
 

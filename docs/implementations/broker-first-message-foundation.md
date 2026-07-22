@@ -19,14 +19,15 @@ the architecture or development rules.
   `task.requests` publication, task event/result consumption, and
   shared-contract status updates.
 - `task_service`: executor dispatcher, project plan request/result handling,
-  helper command dispatch, helper-result fan-in, retries/dead letters, and
-  final task-result publication.
+  helper command dispatch, helper-result fan-in, retries/dead letters,
+  explicit SQLite execution/step/attempt/result state, and final task-result
+  publication.
 - `project_service.domain_handler`: project-domain command handler that returns
   project plan/info results without dispatching helper work.
 - `ingestion_service.server.domain_handler`: ingestion helper command handler.
 - `retrieval_service.server.domain_handler`: retrieval helper command handler.
 - `workflow_log_service.domain_handler`: workflow-log append/list domain
-  command handler.
+  command handler and passive `audit.events` sink.
 - `shared.contracts.task_status`: shared task-status record and store protocol.
 - `redis_status_node`: Redis adapter shell and in-memory unit-test store for the
   shared task-status contract. Redis status store composition stays outside the
@@ -36,6 +37,7 @@ the architecture or development rules.
 
 ```text
 manager task intake envelope
+  -> manager accepted/audit event publication
   -> task manager publishes task request
   -> task service dispatches project plan request
   -> project service publishes project result
@@ -43,11 +45,16 @@ manager task intake envelope
   -> ingestion/retrieval helper publishes helper result
   -> task service publishes task events/results
   -> task manager writes Redis status with TTL
+
+manager/task audit envelopes
+  -> workflow log consumes audit.events
+  -> workflow log appends durable SQLite entries
 ```
 
 The implemented path is transport-neutral and uses injected producers/consumers
-in tests. Local runtime now starts the broker-first process topology; stronger
-live Redpanda plus Redis transition coverage is still pending.
+in tests. Local runtime now starts the broker-first process topology; focused
+live Redpanda plus Redis smoke coverage verifies topic bootstrap,
+publish/consume, manager intake publication, and Redis status readback.
 
 ## Verification
 
@@ -67,6 +74,7 @@ pytest tests/test_message_contracts.py \
 
 ## Known Gaps
 
-- Redis adapter shell exists, but live Redis integration tests are pending.
-- Workflow-log domain handler exists, but manager-facing workflow query/result
-  flow is not fully integrated.
+- Live Redpanda/Redis smoke tests are available behind `RAG_LIVE_INFRA=1`; add
+  a managed CI job when Docker-backed local infrastructure is available there.
+- Manager-facing workflow query/result flow is still reserved; workflow-log
+  audit observation is integrated through `audit.events`.

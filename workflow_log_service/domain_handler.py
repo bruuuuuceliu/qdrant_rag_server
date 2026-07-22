@@ -16,13 +16,16 @@ from workflow_log_service.models import WorkflowLogEntry
 
 
 class WorkflowLogDomainHandler:
-    """Handles task-manager-issued workflow-log domain commands/events."""
+    """Handles workflow-log domain commands and passive audit events."""
 
     def __init__(self, *, repository: Any, producer: MessageProducer | None = None) -> None:
         self._repository = repository
         self._producer = producer
 
     async def handle(self, envelope: MessageEnvelope) -> MessageEnvelope:
+        if envelope.message_type == MessageType.AUDIT_EVENT:
+            return await self.handle_audit_event(envelope)
+
         payload = DomainCommandPayload.from_envelope(envelope)
         operation = payload.operation
         if operation == "append":
@@ -46,6 +49,30 @@ class WorkflowLogDomainHandler:
         if self._producer is not None:
             await self._producer.publish(TOPICS.domain_workflow_log_results, response, key=envelope.task_id)
         return response
+
+    async def handle_audit_event(self, envelope: MessageEnvelope) -> MessageEnvelope:
+        """Append an observational audit event without publishing a result."""
+
+        payload = envelope.payload
+        entry = WorkflowLogEntry(
+            event=str(payload.get("event", envelope.message_type)),
+            job_id=str(payload.get("job_id", envelope.task_id)),
+            status=str(payload.get("status", "")),
+            project_id=str(payload.get("project_id", "")),
+            user_id=str(payload.get("user_id", "")),
+            kb_id=str(payload.get("kb_id", "")),
+            doc_id=str(payload.get("doc_id", "")),
+            data_type=str(payload.get("data_type", envelope.data_type)),
+            content_hash=str(payload.get("content_hash", "")),
+            raw_storage_key=str(payload.get("raw_storage_key", "")),
+            error=str(payload.get("error", "")),
+            topic=TOPICS.audit_events,
+            key=envelope.task_id,
+            headers=dict(envelope.headers) | {"correlation_id": envelope.correlation_id},
+            payload=dict(payload),
+        )
+        await self._repository.append(entry)
+        return envelope
 
     async def _append(
         self,

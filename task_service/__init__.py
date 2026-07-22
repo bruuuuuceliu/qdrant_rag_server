@@ -6,10 +6,12 @@ from task_service.dispatcher import (
     DispatchResult,
     FinalizeResult,
     HelperDispatchResult,
+    RecoveryResult,
     TaskServiceDispatcher,
 )
 from task_service.repository import (
     InMemoryTaskStateRepository,
+    PendingHelperDispatch,
     SQLiteTaskStateRepository,
     TaskState,
     TaskStateRepository,
@@ -21,6 +23,8 @@ __all__ = [
     "FinalizeResult",
     "HelperDispatchResult",
     "InMemoryTaskStateRepository",
+    "PendingHelperDispatch",
+    "RecoveryResult",
     "SQLiteTaskStateRepository",
     "TaskServiceDispatcher",
     "TaskServiceServerContext",

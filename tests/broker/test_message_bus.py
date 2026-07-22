@@ -13,6 +13,7 @@ class Component:
         self.started = False
         self.stopped = False
         self.fail_stop = fail_stop
+        self.committed = False
         self.published: list[tuple[str, MessageEnvelope, str]] = []
         self.envelope = _envelope()
 
@@ -30,6 +31,9 @@ class Component:
     async def consume(self, topic: str) -> MessageEnvelope:
         return self.envelope
 
+    async def commit(self) -> None:
+        self.committed = True
+
 
 @pytest.mark.asyncio
 async def test_message_bus_delegates_publish_consume_and_lifecycle() -> None:
@@ -41,10 +45,12 @@ async def test_message_bus_delegates_publish_consume_and_lifecycle() -> None:
     await bus.start()
     await bus.publish(TOPICS.task_intake, envelope, key="task-1")
     consumed = await bus.consume(TOPICS.task_intake)
+    await bus.commit()
     await bus.stop()
 
     assert producer.started is True
     assert consumer.started is True
+    assert consumer.committed is True
     assert producer.stopped is True
     assert consumer.stopped is True
     assert producer.published == [(TOPICS.task_intake, envelope, "task-1")]

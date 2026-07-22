@@ -19,6 +19,9 @@ examples/local/run-all.sh --reset --smoke
 
 `--smoke` implies `--init` and returns success only after the manager health,
 ingest/status, and strict search client checks pass.
+When `RAG_EXAMPLE_EMBEDDING_VERSION` is unset, smoke runs use an embedding
+version derived from `RAG_EMBEDDING_PROVIDER` and `RAG_EMBEDDING_DIMENSION` so
+Qdrant collections do not collide across local vector-size changes.
 
 Useful options:
 
@@ -113,9 +116,10 @@ removes local Docker infra containers by recorded ID or configured name.
 - Docker is optional but recommended for Qdrant. If Qdrant is already running at
   `RAG_QDRANT_HOST:RAG_QDRANT_PORT`, `run-all.sh` reuses it.
 - The default local embedding provider may download/load a sentence-transformers
-  model from Hugging Face. In offline or restricted-network environments, either
-  pre-cache `RAG_EMBEDDING_MODEL` locally or use a remote embedding provider with
-  `RAG_EMBEDDING_API_KEY`.
+  model from Hugging Face. In offline or restricted-network environments, use
+  `--embedding-provider deterministic --embedding-model deterministic-hash
+  --embedding-dimension 384` for smoke checks, pre-cache `RAG_EMBEDDING_MODEL`,
+  or use a remote embedding provider with `RAG_EMBEDDING_API_KEY`.
 - `run-all.sh` uses the broker readiness command for dependency checks. If
   startup times out, inspect `.run/logs/*.log`; common blockers are Docker
   socket access, Qdrant not reachable, and embedding model downloads.

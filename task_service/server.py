@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import logging
 
 from shared.contracts import MessageConsumer
 from shared.runtime_health import RuntimeHealth
 from task_service.config import TaskServiceSettings
 from task_service.dispatcher import TaskServiceDispatcher
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -43,6 +46,8 @@ class TaskServiceServerContext:
                 for topic, consumer in self.helper_result_consumers
             ),
         ]
+        if self.settings.recovery_enabled and self.dispatcher.recovery_supported:
+            self._tasks.append(asyncio.create_task(self._run_recovery()))
 
     async def stop(self) -> None:
         for task in self._tasks:
@@ -75,11 +80,15 @@ class TaskServiceServerContext:
                 "task_event_topic": self.settings.task_event_topic,
                 "task_result_topic": self.settings.task_result_topic,
                 "dead_letter_topic": self.settings.dead_letter_topic,
+                "recovery_enabled": self.settings.recovery_enabled,
+                "helper_lease_seconds": self.settings.helper_lease_seconds,
+                "retry_backoff_seconds": self.settings.retry_backoff_seconds,
             },
         )
 
     async def run_request_once(self) -> None:
         await self.dispatcher.run_once(self.request_consumer)
+        await _commit_component(self.request_consumer)
 
     async def run_project_plan_result_once(
         self,
@@ -94,6 +103,7 @@ class TaskServiceServerContext:
         )
         envelope = await consumer.consume(topic)
         await self.dispatcher.dispatch_project_plan_result(envelope)
+        await _commit_component(consumer)
 
     async def run_helper_result_once(
         self,
@@ -108,10 +118,14 @@ class TaskServiceServerContext:
         )
         envelope = await consumer.consume(topic)
         await self.dispatcher.finalize_helper_result(envelope)
+        await _commit_component(consumer)
+
+    async def run_recovery_once(self) -> object:
+        return await self.dispatcher.recover_due_helpers()
 
     async def _run_requests(self) -> None:
         while True:
-            await self.dispatcher.run_once(self.request_consumer)
+            await self.run_request_once()
 
     async def _run_project_plan_results(self, topic: str, consumer: MessageConsumer) -> None:
         while True:
@@ -120,6 +134,14 @@ class TaskServiceServerContext:
     async def _run_helper_results(self, topic: str, consumer: MessageConsumer) -> None:
         while True:
             await self.run_helper_result_once(topic, consumer)
+
+    async def _run_recovery(self) -> None:
+        while True:
+            try:
+                await self.run_recovery_once()
+            except Exception:
+                logger.exception("task service recovery pass failed")
+            await asyncio.sleep(self.settings.recovery_poll_seconds)
 
     def _select_consumer(
         self,
@@ -151,3 +173,9 @@ async def _stop_component(component: object | None) -> None:
     stop = getattr(component, "stop", None)
     if stop is not None:
         await stop()
+
+
+async def _commit_component(component: object | None) -> None:
+    commit = getattr(component, "commit", None)
+    if commit is not None:
+        await commit()

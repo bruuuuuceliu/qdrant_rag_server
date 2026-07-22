@@ -46,12 +46,16 @@ class FakeKafkaConsumer:
         self.messages = messages
         self.started = False
         self.stopped = False
+        self.committed = False
 
     async def start(self) -> None:
         self.started = True
 
     async def stop(self) -> None:
         self.stopped = True
+
+    async def commit(self) -> None:
+        self.committed = True
 
     def __aiter__(self):
         return self
@@ -193,10 +197,12 @@ async def test_redpanda_consumer_uses_configured_topic_and_decodes_envelope() ->
 
     await consumer.start()
     consumed = await consumer.consume(TOPICS.task_intake)
+    await consumer.commit()
     await consumer.stop()
 
     assert consumed == envelope
     assert fake.started is True
+    assert fake.committed is True
     assert fake.stopped is True
     with pytest.raises(ValueError, match="configured"):
         await consumer.consume(TOPICS.task_results)

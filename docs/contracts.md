@@ -35,6 +35,11 @@ Required envelope fields:
 Envelope payloads are plain mappings. Services may import shared contracts, but
 must not import another service's internals to parse a message.
 
+Redpanda consumers run with broker auto-commit disabled in the runtime adapter.
+Service contexts call an optional consumer `commit()` only after the message
+handler/dispatcher returns successfully. A raised handler error leaves the broker
+offset uncommitted for at-least-once redelivery.
+
 ## Canonical Topics
 
 Canonical topic names live in `shared.contracts.TOPICS`.
@@ -43,7 +48,7 @@ Canonical topic names live in `shared.contracts.TOPICS`.
 | --- | --- | --- | --- |
 | `task.intake` | manager service | task manager | Accepted public requests after auth/validation. |
 | `manager.request.accepted` | manager service | audit/status observers | Manager acceptance events. |
-| `audit.events` | manager/task services | workflow/audit observers | Audit trail events. |
+| `audit.events` | manager/task services | workflow log service | Passive audit trail events. |
 | `task.requests` | task manager | task service | Normalized task execution requests. |
 | `project.plan.requests` | task service | project service | Project-document planning requests. |
 | `project.plan.results` | project service | task service | Project plans and domain results. |
@@ -76,6 +81,27 @@ Typed task payload DTOs live in `shared.contracts.task_messages`.
 Every payload carries the operation and enough source identifiers to correlate
 the next message with the original `task_id`, `correlation_id`, and source
 message.
+
+Helper command payload fields:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `operation` | string | helper operation such as `ingest`, `search`, `delete`, or `put` |
+| `helper` | string | helper command topic/name |
+| `plan` | object | helper-owned command plan |
+| `attempt` | positive integer | 1 for first dispatch; incremented by task-service retry |
+| `source_message_id` | string | message ID that caused this helper command |
+
+Helper result payloads echo `operation`, `helper`, `attempt`, and
+`source_message_id`, and add `result`, `retryable`, and `error`. Task service
+uses `attempt`, `retryable`, and `TASK_SERVICE_MAX_ATTEMPTS` to decide retry vs.
+terminal dead-letter publication. Retryable failures are either redispatched
+immediately or stored with `next_attempt_at` for the task-service recovery loop,
+depending on `TASK_SERVICE_RETRY_BACKOFF_SECONDS`. Helper commands are leased;
+expired leases are redispatched until `TASK_SERVICE_MAX_ATTEMPTS`, then converted
+to terminal helper failures. Helper result redelivery is deduplicated by the
+envelope `message_id`, while final task result publication remains at-least-once
+until `task_results.published` is marked.
 
 ## Status Contract
 
@@ -190,3 +216,14 @@ transport adapter into the broker-first flow:
 
 New internal service work should use canonical service packages and shared
 broker contracts, not compatibility shims or deleted local queue transports.
+
+## Workflow Log Audit Sink
+
+The workflow-log service has two broker inputs:
+
+- `domain.workflow_log.commands` for append/list command-reply workflows.
+- `audit.events` for passive audit observation.
+
+Audit events are stored durably in the workflow-log SQLite database and do not
+produce `domain.workflow_log.results`. Command messages still produce domain
+results.

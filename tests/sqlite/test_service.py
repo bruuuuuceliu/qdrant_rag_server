@@ -113,22 +113,22 @@ async def test_allocate_database_rejects_unsafe_names(tmp_path) -> None:
 async def test_schema_versions_upsert_for_allocated_database(tmp_path) -> None:
     service = SQLiteNodeService(database_root=tmp_path / "dbs")
     await service.allocate_database(
-        owner_service="task_manager_service",
-        database_name="task_manager_state",
-        purpose="task manager state",
+        owner_service="task_service",
+        database_name="task_service_state",
+        purpose="task service execution state",
     )
 
     first = await service.record_schema_version(
-        owner_service="task_manager_service",
-        database_name="task_manager_state",
-        schema_name="task_states",
+        owner_service="task_service",
+        database_name="task_service_state",
+        schema_name="task_service_execution_state",
         version=1,
         checksum="a",
     )
     second = await service.record_schema_version(
-        owner_service="task_manager_service",
-        database_name="task_manager_state",
-        schema_name="task_states",
+        owner_service="task_service",
+        database_name="task_service_state",
+        schema_name="task_service_execution_state",
         version=2,
         checksum="b",
     )

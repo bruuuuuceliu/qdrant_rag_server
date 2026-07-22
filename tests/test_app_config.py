@@ -197,6 +197,45 @@ class AppConfigTest(unittest.TestCase):
         self.assertIn("response_cache_db_path", fields)
         self.assertIn("qdrant_url", fields)
 
+    def test_validate_settings_rejects_unknown_embedding_provider(self) -> None:
+        with patch.dict(os.environ, {"RAG_EMBEDDING_PROVIDER": "unknown"}, clear=True):
+            settings = load_settings(
+                env_file=Path("/tmp/does-not-exist.env"),
+                component_env_files=(),
+                profile="local",
+            )
+
+        result = validate_settings(settings, profile="local")
+
+        fields = {issue.field for issue in result.issues if issue.severity == "error"}
+        self.assertFalse(result.ok)
+        self.assertIn("embedding_provider", fields)
+
+    def test_validate_settings_allows_deterministic_embedding_with_production_warning(
+        self,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "RAG_EMBEDDING_PROVIDER": "deterministic",
+                "RAG_EMBEDDING_API_KEY": "",
+            },
+            clear=True,
+        ):
+            settings = load_settings(
+                env_file=Path("/tmp/does-not-exist.env"),
+                component_env_files=(),
+                profile="production",
+            )
+
+        result = validate_settings(settings, profile="production")
+
+        warnings = {issue.field for issue in result.issues if issue.severity == "warning"}
+        errors = {issue.field for issue in result.issues if issue.severity == "error"}
+        self.assertTrue(result.ok)
+        self.assertIn("embedding_provider", warnings)
+        self.assertNotIn("embedding_api_key", errors)
+
     def test_validate_settings_or_raise_formats_errors(self) -> None:
         with patch.dict(os.environ, {"RAG_QDRANT_URL": "bad"}, clear=True):
             settings = load_settings(

@@ -16,8 +16,9 @@ for client-to-manager public API calls, manager-to-Redis task status reads, and
 private service-to-owned-storage access, nodes should not talk directly to each
 other. Redis is the small task-status store: task manager writes status by
 `task_id`, manager reads it for status checks, and completed task keys expire by
-TTL. Retry, lease/claim timeout, attempt-count, backoff, and dead-letter
-behavior are out of scope for the current phase.
+TTL. The current task-service path supports helper attempts, immediate retries,
+scheduled retries, dead letters, durable lease/backoff fields, and DB-backed
+recovery for expired helper leases.
 
 ## Service Map
 
@@ -39,7 +40,7 @@ task_service server
 
 Redpanda broker
   -> project_service server, triggered by task service planning requests
-  -> workflow_log_service worker, triggered by domain commands/events
+  -> workflow_log_service worker, triggered by domain commands and audit events
   -> memory_service server or other domain services, triggered by task manager commands
 
 domain services
@@ -70,13 +71,13 @@ manager_service server
 - `ingestion_service`: source loading, document routing, parsing, cleaning,
   chunking, neutral ingestion output, and helper command handling.
 - `retrieval_service`: embeddings, Qdrant, BM25/hybrid retrieval, ranking, indexing, cache, storage, and health.
-- `workflow_log_service`: audit/domain command handler, repository, and worker
-  process.
+- `workflow_log_service`: audit event sink, domain command handler,
+  repository, and worker process.
 - `task_manager_service`: normalized task request publication and Redis
   task-status read-model updates from task events/results.
 - `task_service`: task lifecycle orchestration, project planning requests,
-  helper dispatch, retry/fan-in/dead-letter handling, and final result
-  publication.
+  helper dispatch, retry/fan-in/dead-letter handling, explicit SQLite
+  execution/step/attempt/result state, and final result publication.
 - `redis`: small task-status store keyed by `task_id`, written by task manager
   and read by manager for client status checks. Completed task keys must expire
   by TTL.
@@ -149,7 +150,7 @@ Asynchronous work should use Redpanda topics:
 - helper command/result topics for ingestion, storage, retrieval, indexing, and
   other helper nodes
 - task service topics for task lifecycle events, fan-out/fan-in, and results
-- service event topics for workflow logging
+- passive audit event topics for workflow logging
 
 Local/in-process/SQLite queue adapters have been removed from the intended
 local and production runtime.
@@ -165,29 +166,34 @@ flowchart LR
         TaskRequests[task.requests]
         ProjectRequests[project.plan.requests]
         ProjectResults[project.plan.results]
-        WorkflowRequests[workflow_log.commands]
+        WorkflowRequests[domain.workflow_log.commands]
+        WorkflowResults[domain.workflow_log.results]
         HelperCommands[helper.commands]
         HelperResults[helper.results]
         TaskEvents[task.events]
         TaskResults[task.results]
-        ServiceEvents[service.events]
+        AuditEvents[audit.events]
     end
 
     Redis[(Redis task status)]
+    DomainCaller[Task / Domain Caller]
 
     Manager -->|publish authenticated envelope| ManagerRequests
+    Manager -->|publish audit trail| AuditEvents
     ManagerRequests -->|task intake| TaskManager[Task Manager]
     TaskManager -->|publish normalized request| TaskRequests
     TaskRequests --> TaskService[Task Service]
     TaskService -->|request project plan| ProjectRequests
-    TaskManager -->|dispatch by data_type| WorkflowRequests
+    DomainCaller -->|publish workflow command| WorkflowRequests
 
     ProjectRequests --> Project[Project Domain Service]
     WorkflowRequests --> Workflow[Workflow Logging Service]
 
     Project -->|publish project plan/info| ProjectResults
     ProjectResults --> TaskService
-    Workflow -->|publish audit events/results| ServiceEvents
+    AuditEvents -->|audit observation| Workflow
+    Workflow -->|publish command results| WorkflowResults
+    WorkflowResults --> DomainCaller
     TaskService -->|dispatch planned helper work| HelperCommands
 
     HelperCommands --> Ingestion[Ingestion Helper]
@@ -199,7 +205,6 @@ flowchart LR
     Storage -->|publish storage result| HelperResults
 
     HelperResults --> TaskService
-    ServiceEvents --> TaskEvents
     TaskService --> TaskEvents
     TaskService --> TaskResults
     TaskEvents --> TaskManager

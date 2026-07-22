@@ -19,34 +19,57 @@ class WorkflowLogDomainServerContext:
     handler: WorkflowLogDomainHandler
     consumer: MessageConsumer
     command_topic: str = TOPICS.domain_workflow_log_commands
+    audit_consumer: MessageConsumer | None = None
+    audit_topic: str = TOPICS.audit_events
     producer: MessageProducer | None = None
     _task: asyncio.Task[None] | None = field(default=None, init=False)
+    _audit_task: asyncio.Task[None] | None = field(default=None, init=False)
 
     async def start_runtime(self) -> None:
         await _start_component(self.producer)
         await _start_component(self.consumer)
+        await _start_component(self.audit_consumer)
         self.start()
 
     def start(self) -> None:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run())
+        if self.audit_consumer is not None and (
+            self._audit_task is None or self._audit_task.done()
+        ):
+            self._audit_task = asyncio.create_task(self._run_audit_events())
 
     async def stop(self) -> None:
-        if self._task is None:
-            return
-        self._task.cancel()
-        await asyncio.gather(self._task, return_exceptions=True)
+        tasks = [task for task in (self._task, self._audit_task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         self._task = None
+        self._audit_task = None
+        await _stop_component(self.audit_consumer)
         await _stop_component(self.consumer)
         await _stop_component(self.producer)
 
     async def run_once(self) -> None:
         envelope = await self.consumer.consume(self.command_topic)
         await self.handler.handle(envelope)
+        await _commit_component(self.consumer)
+
+    async def run_audit_once(self) -> None:
+        if self.audit_consumer is None:
+            raise RuntimeError("workflow-log audit consumer is not configured")
+        envelope = await self.audit_consumer.consume(self.audit_topic)
+        await self.handler.handle(envelope)
+        await _commit_component(self.audit_consumer)
 
     async def _run(self) -> None:
         while True:
             await self.run_once()
+
+    async def _run_audit_events(self) -> None:
+        while True:
+            await self.run_audit_once()
 
 
 def create_domain_app(
@@ -57,6 +80,8 @@ def create_domain_app(
     consumer: MessageConsumer | None = None,
     service_name: str = "workflow_log_service",
     command_topic: str = TOPICS.domain_workflow_log_commands,
+    audit_topic: str = TOPICS.audit_events,
+    audit_consumer: MessageConsumer | None = None,
 ) -> WorkflowLogDomainServerContext:
     broker_settings = broker_settings or BrokerSettings.from_values(dict(os.environ))
     producer = producer or create_redpanda_bus(broker_settings)
@@ -65,11 +90,18 @@ def create_domain_app(
         topic=command_topic,
         group_id=service_name,
     )
+    audit_consumer = audit_consumer or create_redpanda_bus(
+        broker_settings,
+        topic=audit_topic,
+        group_id=f"{service_name}.audit",
+    )
     return WorkflowLogDomainServerContext(
         handler=WorkflowLogDomainHandler(repository=repository, producer=producer),
         consumer=consumer,
+        audit_consumer=audit_consumer,
         producer=producer,
         command_topic=command_topic,
+        audit_topic=audit_topic,
     )
 
 
@@ -85,10 +117,17 @@ async def _stop_component(component: object | None) -> None:
         await stop()
 
 
+async def _commit_component(component: object | None) -> None:
+    commit = getattr(component, "commit", None)
+    if commit is not None:
+        await commit()
+
+
 @dataclass(frozen=True, slots=True)
 class WorkflowLogDomainSettings:
     service_name: str = "workflow_log_service"
     command_topic: str = TOPICS.domain_workflow_log_commands
+    audit_topic: str = TOPICS.audit_events
     db_path: Path = Path("/var/lib/rag/workflow_log.db")
 
     @classmethod
@@ -99,6 +138,11 @@ class WorkflowLogDomainSettings:
                 values,
                 "WORKFLOW_LOG_DOMAIN_COMMAND_TOPIC",
                 TOPICS.domain_workflow_log_commands,
+            ),
+            audit_topic=get_value(
+                values,
+                "WORKFLOW_LOG_AUDIT_TOPIC",
+                TOPICS.audit_events,
             ),
             db_path=Path(
                 get_value(values, "WORKFLOW_LOG_DB_PATH", "/var/lib/rag/workflow_log.db")
@@ -119,4 +163,5 @@ async def create_default_domain_app(
         broker_settings=broker_settings,
         service_name=settings.service_name,
         command_topic=settings.command_topic,
+        audit_topic=settings.audit_topic,
     )

@@ -199,7 +199,7 @@ memory_service/       reserved future service boundary
 shared/               service-neutral contracts, schemas, clients, generic utilities
 docs/                 architecture, contracts, roadmap, section designs
 examples/local/       local start/stop scripts and runner docs
-tests/                unit, boundary, and smoke coverage; must be split by service
+tests/                service-owned unit/boundary tests plus integration smoke coverage
 ```
 
 ## Quick Start
@@ -251,9 +251,10 @@ examples/local/run-all.sh --reset --init --no-qdrant
 ```
 
 The default local embedding provider may download a sentence-transformers model
-from Hugging Face. In restricted-network environments, pre-cache the model or
-switch to an OpenAI-compatible remote embedding provider with
-`RAG_EMBEDDING_API_KEY`.
+from Hugging Face. In restricted-network environments, use
+`--embedding-provider deterministic --embedding-model deterministic-hash
+--embedding-dimension 384` for smoke checks, pre-cache the model, or switch to
+an OpenAI-compatible remote embedding provider with `RAG_EMBEDDING_API_KEY`.
 
 Local broker topics and Redis task-status keys use the
 `qdrant-rag-local.` / `qdrant-rag-local:task:` namespaces by default, so the
@@ -328,14 +329,17 @@ Known migration limits:
 
 - The external compatibility `RagService` gRPC API is still present at the
   manager edge while internal services communicate through broker messages.
-- Retries, leases, attempt counts, backoff, and dead-letter queues are not in
-  scope for the current broker phase.
-- Tests are not yet separated by service under `tests/`.
+- Task service has immediate or scheduled retries, helper attempt propagation,
+  dead-letter publication, durable lease/backoff state fields, and an active
+  SQLite-backed recovery loop for expired leases and due scheduled retries.
+- Most service-owned tests are split by service folder under `tests/`; a few
+  broad configuration, runner, and cross-service guards remain at the root.
 - Placement execution and policy/state persistence are implemented locally, but
   migration/reindex orchestration and multi-endpoint smoke tests are still
   pending.
-- Live Qdrant plus local embedding startup depends on Docker access and model
-  availability.
+- Full local smoke requires Docker access for Redpanda, Redis, and Qdrant. The
+  deterministic embedding provider gives smoke/offline runs a no-download path;
+  semantic local embeddings still require a cached or downloadable model.
 
 ## Development
 
@@ -352,6 +356,11 @@ bash -n examples/local/run-all.sh
 bash -n examples/local/stop-all.sh
 examples/local/run-all.sh --no-server --no-qdrant --project-id smoke --project-type website
 ```
+
+GitHub Actions runs the full non-live pytest suite, package compile check, and
+local runner shell syntax check on pushes and pull requests. The workflow can
+also be triggered manually to run Docker-backed live-infra checks or the full
+local ingest/search smoke.
 
 Runtime files created by the local runner:
 

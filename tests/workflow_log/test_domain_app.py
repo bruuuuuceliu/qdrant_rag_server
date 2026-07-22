@@ -46,14 +46,36 @@ async def test_workflow_log_domain_server_runs_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_workflow_log_domain_server_runs_audit_once() -> None:
+    handler = Handler()
+    consumer = Consumer(_command())
+    audit_consumer = Consumer(_audit_event())
+    context = WorkflowLogDomainServerContext(
+        handler=handler,
+        consumer=consumer,
+        audit_consumer=audit_consumer,
+    )
+
+    await context.run_audit_once()
+
+    assert audit_consumer.topic == TOPICS.audit_events
+    assert handler.handled == [audit_consumer.envelope]
+
+
+@pytest.mark.asyncio
 async def test_workflow_log_domain_server_start_stop() -> None:
-    context = WorkflowLogDomainServerContext(handler=Handler(), consumer=Consumer(_command()))
+    context = WorkflowLogDomainServerContext(
+        handler=Handler(),
+        consumer=Consumer(_command()),
+        audit_consumer=Consumer(_audit_event()),
+    )
 
     context.start()
     await asyncio.sleep(0)
     await context.stop()
 
     assert context._task is None
+    assert context._audit_task is None
 
 
 def _command() -> MessageEnvelope:
@@ -64,4 +86,15 @@ def _command() -> MessageEnvelope:
         task_id="task-1",
         correlation_id="corr-1",
         payload={"operation": "list", "request": {}},
+    )
+
+
+def _audit_event() -> MessageEnvelope:
+    return MessageEnvelope.create(
+        producer="manager_service",
+        message_type=MessageType.AUDIT_EVENT,
+        data_type="project_document",
+        task_id="task-1",
+        correlation_id="corr-1",
+        payload={"event": "manager.request.accepted", "job_id": "job-1"},
     )

@@ -32,6 +32,7 @@ async def test_create_workflow_log_worker_context_wires_domain_app(monkeypatch, 
     settings = WorkflowLogDomainSettings(
         service_name="workflow-a",
         command_topic="workflow.commands",
+        audit_topic="audit.custom",
         db_path=tmp_path / "workflow.db",
     )
     broker_settings = BrokerSettings(client_id="workflow-test")
@@ -47,5 +48,6 @@ async def test_create_workflow_log_worker_context_wires_domain_app(monkeypatch, 
     health = await context.health()
     assert health.ready is True
     assert health.details["command_topic"] == "workflow.commands"
+    assert health.details["audit_topic"] == "audit.custom"
     await context.shutdown()
     assert context.domain_app.stopped is True

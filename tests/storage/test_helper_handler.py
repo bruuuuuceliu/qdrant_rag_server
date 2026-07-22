@@ -26,6 +26,7 @@ async def test_storage_helper_handler_puts_and_publishes_result(tmp_path) -> Non
 
     assert result.message_type == MessageType.HELPER_RESULT
     assert result.payload["helper"] == TOPICS.helper_storage_commands
+    assert result.payload["attempt"] == 2
     assert result.payload["result"] == {"ok": True, "key": "a.txt"}
     assert producer.published == [(TOPICS.helper_storage_results, result, "task-1")]
     assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "hello"
@@ -66,5 +67,6 @@ def _command(*, operation: str, plan: dict[str, object]) -> MessageEnvelope:
             "operation": operation,
             "helper": TOPICS.helper_storage_commands,
             "plan": plan,
+            "attempt": 2,
         },
     )

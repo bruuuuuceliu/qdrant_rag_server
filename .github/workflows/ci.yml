@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - arche
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_live_infra:
+        description: Run Docker-backed Redpanda/Redis live integration tests
+        required: false
+        type: boolean
+        default: false
+      run_local_smoke:
+        description: Run the full Docker-backed local ingest/search smoke
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  test:
+    name: Unit, Contract, And Runtime Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,documents-lite]"
+
+      - name: Compile Python packages
+        run: |
+          python -m compileall \
+            broker_service \
+            configs \
+            deployment \
+            ingestion_service \
+            manager_service \
+            project_service \
+            redis_status_node \
+            retrieval_service \
+            shared \
+            sqlite_node \
+            storage_node \
+            task_manager_service \
+            task_service \
+            workflow_log_service
+
+      - name: Check local runner shell syntax
+        run: |
+          bash -n examples/local/run-all.sh
+          bash -n examples/local/stop-all.sh
+
+      - name: Run pytest
+        run: python -m pytest
+
+  live-infra:
+    name: Manual Docker Live Infra
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_live_infra }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,documents-lite]"
+
+      - name: Start local broker and Redis
+        run: |
+          examples/local/run-all.sh --reset --infra-only --no-ui
+
+      - name: Run live infrastructure tests
+        env:
+          RAG_LIVE_INFRA: "1"
+          BROKER_BOOTSTRAP_SERVERS: "127.0.0.1:9092"
+          REDIS_TASK_STATUS_URL: "redis://127.0.0.1:6379/0"
+        run: python -m pytest -m live_infra tests/integration/test_live_infra_smoke.py
+
+      - name: Stop local infrastructure
+        if: always()
+        run: examples/local/stop-all.sh --clean
+
+  local-smoke:
+    name: Manual Full Local Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_local_smoke }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package and runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,documents-lite]"
+
+      - name: Run broker-first local ingest/search smoke
+        env:
+          PYTHON_BIN: python
+        run: |
+          examples/local/run-all.sh \
+            --reset \
+            --smoke \
+            --no-ui \
+            --embedding-provider deterministic \
+            --embedding-model deterministic-hash \
+            --embedding-dimension 384
+
+      - name: Stop local stack
+        if: always()
+        run: examples/local/stop-all.sh --clean

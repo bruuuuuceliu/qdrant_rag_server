@@ -4,9 +4,10 @@ All configuration code, profile defaults, and env examples live under
 `./configs`.
 
 Service-specific configuration must be separated by service or node under this
-folder. The target layout includes manager, project, ingestion, retrieval,
-workflow log, broker, Redis task-status, storage, and SQLite/database-node
-config folders. Shared profile defaults may exist only for deployment-wide
+folder. The target layout includes manager, task service, project, ingestion,
+retrieval, workflow log, broker, Redis task-status, storage, and
+SQLite/database-node config folders. Shared profile defaults may exist only for
+deployment-wide
 values; service-specific settings should stay in the owning service or node
 folder.
 
@@ -60,10 +61,11 @@ Committed env examples:
 
 ## Service Folder Status
 
-Current folders include manager, project, ingestion, retrieval, workflow log,
-memory, storage, Qdrant, embeddings, generation, broker, Redis task-status, and
-SQLite/database node settings. Runtime composition uses Redpanda-compatible
-broker settings, Redis task status, and SQLite database-node settings.
+Current folders include manager, task service, project, ingestion, retrieval,
+workflow log, memory, storage, Qdrant, embeddings, generation, broker, Redis
+task-status, and SQLite/database node settings. Runtime composition uses
+Redpanda-compatible broker settings, Redis task status, and SQLite database-node
+settings.
 
 For local testing, copy examples to untracked `.env` files when needed, then
 adjust values and secrets there.

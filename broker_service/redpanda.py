@@ -138,6 +138,10 @@ class RedpandaConsumer:
             await self._consumer.stop()
             self._started = False
 
+    async def commit(self) -> None:
+        if self._consumer is not None and self._started:
+            await self._consumer.commit()
+
 
 @dataclass(slots=True)
 class RedpandaAdmin:
@@ -245,7 +249,7 @@ def _build_kafka_consumer(settings: BrokerSettings, topic: str, group_id: str) -
         bootstrap_servers=settings.bootstrap_servers,
         client_id=settings.client_id,
         group_id=group_id,
-        enable_auto_commit=True,
+        enable_auto_commit=False,
         auto_offset_reset="earliest",
     )
 

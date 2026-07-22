@@ -26,6 +26,13 @@ class BrokerMessageBus:
         consume = getattr(self.consumer, "consume")
         return await consume(topic)
 
+    async def commit(self) -> None:
+        if self.consumer is None:
+            return
+        commit = getattr(self.consumer, "commit", None)
+        if commit is not None:
+            await commit()
+
     async def start(self) -> None:
         for component in (self.producer, self.consumer):
             start = getattr(component, "start", None)

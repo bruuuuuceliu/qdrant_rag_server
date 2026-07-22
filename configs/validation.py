@@ -132,6 +132,26 @@ def _validate_modes(
     settings: AppSettings,
     issues: list[ConfigValidationIssue],
 ) -> None:
+    embedding_provider = settings.embedding_provider.strip().lower()
+    if embedding_provider not in {
+        "local",
+        "sentence_transformer",
+        "sentence-transformer",
+        "deterministic",
+        "hash",
+        "smoke",
+        "openrouter",
+        "openai",
+        "remote",
+        "openai_compatible",
+    }:
+        issues.append(
+            ConfigValidationIssue(
+                "embedding_provider",
+                "must be one of: local, deterministic, hash, smoke, "
+                "openrouter, openai, remote, openai_compatible",
+            )
+        )
     if settings.object_storage_provider not in {"filesystem", "memory"}:
         issues.append(
             ConfigValidationIssue(
@@ -159,11 +179,27 @@ def _validate_production(
     settings: AppSettings,
     issues: list[ConfigValidationIssue],
 ) -> None:
-    if settings.embedding_provider != "local" and not settings.embedding_api_key:
+    embedding_provider = settings.embedding_provider.strip().lower()
+    if embedding_provider not in {
+        "local",
+        "sentence_transformer",
+        "sentence-transformer",
+        "deterministic",
+        "hash",
+        "smoke",
+    } and not settings.embedding_api_key:
         issues.append(
             ConfigValidationIssue(
                 "embedding_api_key",
                 "is required in production for remote embedding providers",
+            )
+        )
+    if embedding_provider in {"deterministic", "hash", "smoke"}:
+        issues.append(
+            ConfigValidationIssue(
+                "embedding_provider",
+                "deterministic embeddings are intended for smoke/offline checks, not semantic production retrieval",
+                severity="warning",
             )
         )
     if settings.generation_enabled and not settings.generation_api_key:

@@ -13,7 +13,7 @@ from shared.contracts import (
 
 
 class StorageHelperHandler:
-    """Handles task-manager-issued storage helper commands."""
+    """Handles task-service-issued storage helper commands."""
 
     def __init__(self, *, storage: object, producer: MessageProducer | None = None) -> None:
         self._storage = storage
@@ -32,6 +32,9 @@ class StorageHelperHandler:
                 operation=payload.operation,
                 helper=TOPICS.helper_storage_commands,
                 result=result,
+                attempt=payload.attempt,
+                retryable=bool(result.get("retryable", False)),
+                error=str(result.get("error", "")) if result.get("ok") is False else "",
                 source_message_id=envelope.message_id,
             ).to_payload(),
         )

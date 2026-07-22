@@ -2,6 +2,7 @@
 
 Provides pluggable embedding backends:
 - ``LocalSentenceTransformerEmbedding`` -- local CPU/GPU inference
+- ``DeterministicHashEmbedding`` -- network-free deterministic local vectors
 - ``OpenRouterEmbedding`` -- OpenRouter embeddings API
 - ``OpenAICompatibleEmbedding`` -- remote OpenAI-compatible API (OpenRouter, OpenAI, etc.)
 
@@ -11,6 +12,7 @@ with ``EmbeddingProviderFactory``.
 
 from __future__ import annotations
 
+from retrieval_service.embedding.deterministic import DeterministicHashEmbedding
 from retrieval_service.embedding.protocols import EmbeddingProvider, EmbeddingTask
 from retrieval_service.embedding.factory import EmbeddingProviderFactory
 from retrieval_service.embedding.local import LocalSentenceTransformerEmbedding
@@ -30,6 +32,7 @@ __all__ = [
     "EmbeddingProviderFactory",
     "EmbeddingService",
     "EmbeddingTask",
+    "DeterministicHashEmbedding",
     "LocalSentenceTransformerEmbedding",
     "OpenAICompatibleEmbedding",
     "OpenRouterEmbedding",

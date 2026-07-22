@@ -25,12 +25,14 @@ def test_workflow_log_domain_settings_loads_owned_config_values() -> None:
         {
             "WORKFLOW_LOG_SERVICE_NAME": "workflow-a",
             "WORKFLOW_LOG_DOMAIN_COMMAND_TOPIC": "workflow.commands",
+            "WORKFLOW_LOG_AUDIT_TOPIC": "audit.custom",
             "WORKFLOW_LOG_DB_PATH": "/data/workflow.db",
         }
     )
 
     assert settings.service_name == "workflow-a"
     assert settings.command_topic == "workflow.commands"
+    assert settings.audit_topic == "audit.custom"
     assert str(settings.db_path) == "/data/workflow.db"
 
 
@@ -49,6 +51,7 @@ async def test_create_default_workflow_log_domain_app_builds_repository(
     settings = domain_app.WorkflowLogDomainSettings(
         service_name="workflow-a",
         command_topic="workflow.commands",
+        audit_topic="audit.events.custom",
         db_path=tmp_path / "workflow.db",
     )
 
@@ -58,4 +61,9 @@ async def test_create_default_workflow_log_domain_app_builds_repository(
     )
 
     assert context.command_topic == "workflow.commands"
-    assert calls == [(None, None), ("workflow.commands", "workflow-a")]
+    assert context.audit_topic == "audit.events.custom"
+    assert calls == [
+        (None, None),
+        ("workflow.commands", "workflow-a"),
+        ("audit.events.custom", "workflow-a.audit"),
+    ]
