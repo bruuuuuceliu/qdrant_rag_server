@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 from dataclasses import dataclass
 
 from broker_service import BrokerSettings
@@ -65,6 +66,16 @@ async def create_worker_context(
 async def serve_forever() -> None:
     context = await create_worker_context()
     await context.domain_app.start_runtime()
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:
+            # Non-Unix platforms without signal-handler support: fall back to the
+            # default (process termination). The finally below still runs when an
+            # exception interrupts the loop.
+            break
     try:
         # §9 re-drive seam: re-queue memory_records whose index hand-off was
         # never confirmed (indexed=0). Best-effort, log-only on failure.
@@ -72,9 +83,13 @@ async def serve_forever() -> None:
             repository=context.domain_app.handler._repository,
             indexer=context.domain_app.handler._indexer,
         )
-        while True:
-            await asyncio.sleep(3600)
+        await stop.wait()
     finally:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.remove_signal_handler(sig)
+            except (NotImplementedError, ValueError):
+                pass
         await context.shutdown()
 
 
