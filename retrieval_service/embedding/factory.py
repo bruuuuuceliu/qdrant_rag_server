@@ -33,7 +33,11 @@ class EmbeddingProviderFactory:
         if normalized in {"deterministic", "hash", "smoke"}:
             return DeterministicHashEmbedding(dimension=dimension)
         if normalized in {"local", "sentence_transformer", "sentence-transformer"}:
-            return LocalSentenceTransformerEmbedding(model_name=model_name, device=device)
+            return LocalSentenceTransformerEmbedding(
+                model_name=model_name,
+                device=device,
+                dimension=dimension,
+            )
         if normalized == "openrouter":
             return OpenRouterEmbedding(
                 api_key=api_key,

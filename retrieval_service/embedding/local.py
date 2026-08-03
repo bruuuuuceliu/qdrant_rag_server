@@ -26,10 +26,12 @@ class LocalSentenceTransformerEmbedding:
         model_name: str = "BAAI/bge-base-en-v1.5",
         device: str = "cpu",
         max_workers: int = 4,
+        dimension: int | None = None,
     ) -> None:
         self._model_name = model_name
         self._device = device
         self._max_workers = max_workers
+        self._dimension = dimension
         self._model: object | None = None
         self._executor: ThreadPoolExecutor | None = None
 
@@ -39,10 +41,18 @@ class LocalSentenceTransformerEmbedding:
         self._model = await loop.run_in_executor(
             self._executor, _load_model, self._model_name, self._device
         )
+        actual = _model_dimension(self._model)
+        if self._dimension is not None and actual is not None and actual != self._dimension:
+            await self.shutdown()
+            raise ValueError(
+                f"embedding model {self._model_name!r} produces {actual}-dim "
+                f"vectors; configured RAG_EMBEDDING_DIMENSION is {self._dimension}"
+            )
         logger.info(
-            "embedding model loaded model=%s device=%s",
+            "embedding model loaded model=%s device=%s dimension=%s",
             self._model_name,
             self._device,
+            actual,
         )
         return self
 
@@ -87,6 +97,16 @@ def _load_model(model_name: str, device: str) -> object:
     from sentence_transformers import SentenceTransformer
 
     return SentenceTransformer(model_name, device=device)
+
+
+def _model_dimension(model: object) -> int | None:
+    getter = getattr(model, "get_sentence_embedding_dimension", None)
+    if getter is None:
+        return None
+    try:
+        return int(getter())
+    except (TypeError, ValueError):
+        return None
 
 
 def _encode_text(model: object, text: str) -> list[float]:
