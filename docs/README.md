@@ -10,11 +10,14 @@ This project is a minimal, extensible information retrieval service. It can supp
 - [Contracts](contracts.md): manager routing and queue message contracts.
 - [Development Rules](development.md): repository, design, code, test, review, and documentation workflow rules.
 - [Implementation Roadmap](implementation-roadmap.md): iteration targets and migration guardrails.
-- [Operations Runbook](operations.md): broker-first startup, readiness, and troubleshooting.
+- [Operations Runbook](operations.md): broker-first + agent-memory production
+  runbook — startup, readiness, secrets, SASL/TLS, embedding migration,
+  backup/restore, troubleshooting, and security.
 - [Implementation Documentation](implementations/README.md): implemented subsystem details and verification notes.
 - [Section Design Index](design/section-design-index.md): accepted development loop sections and status docs.
 - [Document handling module design](design/document-handling-module.md): proposed URL/file parsing and chunking architecture.
 - [Agent Memory, Chat History, and User Profile Requirements](agent-memory-requirements.md): approved requirements for the RAG service as the chat platform's memory/knowledge layer — session recording, history compression, cross-source retrieval, and user profiles.
+- [Agent Memory — Implementation Design](agent-memory-design.md): implementation companion to the requirements, including §11 Auth/Isolation boundary and §12 Deployment Topology.
 - [Examples](../examples/README.md): local startup and first ingest/search calls.
 - [Configuration Profiles](../configs/README.md): local/production config modules, env files, and override order.
 

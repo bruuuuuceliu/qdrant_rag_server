@@ -207,7 +207,7 @@ Per-operation behavior:
 | `message.record` | insert with dedup; `content` is deterministically truncated to the documented 2048-char prefix (`_require_truncated_str`), so a long user turn is recorded rather than rejected; after commit, fire-and-forget `indexer.index([MemoryRecord(kind='message')])`; `indexed` reflects whether the hand-off was queued |
 | `session.close` | set closed |
 | `memory.compress` | load span messages, `compression.compress(...)`, deterministic `memory_id`, persist `MemoryRecord(kind='compression_summary')` (dedup by `memory_id`), fire-and-forget index, return condensed context |
-| `memory.lookup` | `query` is deterministically truncated to the documented 2048-char prefix (`_require_truncated_str`), so a long user-turn query searches rather than returning `validation_error` (server-side truncation is the single source of truth for every client). Then for `chat_history`: `searcher.search(...)` (semantic) — merged with compression summaries from SQLite when `session_ids` given; for `documents`: `searcher.search(..., collection_name=<stored ingest-time collection(s)>, session_ids=())` over the distinct documents collection(s) resolved from the `kind='document'` rows (request-level `collection_name` optionally filters; legacy rows fall back to the configured documents collection); for `user_profile_facts`: exact/keyword match over active facts (SQLite). Assemble per-source results + `sources`/`consulted` list |
+| `memory.lookup` | `query` is deterministically truncated to the documented 2048-char prefix (`_require_truncated_str`), so a long user-turn query searches rather than returning `validation_error` (server-side truncation is the single source of truth for every client). Then for `chat_history`: `searcher.search(...)` (semantic) — merged with compression summaries from SQLite when `session_ids` given; for `documents`: `searcher.search(..., collection_name=<stored ingest-time collection(s)>, session_ids=())` over the distinct documents collection(s) resolved from the `kind='document'` rows (request-level `collection_name` optionally filters; legacy rows fall back to the configured documents collection); for `user_profile_facts`: exact/keyword match over active facts (SQLite). Assemble per-source results + `sources`/`consulted` list. **Lookup is best-effort and per-source**: a stale-dimension memory collection (e.g. a 384-dim `agent_memory` collection queried with a 768-dim bge embedding) degrades the affected vector-backed source(s) to empty (`results: {chat_history: [], ...}`) instead of failing the whole lookup with `upstream_error`. The retrieval `search_memory` path catches the dimension mismatch and returns empty hits; the lookup layer applies the same guard as defense-in-depth. Non-dimension upstream failures (worker down) still surface as `upstream_error`/`unavailable` and the SA saga absorbs them best-effort. |
 | `memory.sources` | counts per source for the scope; documents `available = count(kind='document') > 0` |
 | `memory.documents.ingest` | validate `documents[{doc_id,text,metadata?}]` (doc_id short, `text` uncapped; duplicate `doc_id`s within a request rejected), `_require_agent_match`, reject indexing into the chat-memory collection, persist `MemoryRecord(kind='document')` with the target collection stored in `memory_records.collection_name` in one `_mutate(..., key=f"documents:{sha256(request)}")` (dedup by `memory_id=doc_id`), fire-and-forget index targeting that collection, return `{documents:[{doc_id,recorded,indexed}], collection_name}` |
 | `profile.read` | profile + active facts |
@@ -702,3 +702,155 @@ network, identity-event signing + verification becomes **REQUIRED**.
     a **declared follow-up**.
   - Saga best-effort logging prints only op name + error class (no message
     content / tokens).
+
+---
+
+## 12. Deployment Topology (Sprint C)
+
+Sprint-C addition (2026-08-03). Production deployment shape for the memory
+integration. This section complements §11 (Auth/Isolation boundary): §11 is the
+trust model and port inventory; §12 is the wiring / bring-up / ports
+orientation. See `docs/operations.md` for the full production runbook.
+
+### 12.1 Prose network diagram
+
+The memory path is a **private extension of the Simple Agent mesh**. Nothing in
+the RAG/memory stack is publicly reachable; the only public surface is the SA
+edge (gateway + web). Simple Agent services reach the memory path over the
+shared private `rag-memory-test` Docker network, which is where Redpanda's
+**internal** listener lives.
+
+```text
+                          PUBLIC (SA edge only)
+                          gateway-server :8000   web-server :5173
+                                     │
+                                     │  SA internal `backend` network (internal:true)
+                                     ▼
+                 ┌─────────────────────────────────────────────┐
+                 │  conversation-server-api :8050             │
+                 │  conversation-server-worker                │
+                 │  identity-server-api :8010                 │
+                 │  identity-server-worker                    │
+                 └───────────────┬────────────────────────────┘
+                                 │  REDPANDA_BOOTSTRAP_SERVERS=redpanda-rag-local:19092
+                                 │  join `rag-memory-test` (external:true, private)
+                                 ▼
+                 ┌──────────────────────────────────────────────────────┐
+                 │  redpanda-rag-local  (INTERNAL listener :19092)     │
+                 │    topics: domain.memory.commands / .results         │
+                 │             identity.user.events                     │
+                 │             helper.retrieval_index.{commands,results}│
+                 │             helper.retrieval.{commands,results}      │
+                 └───────┬──────────────────────────┬───────────────────┘
+                         │                          │
+                         ▼                          ▼
+              memory_service.worker         retrieval workers
+              (SQLite /var/lib/rag/          index:  helper.retrieval_index.commands
+               agent_memory.db)                      → qdrant-rag-local:6333/6334
+               consumes identity.user.events        search: helper.retrieval.commands
+               (raw, no token)                             → qdrant-rag-local (memory_search)
+                         │                          │
+                         └──────────┬───────────────┘
+                                    ▼
+                          qdrant-rag-local :6333 (REST) / :6334 (gRPC)
+                          collections: agent_memory, agent_documents
+```
+
+Every arrow between runtime nodes terminates at a Redpanda topic (the memory
+path adds no direct SA↔RAG HTTP calls). The one direct connection is
+retrieval → Qdrant, which is private-network-only.
+
+### 12.2 Ports inventory
+
+| Surface | Port | Network | Notes |
+| --- | --- | --- | --- |
+| web-server | `5173` (container); host-published default `127.0.0.1:15173` (`SIMPLE_AGENT_WEB_PORT`) | `edge` + `backend` | **Public** (host-bound by default). |
+| gateway-server | `8000` | `backend` + `data` | **Public** HTTP edge (authn/authz owner). |
+| identity-server | `8010` | `backend` + `data` | Private SA-internal. |
+| conversation-server | `8050` | `backend`, + `rag-memory-test` | Private; joins the memory network. |
+| agent-server | `8040` | `backend` | Private. |
+| audit-server | `8060` | `backend` | Private. |
+| provider-server | `8070` | `backend` | Private. |
+| usage-server | `8080` | `backend` | Private. |
+| Redpanda internal listener | `redpanda-rag-local:19092` | `rag-memory-test` | **Private**. Production SASL/TLS (C5). |
+| Redpanda local-dev listener | `127.0.0.1:9092` | host | **Dev-only PLAINTEXT**; never on the private network or a public interface. |
+| Qdrant | `qdrant-rag-local:6333/6334` | `rag-memory-test` | **Private**. No public LB. |
+| Redis | `:6379` | RAG host / private | Task status + SA shared caches; private. |
+| memory_service SQLite | filesystem (`MEMORY_DB_PATH`) | RAG host volume | No network surface. |
+| memory_service / retrieval workers | — | broker-only | No HTTP port; reachable only via Redpanda topics. |
+| manager gRPC (RAG) | `50051` | host | RAG public/manager edge (unchanged, not part of the memory path). |
+| Redpanda Console / Redis Insight (local dev) | `8088` / `5540` | host | Dev tooling only; not production surfaces. |
+
+### 12.3 Private-network requirement
+
+Production requires the RAG/memory stack (Redpanda internal listener, Qdrant,
+Redis, memory_service SQLite, memory/retrieval workers) to live on a **private
+VPC/subnet (or private k8s namespace)** reachable only from the Simple Agent
+mesh. The `rag-memory-test` Docker network is the local equivalent; the SA
+compose declares it `external: true`, and the RAG stack creates it (planned C2
+run-all wiring). **No public ingress/LB to memory_service, Redpanda, or
+Qdrant.** If the broker must ever be exposed beyond the private network,
+identity-event signing becomes **required** (§11.2).
+
+### 12.4 Bring-up orientation
+
+- **Local parity**: `examples/local/run-all.sh` (§1 of operations.md);
+  **[planned C2]** `run-all.sh --memory` reproduces the full production-shape
+  stack (dual-listener Redpanda, `rag-memory-test`, Qdrant, memory_service +
+  retrieval workers, WAL, bge-768, explicit signing key).
+- **Manual production**: Redpanda (dual listener) → bootstrap topics → Qdrant →
+  retrieval index + search workers → `memory_service.worker` → SA
+  conversation-server/identity-server with
+  `REDPANDA_BOOTSTRAP_SERVERS=redpanda-rag-local:19092` on `rag-memory-test`.
+- **Readiness**: `python -m deployment.composition.readiness`
+  (broker/redis/storage/sqlite/qdrant); **[planned C6]** adds `memory` and
+  `retrieval` worker checks.
+- **SASL/TLS** **[implemented C5]**: production internal listener uses
+  SASL/SCRAM + TLS (`BROKER_SECURITY_PROTOCOL`, `BROKER_SASL_MECHANISM`,
+  `BROKER_SASL_PLAIN_USERNAME`/`_PASSWORD`, `BROKER_SSL_CAFILE`,
+  `BROKER_SSL_CERTFILE`, `BROKER_SSL_KEYFILE`); all memory-path clients present
+  the same credentials. Verified via `examples/local/verify-sasl.sh`.
+
+### 12.5 Commit-split note
+
+This sprint commits RAG only; Simple Agent stays uncommitted (SA working-tree
+edits allowed where required, e.g. SASL client support). See operations.md §9
+for the full deferred list (SA commit, SA `ingest_documents` client,
+profile-block framing follow-up, identity-event signing only if broker exposed)
+and §10 for the FR-3.1 documents-source product decision.
+
+---
+
+## 13. FR-3.1 documents-source decision (Sprint B → product sign-off)
+
+Requirements §4 FR-3.1 describes the `documents` lookup source as *"RAG
+collections attached to the agent (existing document RAG)."* Sprint B (B1)
+implemented it as a **distinct `agent_documents` vector collection fed by the
+`memory.documents.ingest` op** (the 9th domain operation, requirements §7.2.9):
+
+- Documents are persisted as `memory_records` rows with `kind='document'`
+  (owner/agent-scoped, deduped by `memory_id=doc_id`), and the target vector
+  collection is **stored on the row** (`memory_records.collection_name`) so
+  `memory.lookup` resolves the same collection at lookup time without the caller
+  re-sending it.
+- Documents are **never** mixed into the chat-memory collection
+  (`agent_memory`); a request that explicitly targets the chat-memory collection
+  on ingest is rejected.
+- `text` is uncapped (the 2048-char truncation applies to `message.record`
+  `content` and `memory.lookup` `query`, not document bodies); duplicate
+  `doc_id`s within one request are rejected; per-document `metadata` is
+  persisted and forwarded into the Qdrant payload.
+
+This is a **deliberate deviation** from the requirement wording: it does **not**
+attach the existing project-RAG document collections to the agent; it maintains
+a separate, owner-scoped documents index inside the memory service.
+
+**Product sign-off required:** confirm the distinct `agent_documents` collection
+(ingested via `memory.documents.ingest`) is the intended documents source for
+`memory.lookup`, versus wiring the existing project-RAG collections into the
+lookup.
+
+**SA-side gap (declared SA-sprint item):** Simple Agent has **no
+`ingest_documents` client** yet, so documents are reachable only out-of-band
+(e.g., a direct call to the RAG op). Adding an SA `ingest_documents` client that
+publishes `memory.documents.ingest` is a declared SA-sprint item.

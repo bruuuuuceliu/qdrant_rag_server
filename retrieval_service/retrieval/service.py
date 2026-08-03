@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from retrieval_service.indexing.sparse_text import _build_sparse_text
 from retrieval_service.pipeline.helpers import _elapsed_ms, _encode_query
@@ -229,7 +232,28 @@ class RetrievalService:
             metadata=dict(query.metadata),
         )
         start_ns = time.monotonic_ns()
-        hits = await self._search_candidates(query=query, settings=settings)
+        try:
+            hits = await self._search_candidates(query=query, settings=settings)
+        except Exception as exc:
+            if not _is_stale_dimension_error(exc):
+                raise
+            # B2: a stale-dimension memory collection (e.g. a 384-dim
+            # ``agent_memory`` collection queried with a 768-dim bge embedding)
+            # degrades the memory search to empty instead of surfacing a
+            # retryable error — the mismatch is permanent (retrying cannot fix
+            # it) and the lookup is best-effort per-source. The memory_service
+            # lookup layer applies the same guard as defense-in-depth.
+            logger.warning(
+                "memory search on collection %r degraded to empty results: "
+                "stale vector dimension mismatch: %s",
+                query.collection_name,
+                exc,
+            )
+            return RetrievalSearchResult(
+                chunks=[],
+                elapsed_ms=_elapsed_ms(start_ns),
+                cache_hit=False,
+            )
         final = await self._finalize_hits(
             query.query_text,
             hits,
@@ -561,6 +585,21 @@ def _validate_retrieval_filter(retrieval_filter: Any) -> None:
         raise ValueError(
             "retrieval_filter is missing required fields: " + ", ".join(missing)
         )
+
+
+def _is_stale_dimension_error(exc: Exception) -> bool:
+    """True when the error indicates a collection vector-dimension mismatch.
+
+    Qdrant reports ``Wrong input: Query vector dimension error: expected dim:
+    384, got 768`` and this module's vector-store validation path raises
+    ``... has vector dimension 384; expected 768 ...``. Both carry the
+    ``dimension`` marker plus an expected/got signal, so a message check is the
+    shared signal across the retrieval search path and the memory lookup layer.
+    """
+    message = str(exc).lower()
+    return "dimension" in message and (
+        "expected" in message or "got" in message or "mismatch" in message
+    )
 
 
 def _elapsed_float_ms(start_ns: int) -> float:

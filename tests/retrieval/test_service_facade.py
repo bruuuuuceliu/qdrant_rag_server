@@ -163,6 +163,60 @@ class RetrievalServiceFacadeTest(unittest.IsolatedAsyncioTestCase):
         must_keys = {condition.key for condition in memory_filter.must}
         self.assertEqual(must_keys, {"owner_id", "agent_id"})
 
+    async def test_search_memory_degrades_stale_dimension_to_empty(self) -> None:
+        """B2 lookup contract: a stale-dimension memory collection degrades the
+        search to empty hits instead of surfacing a retryable error. The
+        mismatch is permanent (retrying cannot fix it) and lookup is
+        best-effort per-source, so the memory search returns no chunks."""
+        retriever = _FailingRetriever(
+            RuntimeError(
+                "Wrong input: Query vector dimension error: expected dim: 384, got 768"
+            )
+        )
+        service = RetrievalService(
+            embedding_provider=_Embedding(),
+            qdrant_store=AsyncMock(),
+            retriever_factory=_RetrieverFactory(retriever),
+        )
+
+        result = await service.search_memory(
+            RetrievalSearchRequest(
+                project_id="memory",
+                user_id="u1",
+                query_text="hello",
+                collection_name="agent_memory",
+                retrieval_config={"top_k": 5, "candidate_count": 20},
+            ),
+            owner_id="u1",
+            agent_id="agent1",
+        )
+
+        self.assertEqual(result.chunks, [])
+
+    async def test_search_memory_propagates_non_dimension_error(self) -> None:
+        """Only the stale-dimension case degrades; a transient upstream failure
+        (worker down) must still propagate so the helper surfaces a retryable
+        error to the memory lookup layer."""
+        retriever = _FailingRetriever(RuntimeError("retrieval worker unavailable"))
+        service = RetrievalService(
+            embedding_provider=_Embedding(),
+            qdrant_store=AsyncMock(),
+            retriever_factory=_RetrieverFactory(retriever),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "retrieval worker unavailable"):
+            await service.search_memory(
+                RetrievalSearchRequest(
+                    project_id="memory",
+                    user_id="u1",
+                    query_text="hello",
+                    collection_name="agent_memory",
+                    retrieval_config={"top_k": 5, "candidate_count": 20},
+                ),
+                owner_id="u1",
+                agent_id="agent1",
+            )
+
     async def test_delete_document_deletes_qdrant_raw_storage_and_caches(self) -> None:
         qdrant_store = AsyncMock()
         object_storage = AsyncMock()
@@ -484,6 +538,16 @@ class _Retriever:
     async def search(self, query):
         self.query = query
         return [RetrievalHit(payload={"text": "answer"}, score=0.7)]
+
+
+class _FailingRetriever:
+    source = "dense"
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def search(self, query):
+        raise self.error
 
 
 class _RetrieverFactory:

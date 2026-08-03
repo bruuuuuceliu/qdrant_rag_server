@@ -11,6 +11,7 @@ from memory_service.repository import (
     IdempotencyConflictError,
     MemoryInMemoryRepository,
 )
+from memory_service.searcher import MemorySearchUpstreamError
 from shared.contracts import MessageEnvelope, MessageType, TOPICS
 from shared.service_auth import ServiceAuthSettings
 
@@ -178,6 +179,108 @@ async def test_ac7_lookup_returns_per_source_results_and_consulted(seeded_handle
         for item in items:
             assert item["source"] == source
             assert {"source", "source_id", "text", "score"} <= set(item)
+
+
+class _DimensionErrorSearcher:
+    """Searcher that raises a stale-dimension upstream error on every search.
+
+    Simulates the retrieval helper failing a ``memory_search`` hand-off because
+    the target collection carries a different vector dimension than the query
+    embedding (e.g. a 384-dim ``agent_memory`` collection queried with a 768-dim
+    bge embedding).
+    """
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        self.calls: list[dict[str, Any]] = []
+
+    async def search(
+        self,
+        scope: Any,
+        query: str,
+        top_k: int,
+        *,
+        collection_name: str = "",
+        session_ids: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        self.calls.append(
+            {
+                "owner_user_id": getattr(scope, "owner_user_id", ""),
+                "agent_id": getattr(scope, "agent_id", ""),
+                "query": query,
+                "top_k": top_k,
+                "collection_name": collection_name,
+                "session_ids": tuple(session_ids),
+            }
+        )
+        raise MemorySearchUpstreamError(self.message)
+
+
+async def test_lookup_degrades_stale_dimension_sources_to_empty(seeded_handler) -> None:
+    """B2 lookup contract: a stale-dimension memory collection degrades the
+    vector-backed sources to empty instead of failing the whole lookup with
+    ``upstream_error``; non-vector sources still resolve.
+
+    Regression for the architect's trap: the pre-fix code surfaced
+    ``upstream_error, retryable:true`` because the Qdrant dimension error was
+    never caught. Lookup is best-effort and per-source.
+    """
+    handler = seeded_handler
+    await handler.handle(
+        command("session.start", {"session_id": "con_1", "agent_id": "agent_1"})
+    )
+    await handler.handle(
+        command("message.record", {
+            "message_id": "msg_1", "session_id": "con_1", "agent_id": "agent_1",
+            "role": "user", "sequence_number": 1, "content": "gluten allergy",
+        })
+    )
+    # A real documents row so the documents source consults the searcher too.
+    await handler.handle(
+        command("memory.documents.ingest", {
+            "agent_id": "agent_1",
+            "documents": [{"doc_id": "doc_1", "text": "refund policy details"}],
+        })
+    )
+    # A fact source still resolves from SQLite independent of the vector search.
+    await handler.handle(
+        command("profile.update", {"fact_type": "dietary", "subject": "", "text": "avoids gluten"})
+    )
+    handler._searcher = _DimensionErrorSearcher(
+        "Wrong input: Query vector dimension error: expected dim: 384, got 768"
+    )
+
+    result = _result(
+        await handler.handle(command("memory.lookup", {"query": "gluten"}))
+    )
+
+    assert "error" not in result, f"lookup must not fail: {result.get('error')}"
+    assert result["results"]["chat_history"] == []
+    assert result["results"]["documents"] == []
+    assert result["results"]["user_profile_facts"], "facts still resolve"
+    assert result["consulted"] == {
+        "chat_history": True,
+        "documents": True,
+        "user_profile_facts": True,
+    }
+
+
+async def test_lookup_propagates_non_dimension_upstream_error(seeded_handler) -> None:
+    """A non-dimension upstream failure (worker down) still surfaces as
+    ``upstream_error``/retryable — only the stale-dimension case degrades."""
+    handler = seeded_handler
+    await handler.handle(
+        command("session.start", {"session_id": "con_1", "agent_id": "agent_1"})
+    )
+    handler._searcher = _DimensionErrorSearcher("retrieval worker unavailable")
+
+    result = _result(
+        await handler.handle(command("memory.lookup", {"query": "hello", "sources": ["chat_history"]}))
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "upstream_error"
+    assert result["error"]["retryable"] is True
 
 
 async def test_ac8_lookup_scoped_to_verified_owner(seeded_handler) -> None:

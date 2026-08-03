@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -54,6 +55,8 @@ from shared.contracts import (
     TOPICS,
 )
 from shared.service_auth import ServiceAuthError, ServiceAuthSettings, verify_service_token
+
+logger = logging.getLogger(__name__)
 
 _SOURCES = ("chat_history", "documents", "user_profile_facts")
 _SOURCE_ORDER = {"chat_history": 0, "documents": 1, "user_profile_facts": 2}
@@ -469,14 +472,35 @@ class MemoryDomainHandler:
         results: dict[str, list[dict[str, Any]]] = {}
         consulted: dict[str, bool] = {}
         for source in _ordered_sources(requested):
-            matched = await self._lookup_source(
-                scope,
-                source,
-                query,
-                top_k,
-                session_ids,
-                documents_collection_name=documents_collection_name,
-            )
+            try:
+                matched = await self._lookup_source(
+                    scope,
+                    source,
+                    query,
+                    top_k,
+                    session_ids,
+                    documents_collection_name=documents_collection_name,
+                )
+            except MemorySearchUpstreamError as exc:
+                # Lookup is best-effort and per-source (design §3.6 / B2): a
+                # stale-dimension memory collection (e.g. a 384-dim
+                # ``agent_memory`` collection queried with a 768-dim bge
+                # embedding) degrades that source to empty instead of failing
+                # the whole lookup with ``upstream_error``. The retrieval search
+                # path returns empty for the same mismatch, so this catch is a
+                # defense-in-depth guard at the lookup layer. Non-dimension
+                # upstream failures (worker down, timeout) still propagate as
+                # ``upstream_error``/``unavailable`` and the SA saga absorbs
+                # them best-effort.
+                if not _is_stale_dimension_error(exc):
+                    raise
+                logger.warning(
+                    "memory.lookup: source %r degraded to empty results; "
+                    "stale vector dimension mismatch: %s",
+                    source,
+                    exc,
+                )
+                matched = []
             results[source] = matched
             # FR-3.3: every requested source was searched.
             consulted[source] = True
@@ -965,6 +989,22 @@ def _operation_from_raw(envelope: MessageEnvelope) -> str:
         return ""
     operation = payload.get("operation")
     return str(operation) if operation is not None else ""
+
+
+def _is_stale_dimension_error(exc: Exception) -> bool:
+    """True when the error indicates a collection vector-dimension mismatch.
+
+    Qdrant reports ``Wrong input: Query vector dimension error: expected dim:
+    384, got 768`` and the retrieval vector-store validation path raises
+    ``... has vector dimension 384; expected 768 ...``. Both carry the
+    ``dimension`` marker plus an expected/got signal, so a message check is the
+    shared signal across the broker searcher (which only sees the retrieval
+    helper's error string).
+    """
+    message = str(exc).lower()
+    return "dimension" in message and (
+        "expected" in message or "got" in message or "mismatch" in message
+    )
 
 
 class _UnavailableError(RuntimeError):

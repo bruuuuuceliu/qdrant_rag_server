@@ -2,9 +2,10 @@
 
 Best-effort, log-only reconciliation (design doc §9 "Index durability"): on
 ``memory_service`` startup, re-index ``memory_records`` where ``indexed=0``
-through the existing ``MemoryIndexer``, then persist the queued status. Failures
-are logged and never raised — SQLite stays the source of truth and the next
-startup re-attempts. This is deliberately NOT a scheduler; the "periodic timer"
+through the existing ``MemoryIndexer``, then persist the queued status for
+exactly the groups that were successfully re-queued. Failures are logged and
+never raised — SQLite stays the source of truth and the next startup re-attempts
+the failed groups. This is deliberately NOT a scheduler; the "periodic timer"
 variant is a documented follow-up.
 """
 
@@ -29,7 +30,10 @@ async def reconcile_pending_index(
     Records are grouped by their target collection so documents keep their
     ingest-time ``collection_name`` (e.g. ``agent_documents``) while message /
     compression-summary / fact records fall back to the indexer's default
-    memory collection. Returns the number of records successfully re-queued.
+    memory collection. Only the records of a group whose re-index succeeded are
+    marked indexed; a failed group's records stay ``indexed=0`` so the next
+    startup re-attempts them (partial failure must not over-mark). Returns the
+    number of records successfully re-queued.
     """
     pending: list[MemoryRecord] = await repository.list_memory_records_pending_index()
     if not pending:
@@ -40,6 +44,7 @@ async def reconcile_pending_index(
         groups[record.collection_name].append(record)
 
     reindexed = 0
+    reindexed_memory_ids: list[str] = []
     for collection_name, records in groups.items():
         try:
             await indexer.index(records, collection_name=collection_name)
@@ -53,16 +58,15 @@ async def reconcile_pending_index(
             )
             continue
         reindexed += len(records)
+        reindexed_memory_ids.extend(record.memory_id for record in records)
 
     if reindexed:
         try:
-            await repository.mark_memory_records_indexed(
-                [record.memory_id for record in pending]
-            )
+            await repository.mark_memory_records_indexed(reindexed_memory_ids)
         except Exception as exc:  # noqa: BLE001 - next startup re-attempts
             logger.warning(
                 "memory re-drive: failed to mark %d record(s) indexed: %s",
-                len(pending),
+                len(reindexed_memory_ids),
                 exc,
             )
             return 0
