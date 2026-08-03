@@ -20,6 +20,7 @@ from memory_service.models import (
     UserFact,
     UserProfile,
 )
+from memory_service.reconciliation import reconcile_pending_index
 from memory_service.repository import (
     MemoryInMemoryRepository,
     MemoryRepository,
@@ -55,4 +56,5 @@ __all__ = [
     "create_default_domain_app",
     "create_domain_app",
     "create_worker_context",
+    "reconcile_pending_index",
 ]

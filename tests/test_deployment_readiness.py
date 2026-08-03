@@ -106,3 +106,50 @@ async def test_owned_storage_and_sqlite_readiness(tmp_path) -> None:
     assert sqlite.ready is True
     assert sqlite.details["allocated_path"].endswith("readiness.db")
     assert sqlite.details["metadata_db"].endswith("_sqlite_node.db")
+
+
+@pytest.mark.asyncio
+async def test_memory_readiness_requires_signing_key_and_writable_db(tmp_path) -> None:
+    values = {
+        "MEMORY_DB_PATH": str(tmp_path / "memory" / "agent_memory.db"),
+        "MEMORY_IDENTITY_MODE": "broker",
+        "MEMORY_INDEX_MODE": "broker",
+        "MEMORY_SEARCH_MODE": "broker",
+        "SERVICE_AUTH_SIGNING_KEY": "local-dev-signing-key",
+        "SERVICE_AUTH_TOKEN_ISSUER": "simple-agent-local",
+        "SERVICE_AUTH_TOKEN_AUDIENCE": "simple-agent-internal",
+    }
+
+    check = await readiness.check_memory(values)
+
+    assert check.ready is True
+    assert check.details["db_path"] == str(tmp_path / "memory" / "agent_memory.db")
+    assert check.details["index_mode"] == "broker"
+    assert (tmp_path / "memory" / "agent_memory.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_memory_readiness_fails_when_signing_key_missing(tmp_path) -> None:
+    check = await readiness.check_memory(
+        {
+            "MEMORY_DB_PATH": str(tmp_path / "memory" / "agent_memory.db"),
+            "MEMORY_IDENTITY_MODE": "broker",
+        }
+    )
+
+    assert check.ready is False
+    assert "SERVICE_AUTH_SIGNING_KEY" in check.details["error"]
+
+
+@pytest.mark.asyncio
+async def test_retrieval_readiness_requires_writable_data_paths(tmp_path) -> None:
+    check = await readiness.check_retrieval(
+        {
+            "RETRIEVAL_PLACEMENT_DB_PATH": str(tmp_path / "placement" / "placement.db"),
+            "RAG_RESPONSE_CACHE_DB_PATH": str(tmp_path / "cache" / "response_cache.db"),
+        }
+    )
+
+    assert check.ready is True
+    assert check.details["placement_db_path"] == str(tmp_path / "placement" / "placement.db")
+    assert check.details["response_cache_db_path"] == str(tmp_path / "cache" / "response_cache.db")

@@ -16,6 +16,7 @@ from memory_service.domain_app import (
     MemoryDomainServerContext,
     create_default_domain_app,
 )
+from memory_service.reconciliation import reconcile_pending_index
 from shared.logging import configure_logging
 from shared.runtime_health import RuntimeHealth
 
@@ -65,6 +66,12 @@ async def serve_forever() -> None:
     context = await create_worker_context()
     await context.domain_app.start_runtime()
     try:
+        # §9 re-drive seam: re-queue memory_records whose index hand-off was
+        # never confirmed (indexed=0). Best-effort, log-only on failure.
+        await reconcile_pending_index(
+            repository=context.domain_app.handler._repository,
+            indexer=context.domain_app.handler._indexer,
+        )
         while True:
             await asyncio.sleep(3600)
     finally:

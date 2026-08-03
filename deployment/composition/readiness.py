@@ -18,6 +18,8 @@ from broker_service import (
     create_redpanda_admin,
     parse_broker_lag_targets,
 )
+from memory_service.config import MemoryServiceSettings
+from memory_service.repository import SQLiteMemoryRepository
 from redis_status_node import RedisStatusSettings, RedisTaskStatusStore, TaskStatusRecord
 from sqlite_node import SQLiteNodeSettings, SQLiteNodeService
 from storage_node.config import StorageNodeSettings
@@ -169,6 +171,56 @@ async def check_qdrant(values: dict[str, str] | None = None) -> ReadinessCheck:
     return ReadinessCheck(name="qdrant", ready=ready, details=details)
 
 
+async def check_memory(values: dict[str, str] | None = None) -> ReadinessCheck:
+    values = values or dict(os.environ)
+    details: dict[str, Any]
+    try:
+        settings = MemoryServiceSettings.from_values(values)
+        details = {
+            "db_path": str(settings.db_path),
+            "identity_mode": settings.identity_mode,
+            "index_mode": settings.index_mode,
+            "search_mode": settings.search_mode,
+            "signing_key_set": bool(values.get("SERVICE_AUTH_SIGNING_KEY")),
+        }
+        repository = SQLiteMemoryRepository(settings.db_path)
+        await repository.initialize()
+        ready = settings.db_path.parent.exists()
+        details["db_exists"] = settings.db_path.exists()
+    except Exception as exc:
+        ready = False
+        details = {"error": str(exc)}
+    return ReadinessCheck(name="memory", ready=ready, details=details)
+
+
+async def check_retrieval(values: dict[str, str] | None = None) -> ReadinessCheck:
+    values = values or dict(os.environ)
+    placement_db = Path(
+        values.get("RETRIEVAL_PLACEMENT_DB_PATH", "/tmp/qdrant_rag/placement.db")
+    )
+    cache_db = Path(
+        values.get("RAG_RESPONSE_CACHE_DB_PATH", "/tmp/qdrant_rag/response_cache.db")
+    )
+    details = {
+        "placement_db_path": str(placement_db),
+        "response_cache_db_path": str(cache_db),
+    }
+    try:
+        for probe_path in (placement_db.parent, cache_db.parent):
+            probe_path.mkdir(parents=True, exist_ok=True)
+            probe = probe_path / ".readiness"
+            probe.write_text("ok", encoding="utf-8")
+            ok = probe.read_text(encoding="utf-8") == "ok"
+            probe.unlink(missing_ok=True)
+            if not ok:
+                raise OSError(f"{probe_path} is not writable")
+        ready = True
+    except Exception as exc:
+        ready = False
+        details["error"] = str(exc)
+    return ReadinessCheck(name="retrieval", ready=ready, details=details)
+
+
 async def broker_first_report(
     *,
     include_qdrant: bool = True,
@@ -180,6 +232,8 @@ async def broker_first_report(
         await check_redis(values),
         await check_storage(values),
         await check_sqlite(values),
+        await check_memory(values),
+        await check_retrieval(values),
     ]
     if include_qdrant:
         checks.append(await check_qdrant(values))

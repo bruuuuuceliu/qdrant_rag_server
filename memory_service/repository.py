@@ -139,6 +139,22 @@ class MemoryRepository(Protocol):
     ) -> int:
         ...
 
+    async def list_memory_records_pending_index(self) -> list[MemoryRecord]:
+        """Memory records whose index hand-off has not been queued (``indexed=0``).
+
+        Used by the §9 re-drive seam to re-index failed/lost index hand-offs on
+        startup. Ordered oldest-first for a stable replay order.
+        """
+
+        ...
+
+    async def mark_memory_records_indexed(self, memory_ids: list[str]) -> int:
+        """Persist that the given records' index hand-off was queued. Returns the
+        number of rows updated (best-effort; the re-drive seam re-scans on the
+        next startup)."""
+
+        ...
+
     async def list_document_collections(
         self, owner_user_id: str, agent_id: str
     ) -> tuple[str, ...]:
@@ -176,6 +192,7 @@ class _InMemoryState:
         self.profiles: dict[str, UserProfile] = {}
         self.facts: dict[str, UserFact] = {}
         self.idempotency: dict[tuple[str, str], IdempotencyRecord] = {}
+        self.indexed_memory_ids: set[str] = set()
 
 
 class InMemoryMemoryTransaction:
@@ -402,6 +419,17 @@ class MemoryInMemoryRepository:
             and record.agent_id == agent_id
             and record.kind == kind
         )
+
+    async def list_memory_records_pending_index(self) -> list[MemoryRecord]:
+        return [
+            record
+            for record in self._state.memory_records.values()
+            if record.memory_id not in self._state.indexed_memory_ids
+        ]
+
+    async def mark_memory_records_indexed(self, memory_ids: list[str]) -> int:
+        self._state.indexed_memory_ids.update(memory_ids)
+        return len(memory_ids)
 
     async def list_document_collections(
         self, owner_user_id: str, agent_id: str
@@ -693,6 +721,13 @@ class SQLiteMemoryRepository:
 
     async def initialize(self) -> None:
         with self._connect() as conn:
+            # WAL improves concurrent reader/writer behavior for the SQLite
+            # memory store (production/local). WAL is persistent in the DB file,
+            # so this pragma only needs to run once (each initialize() re-applies
+            # it as a no-op). Backup/restore for WAL DBs is documented in
+            # docs/operations.md.
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -739,7 +774,8 @@ class SQLiteMemoryRepository:
                     covered_to        INTEGER,
                     collection_name   TEXT NOT NULL DEFAULT '',
                     metadata_json     TEXT NOT NULL DEFAULT '{}',
-                    created_at        TEXT NOT NULL
+                    created_at        TEXT NOT NULL,
+                    indexed           INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_owner_agent
                     ON memory_records(owner_user_id, agent_id);
@@ -787,6 +823,7 @@ class SQLiteMemoryRepository:
             )
             self._migrate_memory_records_document(conn)
             self._migrate_memory_records_columns(conn)
+            self._migrate_memory_records_indexed(conn)
 
     def _migrate_memory_records_document(self, conn: sqlite3.Connection) -> None:
         """One-time idempotent migration widening ``memory_records.kind``.
@@ -819,15 +856,22 @@ class SQLiteMemoryRepository:
                 covered_to        INTEGER,
                 collection_name   TEXT NOT NULL DEFAULT '',
                 metadata_json     TEXT NOT NULL DEFAULT '{}',
-                created_at        TEXT NOT NULL
+                created_at        TEXT NOT NULL,
+                indexed           INTEGER NOT NULL DEFAULT 0
             );
             INSERT INTO memory_records
                 (memory_id, session_id, owner_user_id, agent_id, kind, content,
-                 covered_from, covered_to, collection_name, metadata_json, created_at)
+                 covered_from, covered_to, collection_name, metadata_json, created_at, indexed)
                 SELECT memory_id, session_id, owner_user_id, agent_id, kind, content,
-                       covered_from, covered_to, '', '{}', created_at
+                       covered_from, covered_to, '', '{}', created_at, 0
                 FROM memory_records_old;
             DROP TABLE memory_records_old;
+            """
+        )
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_memory_pending_index
+                ON memory_records(indexed, created_at);
             """
         )
         conn.executescript(
@@ -861,6 +905,27 @@ class SQLiteMemoryRepository:
                 "ALTER TABLE memory_records"
                 " ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
             )
+
+    def _migrate_memory_records_indexed(self, conn: sqlite3.Connection) -> None:
+        """One-time idempotent migration adding the ``indexed`` status column.
+
+        Existing rows default to ``indexed=0`` (unindexed). The §9 re-drive seam
+        re-indexes them on the next memory_service startup, so pre-column rows
+        are conservatively treated as not-yet-indexed.
+        """
+        cols = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(memory_records)").fetchall()
+        }
+        if "indexed" not in cols:
+            conn.execute(
+                "ALTER TABLE memory_records"
+                " ADD COLUMN indexed INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_pending_index"
+            " ON memory_records(indexed, created_at)"
+        )
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[MemoryTransaction]:
@@ -1000,6 +1065,28 @@ class SQLiteMemoryRepository:
                 (owner_user_id, agent_id, kind),
             ).fetchone()
         return int(row[0])
+
+    async def list_memory_records_pending_index(self) -> list[MemoryRecord]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT memory_id, session_id, owner_user_id, agent_id, kind, content,"
+                "       covered_from, covered_to, collection_name, metadata_json, created_at"
+                "  FROM memory_records WHERE indexed = 0"
+                " ORDER BY created_at ASC, memory_id ASC",
+            ).fetchall()
+        return [_memory_record_from_row(row) for row in rows]
+
+    async def mark_memory_records_indexed(self, memory_ids: list[str]) -> int:
+        if not memory_ids:
+            return 0
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE memory_records SET indexed = 1"
+                " WHERE memory_id IN (%s)" % ",".join("?" * len(memory_ids)),
+                list(memory_ids),
+            )
+        return cursor.rowcount
 
     async def list_document_collections(
         self, owner_user_id: str, agent_id: str

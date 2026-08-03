@@ -903,9 +903,18 @@ class MemoryDomainHandler:
             return True
         try:
             await self._indexer.index(records, collection_name=collection_name)
-            return True
         except Exception:  # noqa: BLE001 - indexing is a best-effort projection
             return False
+        # Persist the queued status so the §9 re-drive seam does not re-publish a
+        # successfully queued hand-off. Best-effort: if the UPDATE fails the
+        # record stays indexed=0 and the seam re-queues it on the next startup.
+        try:
+            await self._repository.mark_memory_records_indexed(
+                [record.memory_id for record in records]
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return True
 
     def _compress_result(
         self,

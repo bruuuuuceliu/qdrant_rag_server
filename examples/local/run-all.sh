@@ -353,6 +353,7 @@ export REDIS_TASK_COMPLETED_TTL_SECONDS="${REDIS_TASK_COMPLETED_TTL_SECONDS:-864
 export STORAGE_NODE_ROOT="${STORAGE_NODE_ROOT:-${RAG_LOCAL_DATA_DIR}/storage_node}"
 export SQLITE_NODE_DATABASE_ROOT="${SQLITE_NODE_DATABASE_ROOT:-${RAG_LOCAL_DATA_DIR}/sqlite}"
 export TASK_SERVICE_STATE_DB_PATH="${TASK_SERVICE_STATE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/task_service_state.db}"
+export MEMORY_DB_PATH="${MEMORY_DB_PATH:-${RAG_LOCAL_DATA_DIR}/agent_memory.db}"
 # Local-dev service-auth signing key (single signing-key contract, B3 §11).
 # Exported unconditionally so memory_service broker mode and the deployment
 # readiness gate both have an explicit key in the local topology. Production
@@ -366,7 +367,6 @@ if [[ "$START_MEMORY" -eq 1 ]]; then
   export MEMORY_DOMAIN_COMMAND_TOPIC="${MEMORY_DOMAIN_COMMAND_TOPIC:-domain.memory.commands}"
   export MEMORY_DOMAIN_RESULT_TOPIC="${MEMORY_DOMAIN_RESULT_TOPIC:-domain.memory.results}"
   export MEMORY_IDENTITY_TOPIC="${MEMORY_IDENTITY_TOPIC:-identity.user.events}"
-  export MEMORY_DB_PATH="${MEMORY_DB_PATH:-${RAG_LOCAL_DATA_DIR}/agent_memory.db}"
   export MEMORY_IDENTITY_MODE="${MEMORY_IDENTITY_MODE:-broker}"
   export MEMORY_INDEX_MODE="${MEMORY_INDEX_MODE:-broker}"
   export MEMORY_SEARCH_MODE="${MEMORY_SEARCH_MODE:-broker}"
