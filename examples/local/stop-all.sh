@@ -14,6 +14,7 @@ WORKFLOW_LOG_PID_FILE="${RUNTIME_DIR}/workflow-log.pid"
 INGESTION_WORKER_PID_FILE="${RUNTIME_DIR}/ingestion-worker.pid"
 RETRIEVAL_INDEX_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-index-worker.pid"
 RETRIEVAL_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-worker.pid"
+MEMORY_PID_FILE="${RUNTIME_DIR}/memory-worker.pid"
 STORAGE_NODE_PID_FILE="${RUNTIME_DIR}/storage-node.pid"
 SQLITE_NODE_PID_FILE="${RUNTIME_DIR}/sqlite-node.pid"
 REDIS_STATUS_PID_FILE="${RUNTIME_DIR}/redis-status.pid"
@@ -205,6 +206,7 @@ fallback_stop_python_services() {
     "python -m ingestion_service.server.worker"
     "python -m retrieval_service.indexing.worker"
     "python -m retrieval_service.server.worker"
+    "python -m memory_service.worker"
     "python -m project_service.domain_app"
   )
   local pattern pid
@@ -274,6 +276,7 @@ stop_docker_container() {
 stop_pid_file "$INGESTION_WORKER_PID_FILE" "ingestion worker"
 stop_pid_file "$RETRIEVAL_INDEX_WORKER_PID_FILE" "retrieval index worker"
 stop_pid_file "$RETRIEVAL_WORKER_PID_FILE" "retrieval worker"
+stop_pid_file "$MEMORY_PID_FILE" "memory worker"
 stop_pid_file "$STORAGE_NODE_PID_FILE" "storage node"
 stop_pid_file "$SQLITE_NODE_PID_FILE" "SQLite node"
 stop_pid_file "$REDIS_STATUS_PID_FILE" "Redis status node"

@@ -14,6 +14,7 @@ WORKFLOW_LOG_PID_FILE="${RUNTIME_DIR}/workflow-log.pid"
 INGESTION_WORKER_PID_FILE="${RUNTIME_DIR}/ingestion-worker.pid"
 RETRIEVAL_INDEX_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-index-worker.pid"
 RETRIEVAL_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-worker.pid"
+MEMORY_PID_FILE="${RUNTIME_DIR}/memory-worker.pid"
 STORAGE_NODE_PID_FILE="${RUNTIME_DIR}/storage-node.pid"
 SQLITE_NODE_PID_FILE="${RUNTIME_DIR}/sqlite-node.pid"
 REDIS_STATUS_PID_FILE="${RUNTIME_DIR}/redis-status.pid"
@@ -24,6 +25,9 @@ KAFKA_CID_FILE="${RUNTIME_DIR}/kafka.cid"
 REDIS_CID_FILE="${RUNTIME_DIR}/redis.cid"
 REDPANDA_CONSOLE_CID_FILE="${RUNTIME_DIR}/redpanda-console.cid"
 REDIS_INSIGHT_CID_FILE="${RUNTIME_DIR}/redis-insight.cid"
+MEMORY_NETWORK="rag-memory-test"
+MEMORY_REDPANDA_INTERNAL_HOST="redpanda-rag-local"
+MEMORY_REDPANDA_INTERNAL_PORT="19092"
 ENV_FILE="${RAG_LOCAL_ENV_FILE:-${ROOT_DIR}/configs/local.env}"
 
 INIT_PROJECT=0
@@ -33,6 +37,7 @@ FOREGROUND=0
 START_SERVER=1
 INFRA_ONLY=0
 RUN_SMOKE=0
+START_MEMORY=0
 START_REDPANDA_CONSOLE=1
 START_REDIS_INSIGHT=1
 BROKER_TYPE_ARG=""
@@ -64,6 +69,11 @@ Options:
   --no-server                    Run setup/init only; do not start services.
   --infra-only                   Start/verify local broker infrastructure and exit.
   --smoke                        Seed the project and verify health, ingest, and search.
+  --memory                       Start the memory_service worker (broker modes). Requires the
+                                 retrieval workers; runs the topology on UNPREFIXED broker topics
+                                 (BROKER_TOPIC_PREFIX='') so it aligns with simple_agent's topic
+                                 namespace and starts Redpanda with the INTERNAL listener on the
+                                 'rag-memory-test' Docker network for the container-to-broker path.
   --broker VALUE                 Local Docker broker to use: redpanda or kafka. Default: redpanda.
   --ui                           Start local broker and Redis visualization UIs. Enabled by default.
   --no-ui                        Do not start local visualization UIs.
@@ -125,6 +135,10 @@ while [[ $# -gt 0 ]]; do
     --smoke)
       RUN_SMOKE=1
       INIT_PROJECT=1
+      shift
+      ;;
+    --memory)
+      START_MEMORY=1
       shift
       ;;
     --broker)
@@ -298,7 +312,15 @@ export BROKER_TYPE
 export BROKER_BOOTSTRAP_SERVERS="${BROKER_BOOTSTRAP_SERVERS:-127.0.0.1:9092}"
 export BROKER_CLIENT_ID="${BROKER_CLIENT_ID:-qdrant-rag-local}"
 export BROKER_REQUEST_TIMEOUT_SECONDS="${BROKER_REQUEST_TIMEOUT_SECONDS:-30}"
-export BROKER_TOPIC_PREFIX="${BROKER_TOPIC_PREFIX:-qdrant-rag-local.}"
+# The memory integration (--memory) is simple_agent-aligned: simple_agent
+# publishes UNPREFIXED topic names, so the whole local topology runs with an
+# empty BROKER_TOPIC_PREFIX (otherwise the memory worker's hand-offs to the
+# retrieval workers would land on a different namespace).
+if [[ "$START_MEMORY" -eq 1 ]]; then
+  export BROKER_TOPIC_PREFIX="${BROKER_TOPIC_PREFIX:-}"
+else
+  export BROKER_TOPIC_PREFIX="${BROKER_TOPIC_PREFIX:-qdrant-rag-local.}"
+fi
 export BROKER_TOPIC_PARTITIONS="${BROKER_TOPIC_PARTITIONS:-1}"
 export BROKER_LAG_TARGETS="${BROKER_LAG_TARGETS:-}"
 export REDPANDA_CONSOLE_PORT="${REDPANDA_CONSOLE_PORT:-8088}"
@@ -331,6 +353,28 @@ export REDIS_TASK_COMPLETED_TTL_SECONDS="${REDIS_TASK_COMPLETED_TTL_SECONDS:-864
 export STORAGE_NODE_ROOT="${STORAGE_NODE_ROOT:-${RAG_LOCAL_DATA_DIR}/storage_node}"
 export SQLITE_NODE_DATABASE_ROOT="${SQLITE_NODE_DATABASE_ROOT:-${RAG_LOCAL_DATA_DIR}/sqlite}"
 export TASK_SERVICE_STATE_DB_PATH="${TASK_SERVICE_STATE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/task_service_state.db}"
+# Local-dev service-auth signing key (single signing-key contract, B3 §11).
+# Exported unconditionally so memory_service broker mode and the deployment
+# readiness gate both have an explicit key in the local topology. Production
+# MUST override with simple_agent's real SERVICE_AUTH_SIGNING_KEY.
+export SERVICE_AUTH_SIGNING_KEY="${SERVICE_AUTH_SIGNING_KEY:-local-dev-signing-key}"
+export SERVICE_AUTH_TOKEN_ISSUER="${SERVICE_AUTH_TOKEN_ISSUER:-simple-agent-local}"
+export SERVICE_AUTH_TOKEN_AUDIENCE="${SERVICE_AUTH_TOKEN_AUDIENCE:-simple-agent-internal}"
+if [[ "$START_MEMORY" -eq 1 ]]; then
+  export MEMORY_SERVICE_ENABLED="${MEMORY_SERVICE_ENABLED:-true}"
+  export MEMORY_SERVICE_NAME="${MEMORY_SERVICE_NAME:-memory_service}"
+  export MEMORY_DOMAIN_COMMAND_TOPIC="${MEMORY_DOMAIN_COMMAND_TOPIC:-domain.memory.commands}"
+  export MEMORY_DOMAIN_RESULT_TOPIC="${MEMORY_DOMAIN_RESULT_TOPIC:-domain.memory.results}"
+  export MEMORY_IDENTITY_TOPIC="${MEMORY_IDENTITY_TOPIC:-identity.user.events}"
+  export MEMORY_DB_PATH="${MEMORY_DB_PATH:-${RAG_LOCAL_DATA_DIR}/agent_memory.db}"
+  export MEMORY_IDENTITY_MODE="${MEMORY_IDENTITY_MODE:-broker}"
+  export MEMORY_INDEX_MODE="${MEMORY_INDEX_MODE:-broker}"
+  export MEMORY_SEARCH_MODE="${MEMORY_SEARCH_MODE:-broker}"
+  export MEMORY_ALLOWED_SERVICES="${MEMORY_ALLOWED_SERVICES:-conversation-server}"
+  export MEMORY_COLLECTION="${MEMORY_COLLECTION:-agent_memory}"
+  export MEMORY_DOCUMENTS_COLLECTION="${MEMORY_DOCUMENTS_COLLECTION:-agent_documents}"
+  export MEMORY_LOOKUP_INCLUDE_MERGED="${MEMORY_LOOKUP_INCLUDE_MERGED:-false}"
+fi
 
 allocate_sqlite_databases() {
   "$PYTHON_BIN" - <<'PY'
@@ -498,14 +542,59 @@ start_qdrant_if_needed() {
   echo "Warning: Qdrant container started but health check did not pass." >&2
 }
 
+ensure_redpanda_on_memory_network() {
+  # Reproducible container-to-broker path for the simple_agent ↔ RAG memory
+  # integration: create the external 'rag-memory-test' network (simple_agent's
+  # compose declares it external) and attach Redpanda so SA containers reach it
+  # at redpanda-rag-local:19092 via the INTERNAL listener.
+  if ! command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+  docker network create "$MEMORY_NETWORK" >/dev/null 2>&1 || true
+  local attached
+  attached="$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$REDPANDA_CONTAINER" 2>/dev/null || true)"
+  if [[ "$attached" != *"$MEMORY_NETWORK"* ]]; then
+    echo "Attaching ${REDPANDA_CONTAINER} to ${MEMORY_NETWORK} network."
+    docker network connect "$MEMORY_NETWORK" "$REDPANDA_CONTAINER" >/dev/null 2>&1 || true
+  fi
+}
+
 start_redpanda_if_needed() {
   if is_tcp_port_open "127.0.0.1" "9092"; then
     echo "Kafka-compatible broker already reachable at 127.0.0.1:9092; using topic prefix '${BROKER_TOPIC_PREFIX}'."
+    if [[ "$START_MEMORY" -eq 1 ]]; then
+      ensure_redpanda_on_memory_network
+    fi
     return 0
   fi
   require_docker "Redpanda"
   if docker ps -a --format '{{.Names}}' | grep -Fxq "$REDPANDA_CONTAINER"; then
     docker start "$REDPANDA_CONTAINER" >/dev/null
+    if [[ "$START_MEMORY" -eq 1 ]]; then
+      ensure_redpanda_on_memory_network
+    fi
+  elif [[ "$START_MEMORY" -eq 1 ]]; then
+    # --memory: dual-listener Redpanda. The PLAINTEXT host listener is unchanged
+    # (127.0.0.1:9092, the local-dev default); the INTERNAL listener is only
+    # reachable from other containers on the 'rag-memory-test' network, so the
+    # plaintext default is preserved for local dev (SASL is owned by C5).
+    docker network create "$MEMORY_NETWORK" >/dev/null 2>&1 || true
+    docker run -d \
+      --name "$REDPANDA_CONTAINER" \
+      --network "$MEMORY_NETWORK" \
+      -p 9092:9092 \
+      -p 9644:9644 \
+      -p "${MEMORY_REDPANDA_INTERNAL_PORT}:${MEMORY_REDPANDA_INTERNAL_PORT}" \
+      docker.redpanda.com/redpandadata/redpanda:latest \
+      redpanda start \
+      --overprovisioned \
+      --smp 1 \
+      --memory 1G \
+      --reserve-memory 0M \
+      --node-id 0 \
+      --check=false \
+      --kafka-addr "PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:${MEMORY_REDPANDA_INTERNAL_PORT}" \
+      --advertise-kafka-addr "PLAINTEXT://127.0.0.1:9092,INTERNAL://${MEMORY_REDPANDA_INTERNAL_HOST}:${MEMORY_REDPANDA_INTERNAL_PORT}" >/dev/null
   else
     docker run -d \
       --name "$REDPANDA_CONTAINER" \
@@ -854,6 +943,7 @@ ensure_not_already_running() {
     "$TASK_SERVICE_PID_FILE" \
     "$WORKFLOW_LOG_PID_FILE" \
     "$RETRIEVAL_WORKER_PID_FILE" \
+    "$MEMORY_PID_FILE" \
     "$STORAGE_NODE_PID_FILE" \
     "$SQLITE_NODE_PID_FILE" \
     "$REDIS_STATUS_PID_FILE"; do
@@ -923,6 +1013,20 @@ REDIS_TASK_STATUS_KEY_PREFIX=${REDIS_TASK_STATUS_KEY_PREFIX}
 STORAGE_NODE_ROOT=${STORAGE_NODE_ROOT}
 SQLITE_NODE_DATABASE_ROOT=${SQLITE_NODE_DATABASE_ROOT}
 TASK_SERVICE_STATE_DB_PATH=${TASK_SERVICE_STATE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/task_service_state.db}
+SERVICE_AUTH_SIGNING_KEY=${SERVICE_AUTH_SIGNING_KEY:-local-dev-signing-key}
+MEMORY_SERVICE_ENABLED=${MEMORY_SERVICE_ENABLED:-false}
+MEMORY_SERVICE_NAME=${MEMORY_SERVICE_NAME:-memory_service}
+MEMORY_DOMAIN_COMMAND_TOPIC=${MEMORY_DOMAIN_COMMAND_TOPIC:-domain.memory.commands}
+MEMORY_DOMAIN_RESULT_TOPIC=${MEMORY_DOMAIN_RESULT_TOPIC:-domain.memory.results}
+MEMORY_IDENTITY_TOPIC=${MEMORY_IDENTITY_TOPIC:-identity.user.events}
+MEMORY_DB_PATH=${MEMORY_DB_PATH:-${RAG_LOCAL_DATA_DIR}/agent_memory.db}
+MEMORY_IDENTITY_MODE=${MEMORY_IDENTITY_MODE:-broker}
+MEMORY_INDEX_MODE=${MEMORY_INDEX_MODE:-broker}
+MEMORY_SEARCH_MODE=${MEMORY_SEARCH_MODE:-broker}
+MEMORY_ALLOWED_SERVICES=${MEMORY_ALLOWED_SERVICES:-conversation-server}
+MEMORY_COLLECTION=${MEMORY_COLLECTION:-agent_memory}
+MEMORY_DOCUMENTS_COLLECTION=${MEMORY_DOCUMENTS_COLLECTION:-agent_documents}
+MEMORY_LOOKUP_INCLUDE_MERGED=${MEMORY_LOOKUP_INCLUDE_MERGED:-false}
 EOF
 }
 
@@ -1023,6 +1127,9 @@ start_broker_first_background() {
   start_module_background "Ingestion helper" "ingestion_service.server.worker" "$INGESTION_WORKER_PID_FILE" "ingestion-worker"
   start_module_background "Retrieval helper" "retrieval_service.server.worker" "$RETRIEVAL_WORKER_PID_FILE" "retrieval-worker"
   start_module_background "Retrieval index helper" "retrieval_service.indexing.worker" "$RETRIEVAL_INDEX_WORKER_PID_FILE" "retrieval-index-worker"
+  if [[ "$START_MEMORY" -eq 1 ]]; then
+    start_module_background "Memory service" "memory_service.worker" "$MEMORY_PID_FILE" "memory-worker"
+  fi
 }
 
 run_end_to_end_smoke() {
@@ -1117,6 +1224,10 @@ Local RAG service settings:
   index_helper:        ${RETRIEVAL_INDEX_HELPER_COMMAND_TOPIC}
   storage_node_root:   ${STORAGE_NODE_ROOT}
   sqlite_node_root:    ${SQLITE_NODE_DATABASE_ROOT}
+  memory_service:      ${MEMORY_SERVICE_ENABLED:-false} $([[ "$START_MEMORY" -eq 1 ]] && printf '(enabled, broker modes)' || printf '(disabled)')
+  memory_db:           ${MEMORY_DB_PATH:-${RAG_LOCAL_DATA_DIR}/agent_memory.db}
+  memory_topics:       ${MEMORY_DOMAIN_COMMAND_TOPIC:-domain.memory.commands} -> ${MEMORY_DOMAIN_RESULT_TOPIC:-domain.memory.results} + ${MEMORY_IDENTITY_TOPIC:-identity.user.events}
+  memory_network:      ${MEMORY_NETWORK} (INTERNAL ${MEMORY_REDPANDA_INTERNAL_HOST}:${MEMORY_REDPANDA_INTERNAL_PORT}) $([[ "$START_MEMORY" -eq 1 ]] && printf '(enabled)' || printf '(not used)')
   embedding_provider:  ${RAG_EMBEDDING_PROVIDER}
   embedding_model:     ${RAG_EMBEDDING_MODEL}
   embedding_dimension: ${RAG_EMBEDDING_DIMENSION}
