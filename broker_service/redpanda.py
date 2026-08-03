@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import ssl
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,29 @@ from broker_service.config import BrokerSettings
 from shared.contracts import MessageEnvelope
 
 logger = logging.getLogger(__name__)
+
+
+def _kafka_security_kwargs(settings: BrokerSettings) -> dict[str, Any]:
+    """Build aiokafka ``security_protocol``/SASL/TLS constructor kwargs.
+
+    aiokafka 0.14 accepts ``ssl_context`` only (there are no
+    ``ssl_cafile``/``ssl_certfile``/``ssl_keyfile`` constructor params), so the
+    ``ssl.SSLContext`` is built here from the settings' file paths.
+    """
+    kwargs: dict[str, Any] = {"security_protocol": settings.security_protocol}
+    if settings.security_protocol in {"SASL_PLAINTEXT", "SASL_SSL"}:
+        kwargs.update(
+            sasl_mechanism=settings.sasl_mechanism,
+            sasl_plain_username=settings.sasl_plain_username,
+            sasl_plain_password=settings.sasl_plain_password,
+        )
+    if settings.security_protocol in {"SSL", "SASL_SSL"}:
+        if settings.ssl_cafile:
+            context = ssl.create_default_context(cafile=settings.ssl_cafile)
+            if settings.ssl_certfile and settings.ssl_keyfile:
+                context.load_cert_chain(settings.ssl_certfile, settings.ssl_keyfile)
+            kwargs["ssl_context"] = context
+    return kwargs
 
 
 class RedpandaDependencyError(RuntimeError):
@@ -250,6 +274,7 @@ def _build_kafka_producer(settings: BrokerSettings) -> Any:
         bootstrap_servers=settings.bootstrap_servers,
         client_id=settings.client_id,
         request_timeout_ms=int(settings.request_timeout_seconds * 1000),
+        **_kafka_security_kwargs(settings),
     )
 
 
@@ -267,6 +292,7 @@ def _build_kafka_consumer(settings: BrokerSettings, topic: str, group_id: str) -
         group_id=group_id,
         enable_auto_commit=False,
         auto_offset_reset="earliest",
+        **_kafka_security_kwargs(settings),
     )
 
 
@@ -283,6 +309,7 @@ def _build_lag_consumer(settings: BrokerSettings, group_id: str) -> Any:
         group_id=group_id,
         enable_auto_commit=False,
         request_timeout_ms=int(settings.request_timeout_seconds * 1000),
+        **_kafka_security_kwargs(settings),
     )
 
 
@@ -307,6 +334,7 @@ def _build_kafka_admin(settings: BrokerSettings) -> Any:
         bootstrap_servers=settings.bootstrap_servers,
         client_id=settings.client_id,
         request_timeout_ms=int(settings.request_timeout_seconds * 1000),
+        **_kafka_security_kwargs(settings),
     )
 
 
