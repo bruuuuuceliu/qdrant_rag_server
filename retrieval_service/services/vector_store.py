@@ -77,15 +77,25 @@ class QdrantStore:
         )
         async with lock:
             exists = await self._collection_exists(collection_name)
-            if not exists:
-                await self._client.create_collection(
-                    collection_name=collection_name,
-                    vectors_config=models.VectorParams(
-                        size=vector_size,
-                        distance=models.Distance.COSINE,
-                    ),
-                )
-                logger.info("created collection %s", collection_name)
+            if exists:
+                info = await self.collection_info(collection_name)
+                actual = _unnamed_vector_size(info)
+                if actual is not None and actual != vector_size:
+                    raise ValueError(
+                        f"collection {collection_name!r} has vector dimension "
+                        f"{actual}; expected {vector_size}. Reingest into a new "
+                        "collection version or delete the incompatible collection "
+                        "before rerunning."
+                    )
+                return
+            await self._client.create_collection(
+                collection_name=collection_name,
+                vectors_config=models.VectorParams(
+                    size=vector_size,
+                    distance=models.Distance.COSINE,
+                ),
+            )
+            logger.info("created collection %s", collection_name)
 
     async def ensure_hybrid_collection_exists(
         self,
@@ -107,6 +117,7 @@ class QdrantStore:
                     info=info,
                     dense_vector_name=dense_vector_name,
                     sparse_vector_name=sparse_vector_name,
+                    expected_dense_vector_size=dense_vector_size,
                 )
                 return
             await self._client.create_collection(
@@ -403,6 +414,7 @@ def _validate_hybrid_collection_schema(
     info: dict[str, Any],
     dense_vector_name: str,
     sparse_vector_name: str,
+    expected_dense_vector_size: int | None = None,
 ) -> None:
     missing: list[str] = []
     if not _has_named_vector(info, dense_vector_name):
@@ -417,11 +429,49 @@ def _validate_hybrid_collection_schema(
             "hybrid retrieval, reingest into a new collection version, or delete "
             "the incompatible showcase collection before rerunning."
         )
+    if expected_dense_vector_size is not None:
+        actual = _named_vector_size(info, dense_vector_name)
+        if actual is not None and actual != expected_dense_vector_size:
+            raise ValueError(
+                f"collection {collection_name!r} has vector dimension {actual}; "
+                f"expected {expected_dense_vector_size}. Reingest into a new "
+                "collection version or delete the incompatible collection "
+                "before rerunning."
+            )
 
 
 def _has_named_vector(info: dict[str, Any], vector_name: str) -> bool:
     vectors = _collection_params(info).get("vectors")
     return isinstance(vectors, dict) and vector_name in vectors
+
+
+def _unnamed_vector_size(info: dict[str, Any]) -> int | None:
+    """Return the size of a dense-only (unnamed) vector config, if present.
+
+    Qdrant reports an unnamed vector config either as a flat ``vectors`` dict
+    carrying ``size`` directly, or as a named-vectors dict with the empty string
+    ``""`` key. Returns ``None`` when there is no usable unnamed dense config.
+    """
+    vectors = _collection_params(info).get("vectors")
+    if not isinstance(vectors, dict):
+        return None
+    if "size" in vectors:
+        return vectors.get("size")
+    unnamed = vectors.get("")
+    if isinstance(unnamed, dict):
+        return unnamed.get("size")
+    return None
+
+
+def _named_vector_size(info: dict[str, Any], vector_name: str) -> int | None:
+    """Return the size of the named dense vector config, if present."""
+    vectors = _collection_params(info).get("vectors")
+    if not isinstance(vectors, dict):
+        return None
+    entry = vectors.get(vector_name)
+    if isinstance(entry, dict):
+        return entry.get("size")
+    return None
 
 
 def _has_named_sparse_vector(info: dict[str, Any], vector_name: str) -> bool:
