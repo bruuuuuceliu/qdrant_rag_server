@@ -11,6 +11,7 @@ from broker_service import BrokerSettings
 from configs import AppSettings, load_settings
 from configs.retrieval.config import (
     RetrievalIndexWorkerSettings,
+    load_collection_index_config,
     load_retrieval_index_worker_settings,
 )
 from retrieval_service.embedding import EmbeddingProviderFactory
@@ -106,6 +107,7 @@ async def create_worker_server(
             host=settings.qdrant_host,
             port=settings.qdrant_port,
             default_vector_size=settings.embedding_dimension,
+            collection_index_config=load_collection_index_config(dict(os.environ)),
         )
 
     if sparse_encoder is None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from configs.config import get_bool_value, get_int_value, get_value
 from shared.contracts import TOPICS
@@ -44,6 +45,32 @@ class RetrievalPlacementSettings:
     replication_factor: int = 1
     shard_id: str = "local-qdrant"
     cluster_id: str = "local"
+
+
+def load_collection_index_config(values: dict[str, str]) -> Any:
+    """Load the single default collection index (HNSW/optimizer) profile.
+
+    Lazy-imports ``CollectionIndexConfig`` so config loading never requires the
+    qdrant_client dependency. A single default profile is applied to every
+    collection at creation time (see C4 design).
+    """
+    from retrieval_service.services.vector_store import CollectionIndexConfig
+
+    return CollectionIndexConfig(
+        hnsw_m=get_int_value(values, "RAG_QDRANT_HNSW_M", 16),
+        hnsw_ef_construct=get_int_value(values, "RAG_QDRANT_HNSW_EF_CONSTRUCT", 100),
+        full_scan_threshold=get_int_value(
+            values,
+            "RAG_QDRANT_FULL_SCAN_THRESHOLD",
+            10000,
+        ),
+        indexing_threshold=get_int_value(values, "RAG_QDRANT_INDEXING_THRESHOLD", 2000),
+        prevent_unoptimized=get_bool_value(
+            values,
+            "RAG_QDRANT_PREVENT_UNOPTIMIZED",
+            False,
+        ),
+    )
 
 
 def load_retrieval_component_settings(

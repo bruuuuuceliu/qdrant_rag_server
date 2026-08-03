@@ -41,6 +41,22 @@ class VectorPayload(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class CollectionIndexConfig:
+    """Collection-level HNSW / optimizer index settings.
+
+    Applied ONLY at collection creation time (backward compatible: existing
+    collections are validated but never re-created). A single default profile is
+    used for every collection rather than per-collection tuning.
+    """
+
+    hnsw_m: int = 16
+    hnsw_ef_construct: int = 100
+    full_scan_threshold: int = 10000
+    indexing_threshold: int = 2000
+    prevent_unoptimized: bool = False
+
+
 class QdrantStore:
     """Async wrapper around Qdrant for retrieval and indexing."""
 
@@ -51,6 +67,7 @@ class QdrantStore:
         host: str = "localhost",
         port: int = 6333,
         default_vector_size: int = VECTOR_SIZE,
+        collection_index_config: Any | None = None,
         **kwargs: Any,
     ) -> None:
         if AsyncQdrantClient is None:
@@ -63,6 +80,7 @@ class QdrantStore:
         else:
             self._client = AsyncQdrantClient(host=host, port=port, **kwargs)
         self._default_vector_size = default_vector_size
+        self._index_config = collection_index_config or CollectionIndexConfig()
         self._collection_locks: dict[str, asyncio.Lock] = {}
 
     async def ensure_collection_exists(
@@ -94,6 +112,8 @@ class QdrantStore:
                     size=vector_size,
                     distance=models.Distance.COSINE,
                 ),
+                hnsw_config=_build_hnsw_config(self._index_config),
+                optimizers_config=_build_optimizers_config(self._index_config),
             )
             logger.info("created collection %s", collection_name)
 
@@ -131,6 +151,8 @@ class QdrantStore:
                 sparse_vectors_config={
                     sparse_vector_name: _sparse_vector_params(),
                 },
+                hnsw_config=_build_hnsw_config(self._index_config),
+                optimizers_config=_build_optimizers_config(self._index_config),
             )
             logger.info(
                 "created hybrid collection %s dense=%s sparse=%s",
@@ -474,6 +496,32 @@ def _named_vector_size(info: dict[str, Any], vector_name: str) -> int | None:
     return None
 
 
+def _build_hnsw_config(cfg: CollectionIndexConfig) -> Any:
+    if hasattr(models, "HnswConfigDiff"):
+        return models.HnswConfigDiff(
+            m=cfg.hnsw_m,
+            ef_construct=cfg.hnsw_ef_construct,
+            full_scan_threshold=cfg.full_scan_threshold,
+        )
+    return _FallbackHnswConfigDiff(
+        m=cfg.hnsw_m,
+        ef_construct=cfg.hnsw_ef_construct,
+        full_scan_threshold=cfg.full_scan_threshold,
+    )
+
+
+def _build_optimizers_config(cfg: CollectionIndexConfig) -> Any:
+    if hasattr(models, "OptimizersConfigDiff"):
+        return models.OptimizersConfigDiff(
+            indexing_threshold=cfg.indexing_threshold,
+            prevent_unoptimized=cfg.prevent_unoptimized,
+        )
+    return _FallbackOptimizersConfigDiff(
+        indexing_threshold=cfg.indexing_threshold,
+        prevent_unoptimized=cfg.prevent_unoptimized,
+    )
+
+
 def _has_named_sparse_vector(info: dict[str, Any], vector_name: str) -> bool:
     sparse_vectors = _collection_params(info).get("sparse_vectors")
     return isinstance(sparse_vectors, dict) and vector_name in sparse_vectors
@@ -544,6 +592,19 @@ class _FallbackSparseVector:
     values: list[float]
 
 
+@dataclass(frozen=True, slots=True)
+class _FallbackHnswConfigDiff:
+    m: int
+    ef_construct: int
+    full_scan_threshold: int
+
+
+@dataclass(frozen=True, slots=True)
+class _FallbackOptimizersConfigDiff:
+    indexing_threshold: int
+    prevent_unoptimized: bool
+
+
 class _FallbackDistance:
     COSINE = "Cosine"
 
@@ -564,6 +625,8 @@ class _FallbackQdrantModels:
     SparseVectorParams = _FallbackSparseVectorParams
     Distance = _FallbackDistance
     Modifier = _FallbackModifier
+    HnswConfigDiff = _FallbackHnswConfigDiff
+    OptimizersConfigDiff = _FallbackOptimizersConfigDiff
 
 
 if models is None:

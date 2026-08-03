@@ -11,6 +11,7 @@ from broker_service import BrokerSettings
 from configs import AppSettings, load_settings
 from configs.retrieval.config import (
     RetrievalHelperSettings,
+    load_collection_index_config,
     load_retrieval_helper_settings,
 )
 from retrieval_service.embedding import EmbeddingProviderFactory
@@ -188,6 +189,7 @@ async def _build_retrieval_service(
         host=settings.qdrant_host,
         port=settings.qdrant_port,
         default_vector_size=settings.embedding_dimension,
+        collection_index_config=load_collection_index_config(dict(os.environ)),
     )
     sparse_encoder = FastEmbedSparseTextEncoder(settings.bm25_encoder_model)
     bm25_index = QdrantSparseBM25Index(
