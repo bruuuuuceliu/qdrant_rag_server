@@ -9,7 +9,9 @@ Proves real interop between the two repos without a broker:
    and answered by the RAG ``MemoryDomainHandler``.
 
 The simple_agent lib is imported from its own checkout via sys.path, so this
-test asserts the contract, not a copy.
+test asserts the contract, not a copy. The checkout is optional: when it is not
+present (for example in this repo's CI, which only checks out qdrant_rag_server)
+the module is skipped cleanly instead of failing collection.
 """
 
 from __future__ import annotations
@@ -25,6 +27,16 @@ SIMPLE_AGENT_AUTH_SRC = SIMPLE_AGENT_AUTH_SRC.resolve()
 if str(SIMPLE_AGENT_AUTH_SRC) not in sys.path:
     sys.path.insert(0, str(SIMPLE_AGENT_AUTH_SRC))
 
+pytest.importorskip(
+    "simple_agent_service_auth",
+    reason="simple_agent service-auth checkout not present; skipping cross-repo interop",
+)
+
+from simple_agent_service_auth import (  # noqa: E402
+    ServiceAuthSettings as SaServiceAuthSettings,
+    create_service_token,
+)
+
 from memory_service.compression import CondenseV1Policy
 from memory_service.domain_handler import MemoryDomainHandler
 from memory_service.identity import FakeIdentitySource
@@ -34,10 +46,6 @@ from memory_service.searcher import FakeMemorySearcher
 from shared.contracts import MessageEnvelope, MessageType
 from shared.service_auth import ServiceAuthSettings as RagServiceAuthSettings
 from shared.service_auth import verify_service_token
-from simple_agent_service_auth import (
-    ServiceAuthSettings as SaServiceAuthSettings,
-    create_service_token,
-)
 
 
 def test_simple_agent_token_verifies_in_rag_service_auth() -> None:

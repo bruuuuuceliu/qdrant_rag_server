@@ -48,6 +48,7 @@ jobs:
             deployment \
             ingestion_service \
             manager_service \
+            memory_service \
             project_service \
             redis_status_node \
             retrieval_service \
@@ -130,6 +131,7 @@ jobs:
           examples/local/run-all.sh \
             --reset \
             --smoke \
+            --memory \
             --no-ui \
             --embedding-provider deterministic \
             --embedding-model deterministic-hash \
