@@ -100,11 +100,14 @@ class MemoryMessage:
 
 @dataclass(frozen=True, slots=True)
 class MemoryRecord:
-    """A durable memory record: compression summary or mirrored fact.
+    """A durable memory record: compression summary, mirrored fact, or document.
 
-    ``kind`` is one of ``message``, ``compression_summary``, or ``fact``.
-    Compression summaries carry the covered ``[from, to]`` span; other kinds
-    leave the span fields unset.
+    ``kind`` is one of ``message``, ``compression_summary``, ``fact``, or
+    ``document``. Compression summaries carry the covered ``[from, to]`` span;
+    other kinds leave the span fields unset. ``kind='document'`` rows record the
+    vector collection they were indexed into (``collection_name``) so lookup
+    resolves the ingest-time collection, and may carry caller-supplied
+    ``metadata`` that is forwarded into the Qdrant payload.
     """
 
     memory_id: str
@@ -115,6 +118,8 @@ class MemoryRecord:
     session_id: str = ""
     covered_from: int | None = None
     covered_to: int | None = None
+    collection_name: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
 
     @classmethod
@@ -128,6 +133,8 @@ class MemoryRecord:
             session_id=str(value.get("session_id", "")),
             covered_from=_optional_int(value.get("covered_from")),
             covered_to=_optional_int(value.get("covered_to")),
+            collection_name=str(value.get("collection_name", "")),
+            metadata=dict(value.get("metadata", {}) or {}),
             created_at=str(value.get("created_at", "")),
         )
 
@@ -145,6 +152,10 @@ class MemoryRecord:
             mapping["covered_from"] = self.covered_from
         if self.covered_to is not None:
             mapping["covered_to"] = self.covered_to
+        if self.collection_name:
+            mapping["collection_name"] = self.collection_name
+        if self.metadata:
+            mapping["metadata"] = dict(self.metadata)
         return mapping
 
 

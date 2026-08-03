@@ -3,7 +3,7 @@
 Builds a ``MemoryDomainHandler`` over the in-memory repository with fake
 indexer/searcher/identity sources, and mints real service tokens over the same
 HS256 code path the local/fake mode uses (requirements §8). Envelope helpers
-produce correctly-shaped DOMAIN_COMMANDs for each of the 8 operations.
+produce correctly-shaped DOMAIN_COMMANDs for each of the 9 operations.
 """
 
 from __future__ import annotations
@@ -50,6 +50,8 @@ def handler(auth_settings: ServiceAuthSettings) -> MemoryDomainHandler:
         identity_source=identity,
         producer=None,
         service_auth=auth_settings,
+        memory_collection_name="agent_memory",
+        documents_collection_name="agent_documents",
     )
 
 

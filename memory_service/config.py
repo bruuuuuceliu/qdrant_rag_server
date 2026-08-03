@@ -32,12 +32,34 @@ class MemoryServiceSettings:
     search_mode: str = "broker"    # broker | fake
     allowed_services: tuple[str, ...] = ("conversation-server",)
     service_auth: ServiceAuthSettings = ServiceAuthSettings()
-    documents_collection_name: str = "agent_memory"
+    documents_collection_name: str = "agent_documents"
     memory_collection_name: str = "agent_memory"
     include_merged: bool = False
 
     @classmethod
     def from_values(cls, values: dict[str, str]) -> "MemoryServiceSettings":
+        # B3 — RAG-side signing-key single contract: broker mode requires the
+        # caller to set SERVICE_AUTH_SIGNING_KEY explicitly (it must equal
+        # simple_agent's auth signing key). Fake mode and direct construction
+        # bypass this guard.
+        identity_mode = get_value(values, "MEMORY_IDENTITY_MODE", "broker")
+        index_mode = get_value(values, "MEMORY_INDEX_MODE", "broker")
+        search_mode = get_value(values, "MEMORY_SEARCH_MODE", "broker")
+        # B3-1: an empty-but-present SERVICE_AUTH_SIGNING_KEY must fail the guard
+        # just like a missing key (an empty key yields signing_key='' and every
+        # verification 401s). Strip whitespace so ' ' is also rejected.
+        signing_key_value = values.get("SERVICE_AUTH_SIGNING_KEY")
+        if (
+            any(mode == "broker" for mode in (identity_mode, index_mode, search_mode))
+            and not (
+                isinstance(signing_key_value, str) and signing_key_value.strip()
+            )
+        ):
+            raise ValueError(
+                "SERVICE_AUTH_SIGNING_KEY must be set to a non-empty value when any "
+                "MEMORY_*_MODE=broker; it must equal simple_agent's auth signing key "
+                "(single contract)."
+            )
         auth = ServiceAuthSettings(
             signing_key=get_value(
                 values,
@@ -98,13 +120,13 @@ class MemoryServiceSettings:
             db_path=Path(
                 get_value(values, "MEMORY_DB_PATH", "/var/lib/rag/agent_memory.db")
             ),
-            identity_mode=get_value(values, "MEMORY_IDENTITY_MODE", "broker"),
-            index_mode=get_value(values, "MEMORY_INDEX_MODE", "broker"),
-            search_mode=get_value(values, "MEMORY_SEARCH_MODE", "broker"),
+            identity_mode=identity_mode,
+            index_mode=index_mode,
+            search_mode=search_mode,
             documents_collection_name=get_value(
                 values,
                 "MEMORY_DOCUMENTS_COLLECTION",
-                "agent_memory",
+                "agent_documents",
             ),
             memory_collection_name=get_value(
                 values,

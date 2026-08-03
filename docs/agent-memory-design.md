@@ -73,7 +73,7 @@ memory_service/
   identity.py                  # IdentitySource Protocol + FakeIdentitySource + BrokerIdentitySource
   indexer.py                   # MemoryIndexer Protocol + BrokerMemoryIndexer (helper command publisher)
   searcher.py                  # MemorySearcher Protocol + BrokerMemorySearcher (helper command request/reply)
-  domain_handler.py            # MemoryDomainHandler: dispatch the 8 operations (requirements §7)
+  domain_handler.py            # MemoryDomainHandler: dispatch the 9 operations (requirements §7)
   domain_app.py                # MemoryDomainServerContext + create_domain_app / create_default_domain_app
   worker.py                    # process entrypoint (mirror workflow_log_service/worker.py)
 ```
@@ -161,12 +161,15 @@ reads (requirements §5) are a documented backfill tool implemented as a
 
 Two thin ports so the domain handler never touches the broker directly:
 
-- `MemoryIndexer(Protocol)`: `async index(records: list[MemoryRecord]) -> None`
-  (fire-and-forget). `BrokerMemoryIndexer` publishes a `HELPER_COMMAND`
+- `MemoryIndexer(Protocol)`: `async index(records: list[MemoryRecord], *,
+  collection_name: str = "") -> None` (fire-and-forget). The optional
+  `collection_name` overrides the indexer's configured collection (used by
+  `memory.documents.ingest` to target the distinct documents collection).
+  `BrokerMemoryIndexer` publishes a `HELPER_COMMAND`
   (`operation="memory_ingest"`) to `helper.retrieval_index.commands` with
   `MemoryChunkPayload`-shaped payloads and a `response_topic` of
   `helper.retrieval_index.results`; does not await. `FakeMemoryIndexer` records
-  calls.
+  calls (including the target collection).
 - `MemorySearcher(Protocol)`: `async search(scope, query, top_k) ->
   list[dict]` (semantic chat-history hits). `BrokerMemorySearcher` publishes a
   `HELPER_COMMAND` (`operation="memory_search"`) to `helper.retrieval.commands`,
@@ -183,7 +186,7 @@ producer and adds a consumer for the results topic in the domain app (§3.7).
 identity_source, producer, service_auth_settings, allowed_services)`.
 
 - `handle(envelope)`: parse `DomainCommandPayload`, verify service identity
-  (§8 of requirements), derive `owner_user_id`/`agent_id`, dispatch to the 8
+  (§8 of requirements), derive `owner_user_id`/`agent_id`, dispatch to the 9
   operation methods, build the DOMAIN_RESULT, and publish to the response
   topic (default `domain.memory.results`, override from
   `context.response_topic`) keyed by `task_id`.
@@ -201,11 +204,12 @@ Per-operation behavior:
 | operation | flow |
 | --- | --- |
 | `session.start` | idempotent upsert; returns session |
-| `message.record` | insert with dedup; after commit, fire-and-forget `indexer.index([MemoryRecord(kind='message')])`; `indexed` reflects whether the hand-off was queued |
+| `message.record` | insert with dedup; `content` is deterministically truncated to the documented 2048-char prefix (`_require_truncated_str`), so a long user turn is recorded rather than rejected; after commit, fire-and-forget `indexer.index([MemoryRecord(kind='message')])`; `indexed` reflects whether the hand-off was queued |
 | `session.close` | set closed |
 | `memory.compress` | load span messages, `compression.compress(...)`, deterministic `memory_id`, persist `MemoryRecord(kind='compression_summary')` (dedup by `memory_id`), fire-and-forget index, return condensed context |
-| `memory.lookup` | for `chat_history`: `searcher.search(...)` (semantic) — merged with compression summaries from SQLite when `session_ids` given; for `documents`: retrieval search hand-off over the same broker helper (project-RAG collection); for `user_profile_facts`: exact/keyword match over active facts (SQLite). Assemble per-source results + `sources`/`consulted` list |
-| `memory.sources` | counts per source for the scope |
+| `memory.lookup` | `query` is deterministically truncated to the documented 2048-char prefix (`_require_truncated_str`), so a long user-turn query searches rather than returning `validation_error` (server-side truncation is the single source of truth for every client). Then for `chat_history`: `searcher.search(...)` (semantic) — merged with compression summaries from SQLite when `session_ids` given; for `documents`: `searcher.search(..., collection_name=<stored ingest-time collection(s)>, session_ids=())` over the distinct documents collection(s) resolved from the `kind='document'` rows (request-level `collection_name` optionally filters; legacy rows fall back to the configured documents collection); for `user_profile_facts`: exact/keyword match over active facts (SQLite). Assemble per-source results + `sources`/`consulted` list |
+| `memory.sources` | counts per source for the scope; documents `available = count(kind='document') > 0` |
+| `memory.documents.ingest` | validate `documents[{doc_id,text,metadata?}]` (doc_id short, `text` uncapped; duplicate `doc_id`s within a request rejected), `_require_agent_match`, reject indexing into the chat-memory collection, persist `MemoryRecord(kind='document')` with the target collection stored in `memory_records.collection_name` in one `_mutate(..., key=f"documents:{sha256(request)}")` (dedup by `memory_id=doc_id`), fire-and-forget index targeting that collection, return `{documents:[{doc_id,recorded,indexed}], collection_name}` |
 | `profile.read` | profile + active facts |
 | `profile.update` | `supersede_fact` transaction, optional `basic_info_fields` reconcile, fire-and-forget index the new fact (kind='fact'), return fact + superseded + refreshed profile |
 
@@ -238,8 +242,14 @@ MEMORY_IDENTITY_MODE=broker | fake       # default broker; fake for standalone d
 MEMORY_ALLOWED_SERVICES=conversation-server
 MEMORY_INDEX_MODE=broker | fake          # fake indexes in-process for tests
 MEMORY_SEARCH_MODE=broker | fake
+MEMORY_COLLECTION=agent_memory           # chat_history/memory vector collection
+MEMORY_DOCUMENTS_COLLECTION=agent_documents  # distinct documents vector collection (B1)
 SERVICE_AUTH_SIGNING_KEY / _TOKEN_ISSUER / _TOKEN_AUDIENCE  (shared with simple_agent local signing key)
 ```
+
+`MemoryServiceSettings.from_values` raises `ValueError` when any
+`MEMORY_*_MODE=broker` and `SERVICE_AUTH_SIGNING_KEY` is not set explicitly
+(the B3 single signing-key contract — see §11).
 
 ### 3.9 `worker.py`
 
@@ -262,7 +272,10 @@ Retrieval service already owns the memory schemas
   memory fields (`memory_id`, `owner_id`, `agent_id`, `memory_type`) in
   `to_qdrant_payload`.
 - `IndexingService.index_chunks` is reused unchanged; the memory collection
-  name is `"agent_memory"` (configurable). `MemoryChunkPayload.point_identity`
+  name is `"agent_memory"` (configurable). `memory.documents.ingest` targets a
+  **distinct** documents collection (`MEMORY_DOCUMENTS_COLLECTION`, default
+  `agent_documents`) so documents are never mixed into the chat-memory
+  collection. `MemoryChunkPayload.point_identity`
   yields deterministic Qdrant point IDs, so re-indexing the same memory is
   idempotent.
 - `memory_service` publishes `helper.retrieval_index.commands` with
@@ -522,8 +535,9 @@ The developers implement in this order (each step is independently testable):
    AC-13).
 3. **memory_service domain handler** — `domain_handler.py` with fake
    indexer/searcher/identity; `domain_app.py`/`worker.py`/`config.py`.
-   Unit tests for all 8 operations (AC-1..15) using `FakeProducer` +
-   in-memory repo + fakes (mirror `tests/workflow_log/test_domain_handler.py`).
+   Unit tests for all 9 operations (AC-1..15 + B1 documents) using
+   `FakeProducer` + in-memory repo + fakes (mirror
+   `tests/workflow_log/test_domain_handler.py`).
 4. **retrieval_service hand-off** — `memory_ingest` on the index helper,
    `memory_search` on the retrieval helper, memory collection config.
    Unit tests in `tests/retrieval/`.
@@ -549,7 +563,7 @@ The developers implement in this order (each step is independently testable):
 
 | Layer | What | Fakes (same code paths) |
 | --- | --- | --- |
-| Unit — memory_service | Repository (SQLite on `:memory:` and in-memory), `CondenseV1Policy` determinism, `domain_handler` 8 operations, idempotency, error mapping, scope enforcement | `FakeProducer`, in-memory repo, `FakeMemoryIndexer`, `FakeMemorySearcher`, `FakeIdentitySource` |
+| Unit — memory_service | Repository (SQLite on `:memory:` and in-memory, incl. the `document`-kind CHECK migration), `CondenseV1Policy` determinism, `domain_handler` 9 operations, idempotency, error mapping, scope enforcement | `FakeProducer`, in-memory repo, `FakeMemoryIndexer`, `FakeMemorySearcher`, `FakeIdentitySource` |
 | Unit — retrieval_service | `memory_ingest`/`memory_search` command parsing + handler branches | existing fake Qdrant/embedding fixtures |
 | Integration — RAG repo | Compress→index→lookup round trip over a real (test) broker; `memory_id` dedup; profile event consumption | SQLite repo + real `CondenseV1Policy`; broker test harness from `tests/integration/` |
 | Unit — simple_agent | `provider_saga` compression injection and record hooks; `MemoryBrokerClient` envelope/correlation behavior | `FakeMemoryClient`, in-memory conversation repo |
@@ -603,3 +617,88 @@ Simple Agent repo:
 - `services/identity-server/src/identity_server/infrastructure/sqlite_identity_repository.py`
 - `services/identity-server/src/identity_server/worker.py`
 - `configs/conversation-server/*.yaml`, `contracts/openapi/conversation-server.yaml`
+
+---
+
+## 11. Auth / Isolation Boundary (B3)
+
+Sprint-B addition (2026-08-03). Formalizes the production **network-isolation
+boundary**, the **single signing-key contract**, and the **trusted-broker
+identity-event model**. This follows the user's auth directive
+(`connection-auth-boundary`): primary boundary = network isolation; token-level
+auth = simple_agent's auth service (RAG `shared/service_auth.py` is the mirror
+contract); do not build new crypto or identity-event signing.
+
+### 11.1 Port / trust inventory
+
+Production surface split into three trust tiers. Nothing in the RAG/memory
+stack is publicly reachable.
+
+| Tier | Surface | Notes |
+| --- | --- | --- |
+| Public (simple_agent edge) | `gateway-server :8000` (HTTP edge), `web-server :5173` | The only publicly reachable entry points, owned by simple_agent. No RAG/memory service is published. |
+| Private, SA-internal | all simple_agent `backend` APIs (`backend` network, `internal: true`) | Reachable only inside the SA mesh. |
+| Private, RAG/memory-only | `redpanda-rag-local:19092` (Redpanda **internal** listener, `rag-memory-test` network only); `qdrant-rag-local:6333/6334` (Qdrant REST/gRPC); Redis `:6379`; memory_service SQLite (filesystem); memory_service + retrieval workers (broker-only, no HTTP surface) | Reachable only from the SA mesh + RAG stack over the private `rag-memory-test` network. |
+
+- The host `127.0.0.1:9092` PLAINTEXT listener (RAG `examples/local/run-all.sh`)
+  is a **local-dev convenience ONLY**.
+- In production only the internal listener exists: RAG/memory + Redpanda +
+  Qdrant live on a private VPC/subnet (or private k8s namespace) reachable only
+  from the simple_agent mesh. **No public ingress/LB to memory_service,
+  Redpanda, or Qdrant.**
+
+### 11.2 Trusted-broker identity-event model
+
+`identity.user.events` is published by **identity-server (sole publisher)** on
+the private broker. memory_service consumes it **raw (no service token)** under
+the private-network trust boundary: event forgery requires already being inside
+the trusted network. **Do NOT build identity-event signing.**
+
+Payload contract (from SA
+`services/identity-server/.../sqlite_identity_repository.py`
+`_enqueue_identity_event`, `payload = {...}` at lines ~1096–1110):
+
+```jsonc
+{
+  "event_id": "evt_identity_<event>_<user_id>_<revision>",
+  "event_type": "identity.user.registered" | "identity.user.status_changed",
+  "event_version": 1,
+  "user_id": "user_...",
+  "identity_revision": 1,
+  "role": "free",
+  "account_status": "active",
+  "email": "a@b.c",
+  "display_name": "A",
+  "invite_id": "inv_..." | null,
+  "initial_credit": "1" | null,
+  "grant_policy_version": "initial-backfill-v1" | null,
+  "occurred_at": "2026-08-03T00:00:00Z"
+}
+```
+
+**Declared follow-up:** if the broker is ever exposed beyond the private
+network, identity-event signing + verification becomes **REQUIRED**.
+
+### 11.3 Threat model (short)
+
+- **Assets:** chat memory (messages/summaries), user facts/profiles.
+- **Boundaries:**
+  1. public edge → gateway (simple_agent owns authn/authz);
+  2. SA mesh → broker (private network; service tokens for commands);
+  3. broker → memory_service / retrieval (private network);
+  4. host-local RAG stack (Qdrant / Redis / SQLite).
+- **Key mitigations:**
+  - `owner_user_id` derived only from the **verified token**; `X-Actor-User-ID`
+    header must equal the token's `actor_user_id`; Qdrant queries filter on
+    `owner_id`/`agent_id` (the memory-aware search path overrides the query
+    filter).
+  - HS256 token checks: TTL 300s, `iss`/`aud` verification, `svc` allowed-set
+    (`MEMORY_ALLOWED_SERVICES`).
+  - **Single signing-key contract** (one key sourced from simple_agent's auth) +
+    broker-mode guard in `memory_service/config.py` (Dev 1).
+  - Trusted-broker identity events: residual risk **accepted** under the private
+    network model.
+  - `agent_id` is caller-asserted; a defense-in-depth agent-ownership verifier is
+    a **declared follow-up**.
+  - Saga best-effort logging prints only op name + error class (no message
+    content / tokens).

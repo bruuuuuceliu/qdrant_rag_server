@@ -166,10 +166,11 @@ async def test_ac7_lookup_returns_per_source_results_and_consulted(seeded_handle
     )
     result = _result(await handler.handle(command("memory.lookup", {"query": "gluten"})))
     assert set(result["sources"]) == {"chat_history", "documents", "user_profile_facts"}
-    # v1: documents has no distinct collection and is reported not-consulted/
-    # empty rather than mislabeling chat-memory points as documents.
+    # B1: documents is now a real source — every requested source is consulted.
+    # No documents have been ingested in this test, so the documents result is
+    # empty (count-gate short-circuits before the searcher is called).
     assert result["consulted"] == {
-        "chat_history": True, "documents": False, "user_profile_facts": True
+        "chat_history": True, "documents": True, "user_profile_facts": True
     }
     assert result["results"]["documents"] == []
     assert result["results"]["user_profile_facts"], "fact source should match"
@@ -195,6 +196,310 @@ async def test_ac8_lookup_scoped_to_verified_owner(seeded_handler) -> None:
     result = _result(await handler.handle(command("memory.lookup", {"query": "secret"})))
     chat_items = result["results"]["chat_history"]
     assert all(item.get("session_id") != "con_u2" for item in chat_items)
+
+
+# --- B1 owner-scoped documents source --------------------------------------
+
+
+async def test_documents_ingest_persists_kind_document(seeded_handler) -> None:
+    handler = seeded_handler
+    result = _result(
+        await handler.handle(
+            command(
+                "memory.documents.ingest",
+                {"documents": [{"doc_id": "doc_1", "text": "user handbook on refunds"}]},
+            )
+        )
+    )
+    assert result["documents"][0]["recorded"] is True
+    assert result["documents"][0]["indexed"] is True
+    assert result["collection_name"] == handler._documents_collection_name
+
+    records = await handler._repository.list_memory_records("user_1", "agent_1")
+    docs = [record for record in records if record.kind == "document"]
+    assert len(docs) == 1
+    assert docs[0].memory_id == "doc_1"
+    assert docs[0].owner_user_id == "user_1"
+    assert docs[0].agent_id == "agent_1"
+    assert docs[0].content == "user handbook on refunds"
+
+    # the fake indexer received the records targeting the documents collection
+    assert handler._indexer.collections == [handler._documents_collection_name]
+
+
+async def test_documents_ingest_dedupes_same_doc_id(seeded_handler) -> None:
+    handler = seeded_handler
+    first = _result(
+        await handler.handle(
+            command(
+                "memory.documents.ingest",
+                {"documents": [{"doc_id": "doc_1", "text": "user manual"}]},
+            )
+        )
+    )
+    assert first["documents"][0]["recorded"] is True
+    # a different request (a distinct idempotency key changes the request hash,
+    # hence the idempotency key) bypasses idempotency replay and hits the
+    # memory_id dedup instead
+    second = _result(
+        await handler.handle(
+            command(
+                "memory.documents.ingest",
+                {
+                    "idempotency_key": "k2",
+                    "documents": [{"doc_id": "doc_1", "text": "user manual"}],
+                },
+            )
+        )
+    )
+    assert second["documents"][0]["recorded"] is False
+    assert second["documents"][0]["indexed"] is False
+    records = await handler._repository.list_memory_records("user_1", "agent_1")
+    assert len([record for record in records if record.kind == "document"]) == 1
+
+
+async def test_documents_sources_availability(seeded_handler) -> None:
+    handler = seeded_handler
+    before = _result(await handler.handle(command("memory.sources", {})))
+    docs_before = next(s for s in before["sources"] if s["source"] == "documents")
+    assert docs_before["available"] is False
+    assert docs_before["count"] == 0
+
+    await handler.handle(
+        command(
+            "memory.documents.ingest",
+            {"documents": [{"doc_id": "doc_1", "text": "user manual"}]},
+        )
+    )
+    after = _result(await handler.handle(command("memory.sources", {})))
+    docs_after = next(s for s in after["sources"] if s["source"] == "documents")
+    assert docs_after["available"] is True
+    assert docs_after["count"] == 1
+
+
+async def test_documents_lookup_scoped_to_owner(seeded_handler) -> None:
+    handler = seeded_handler
+    # user_2 ingests a document; user_1 must never see it
+    await handler.handle(
+        command(
+            "memory.documents.ingest",
+            {"documents": [{"doc_id": "doc_u2", "text": "user 2 private document"}]},
+            actor_user_id="user_2",
+        )
+    )
+    # user_1's documents lookup has no docs -> count-gate returns [] and the
+    # searcher is not consulted at all for user_1
+    result = _result(
+        await handler.handle(
+            command("memory.lookup", {"query": "private", "sources": ["documents"]})
+        )
+    )
+    assert result["results"]["documents"] == []
+    assert not any(call["owner_user_id"] == "user_1" for call in handler._searcher.calls)
+
+    # once user_1 has a doc, the documents search runs scoped to user_1/agent_1
+    # and is NEVER session-filtered
+    await handler.handle(
+        command(
+            "memory.documents.ingest",
+            {"documents": [{"doc_id": "doc_u1", "text": "user 1 manual"}]},
+        )
+    )
+    lookup = _result(
+        await handler.handle(
+            command("memory.lookup", {"query": "manual", "sources": ["documents"]})
+        )
+    )
+    assert lookup["consulted"] == {"documents": True}
+    assert lookup["results"]["documents"] == []
+    call = handler._searcher.calls[-1]
+    assert call["owner_user_id"] == "user_1"
+    assert call["agent_id"] == "agent_1"
+    assert call["collection_name"] == handler._documents_collection_name
+    assert call["session_ids"] == ()
+
+
+# --- B1 review-fix regressions ---------------------------------------------
+
+
+async def test_documents_ingest_accepts_long_text(seeded_handler) -> None:
+    """B1-1: document bodies may exceed 2048 chars; only short identifier
+    fields keep the 2048 cap."""
+    handler = seeded_handler
+    long_text = "long-text-content-" * 400  # ~7600 chars, no trailing space
+    assert len(long_text) > 2048
+    result = _result(
+        await handler.handle(
+            command(
+                "memory.documents.ingest",
+                {"documents": [{"doc_id": "doc_long", "text": long_text}]},
+            )
+        )
+    )
+    assert result["documents"][0]["recorded"] is True
+    records = await handler._repository.list_memory_records("user_1", "agent_1")
+    docs = [record for record in records if record.kind == "document"]
+    assert docs[0].content == long_text
+
+    # the 2048 cap still applies to the short doc_id field
+    bad = await handler.handle(
+        command(
+            "memory.documents.ingest",
+            {"documents": [{"doc_id": "x" * 2049, "text": "body"}]},
+        )
+    )
+    assert _result(bad)["error"]["code"] == "validation_error"
+
+
+async def test_documents_ingest_rejects_duplicate_doc_id_within_request(seeded_handler) -> None:
+    """B1-3: duplicate doc_ids in one request are a validation error, so the
+    per-doc recorded/status aggregation is unambiguous."""
+    handler = seeded_handler
+    result = await handler.handle(
+        command(
+            "memory.documents.ingest",
+            {
+                "documents": [
+                    {"doc_id": "doc_x", "text": "first version"},
+                    {"doc_id": "doc_x", "text": "second version"},
+                ]
+            },
+        )
+    )
+    error = _result(result)["error"]
+    assert error["code"] == "validation_error"
+    assert "duplicate doc_id" in error["message"]
+    # nothing was persisted
+    records = await handler._repository.list_memory_records("user_1", "agent_1")
+    assert [record for record in records if record.kind == "document"] == []
+
+
+async def test_documents_ingest_wires_per_doc_metadata(seeded_handler) -> None:
+    """B1-4: per-document metadata is stored on the record and reaches the
+    indexer (and from there the Qdrant payload)."""
+    handler = seeded_handler
+    result = _result(
+        await handler.handle(
+            command(
+                "memory.documents.ingest",
+                {
+                    "documents": [
+                        {
+                            "doc_id": "doc_m",
+                            "text": "handbook",
+                            "metadata": {"title": "Refund Handbook", "tags": ["finance"]},
+                        }
+                    ]
+                },
+            )
+        )
+    )
+    assert result["documents"][0]["recorded"] is True
+    # stored on the durable record
+    records = await handler._repository.list_memory_records("user_1", "agent_1")
+    doc = next(record for record in records if record.kind == "document")
+    assert doc.metadata == {"title": "Refund Handbook", "tags": ["finance"]}
+    # forwarded into the indexer payload
+    indexed_record = handler._indexer.indexed[0][0]
+    assert indexed_record.metadata == {"title": "Refund Handbook", "tags": ["finance"]}
+
+
+async def test_documents_ingest_rejects_chat_memory_collection(seeded_handler) -> None:
+    """B1-6: an explicit request collection_name equal to the chat-memory
+    collection is rejected (trust-based guard against cross-collection mixing)."""
+    handler = seeded_handler
+    result = await handler.handle(
+        command(
+            "memory.documents.ingest",
+            {
+                "collection_name": "agent_memory",
+                "documents": [{"doc_id": "doc_bad", "text": "never indexed here"}],
+            },
+        )
+    )
+    error = _result(result)["error"]
+    assert error["code"] == "validation_error"
+    assert "chat-memory collection" in error["message"]
+    records = await handler._repository.list_memory_records("user_1", "agent_1")
+    assert [record for record in records if record.kind == "document"] == []
+
+
+async def test_lookup_resolves_ingest_time_document_collection(seeded_handler) -> None:
+    """B1-2: ingest-time collection == lookup-time collection.
+
+    Ingesting into a non-default collection is honored by memory.documents.ingest;
+    memory.lookup resolves that stored collection from the rows, so the caller
+    need not re-send it. A request-level collection_name optionally filters.
+    """
+    handler = seeded_handler
+    ingest = _result(
+        await handler.handle(
+            command(
+                "memory.documents.ingest",
+                {
+                    "collection_name": "custom_docs",
+                    "documents": [{"doc_id": "doc_c", "text": "custom collection doc"}],
+                },
+            )
+        )
+    )
+    assert ingest["collection_name"] == "custom_docs"
+    assert ingest["documents"][0]["indexed"] is True
+
+    # lookup without a collection_name resolves the stored ingest-time collection
+    lookup = _result(
+        await handler.handle(
+            command("memory.lookup", {"query": "custom", "sources": ["documents"]})
+        )
+    )
+    assert lookup["consulted"] == {"documents": True}
+    call = handler._searcher.calls[-1]
+    assert call["collection_name"] == "custom_docs"
+
+    # an explicit matching collection_name still searches the same collection
+    lookup_explicit = _result(
+        await handler.handle(
+            command(
+                "memory.lookup",
+                {"query": "custom", "sources": ["documents"], "collection_name": "custom_docs"},
+            )
+        )
+    )
+    assert lookup_explicit["results"]["documents"] == []
+    assert handler._searcher.calls[-1]["collection_name"] == "custom_docs"
+
+    # an explicit mismatched collection_name filters the resolved set to empty
+    # (no documents were indexed into the default collection)
+    lookup_mismatch = _result(
+        await handler.handle(
+            command(
+                "memory.lookup",
+                {
+                    "query": "custom",
+                    "sources": ["documents"],
+                    "collection_name": handler._documents_collection_name,
+                },
+            )
+        )
+    )
+    assert lookup_mismatch["results"]["documents"] == []
+    assert lookup_mismatch["consulted"] == {"documents": True}
+
+
+async def test_scope_rejects_actor_user_id_over_128(seeded_handler) -> None:
+    """B3-2: owner_user_id (token actor_user_id) is bounded at 128 chars (§8)."""
+    handler = seeded_handler
+    long_user = "u" * 129
+    result = await handler.handle(
+        command(
+            "session.start",
+            {"session_id": "con_1", "agent_id": "agent_1"},
+            actor_user_id=long_user,
+        )
+    )
+    error = _result(result)["error"]
+    assert error["code"] == "forbidden"
+    assert "128" in error["message"]
 
 
 # --- FR-4 profile and facts ------------------------------------------------
@@ -379,3 +684,71 @@ async def test_cross_owner_session_rejected(seeded_handler) -> None:
         command("session.start", {"session_id": "con_shared", "agent_id": "agent_1"}, actor_user_id="user_2")
     )
     assert _result(result)["error"]["code"] == "forbidden"
+
+
+# --- Follow-up A: long-turn cap regression ----------------------------------
+#
+# QA concern #1 (Sprint B): message.record content and memory.lookup query were
+# capped at 2048 chars via _require_str, so a >2048-char user turn was silently
+# NOT recorded and the B2 lookup (the current user message content) failed with
+# validation_error -> the retrieved-context block silently disappeared. The fix
+# truncates both deterministically to the 2048 prefix (never rejects).
+
+
+async def test_message_record_truncates_long_content(seeded_handler) -> None:
+    """Follow-up A: a >2048-char message is recorded, not validation_error-dropped.
+
+    The stored content is deterministically truncated to the documented 2048-char
+    prefix (the exact string prefix is kept), so the session's message history is
+    intact and the bounded text flows through the index hand-off unchanged.
+    """
+    handler = seeded_handler
+    await handler.handle(command("session.start", {"session_id": "con_1", "agent_id": "agent_1"}))
+    long_content = "long-turn-" * 500  # ~4500 chars
+    assert len(long_content) > 2048
+    result = _result(
+        await handler.handle(
+            command(
+                "message.record",
+                {
+                    "message_id": "msg_long",
+                    "session_id": "con_1",
+                    "agent_id": "agent_1",
+                    "role": "user",
+                    "sequence_number": 1,
+                    "content": long_content,
+                },
+            )
+        )
+    )
+    assert result.get("ok", True) is not False
+    assert result["recorded"] is True
+    stored = await handler._repository.get_message("user_1", "msg_long")
+    assert stored is not None
+    assert stored.content == long_content[:2048]
+    assert stored.content.startswith("long-turn-")
+    # the memory record handed to the indexer carries the same bounded content
+    indexed_records = handler._indexer.indexed[-1]
+    assert indexed_records[0].content == long_content[:2048]
+
+
+async def test_lookup_truncates_long_query(seeded_handler) -> None:
+    """Follow-up A: a >2048-char lookup query is truncated, not validation_error.
+
+    The query keeps the exact 2048-char prefix, the search is consulted with that
+    truncated query, and a matching hit is returned so the B2 retrieved-context
+    block can appear for long user turns.
+    """
+    handler = seeded_handler
+    handler._searcher.hits = [{"source_id": "msg_1", "text": "match", "score": 0.9}]
+    long_query = "Q" * 5000
+    assert len(long_query) > 2048
+    result = _result(
+        await handler.handle(
+            command("memory.lookup", {"query": long_query, "sources": ["chat_history"]})
+        )
+    )
+    assert result.get("ok", True) is not False
+    assert result["query"] == long_query[:2048]
+    assert handler._searcher.calls[-1]["query"] == long_query[:2048]
+    assert result["results"]["chat_history"][0]["source_id"] == "msg_1"

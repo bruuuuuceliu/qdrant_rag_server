@@ -106,3 +106,49 @@ async def test_memory_roundtrip_compress_then_lookup(memory_handler) -> None:
     # Every command published a DOMAIN_RESULT on the memory results topic
     topics = {topic for topic, _, _ in bus.published}
     assert TOPICS.domain_memory_results in topics
+
+
+async def test_memory_roundtrip_documents_ingest_then_lookup() -> None:
+    """B1 round-trip: ingest a document -> lookup hits the documents source.
+
+    The documents lookup is scoped, targets the distinct documents collection,
+    and is NEVER session-filtered.
+    """
+    searcher = FakeMemorySearcher(
+        hits=[{"source_id": "doc_1", "text": "user handbook on refunds", "score": 0.9}]
+    )
+    repository = MemoryInMemoryRepository()
+    identity = FakeIdentitySource(repository)
+    handler = MemoryDomainHandler(
+        repository=repository,
+        compression=CondenseV1Policy(),
+        indexer=FakeMemoryIndexer(),
+        searcher=searcher,
+        identity_source=identity,
+        producer=None,
+        documents_collection_name="agent_documents",
+    )
+    await handler._identity_source.seed()
+
+    ingest = await handler.handle(
+        command(
+            "memory.documents.ingest",
+            {"documents": [{"doc_id": "doc_1", "text": "user handbook on refunds"}]},
+        )
+    )
+    payload = ingest.payload["result"]
+    assert payload["documents"][0]["recorded"] is True
+    assert payload["collection_name"] == "agent_documents"
+
+    lookup = await handler.handle(
+        command("memory.lookup", {"query": "refund", "sources": ["documents"]})
+    )
+    result_payload = lookup.payload["result"]
+    assert result_payload["consulted"] == {"documents": True}
+    assert result_payload["results"]["documents"][0]["source_id"] == "doc_1"
+    assert result_payload["results"]["documents"][0]["source"] == "documents"
+    call = searcher.calls[-1]
+    assert call["owner_user_id"] == "user_1"
+    assert call["agent_id"] == "agent_1"
+    assert call["collection_name"] == "agent_documents"
+    assert call["session_ids"] == ()

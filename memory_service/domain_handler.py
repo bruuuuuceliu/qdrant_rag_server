@@ -1,8 +1,8 @@
 """Memory domain broker handler.
 
-Consumes ``domain.memory.commands`` and dispatches the eight memory operations
+Consumes ``domain.memory.commands`` and dispatches the nine memory operations
 (requirements §7): session start/close, message record, history compression,
-cross-source lookup, source listing, and profile read/update.
+cross-source lookup, source listing, document ingest, and profile read/update.
 
 Every operation derives ``owner_user_id``/``agent_id`` from the caller's
 verified service token (§8), runs mutation + idempotency writes in one
@@ -60,6 +60,12 @@ _SOURCE_ORDER = {"chat_history": 0, "documents": 1, "user_profile_facts": 2}
 _VALID_ROLES = ("user", "assistant")
 _LOOKUP_MERGE_SCORE = 1.0
 _FACT_SCORE = 1.0
+# Documented per-message memory cap (§7.2.2 message.record content,
+# §7.2.5 memory.lookup query): content/query longer than this are
+# deterministically truncated to the exact prefix (never rejected), so a long
+# user turn is always recorded and always searchable. Short identifier-like
+# fields keep the harder 2048-char rejection in ``_require_str``.
+_MEMORY_CONTENT_CAP = 2048
 
 
 class MemoryAuthError(PermissionError):
@@ -207,10 +213,17 @@ class MemoryDomainHandler:
         actor_header = headers.get("X-Actor-User-ID", "")
         if actor_header and actor_header != claims.actor_user_id:
             raise MemoryAuthError("X-Actor-User-ID does not match token", "forbidden")
+        # B3-2: requirements §8 bounds owner_user_id (the token's actor_user_id)
+        # at 128 chars, enforced after token verification.
+        owner_user_id = claims.actor_user_id
+        if len(owner_user_id) > 128:
+            raise MemoryAuthError(
+                "actor_user_id exceeds 128 characters", "forbidden"
+            )
         agent_id = headers.get("X-Agent-ID", "").strip()
         if not agent_id:
             raise MemoryAuthError("missing X-Agent-ID header", "forbidden")
-        return RequestScope(owner_user_id=claims.actor_user_id, agent_id=agent_id)
+        return RequestScope(owner_user_id=owner_user_id, agent_id=agent_id)
 
     # --- FR-1 sessions and messages ---------------------------------------
 
@@ -262,7 +275,10 @@ class MemoryDomainHandler:
         if role not in _VALID_ROLES:
             raise ValueError("message.record role must be 'user' or 'assistant'")
         sequence_number = _require_int(request, "sequence_number", minimum=1)
-        content = _require_str(request, "content")
+        # Content is deterministically truncated to _MEMORY_CONTENT_CAP rather
+        # than rejected, so a >2048-char user turn is still recorded (bounded)
+        # and the session's message history is intact (§7.2.2).
+        content = _require_truncated_str(request, "content")
         key = str(request.get("idempotency_key") or f"message:{message_id}")
         existing = await self._repository.get_message(scope.owner_user_id, message_id)
         if existing is not None:
@@ -432,22 +448,38 @@ class MemoryDomainHandler:
         self, scope: RequestScope, payload: DomainCommandPayload
     ) -> dict[str, Any]:
         request = payload.request
-        query = _require_str(request, "query")
+        # The lookup query is the current user message content in the B2 saga
+        # (which may exceed the message cap). Truncate deterministically to the
+        # prefix instead of rejecting, so a long user turn still produces a
+        # working memory.lookup and the retrieved-context block can appear
+        # (§7.2.5). Server-side truncation is the single source of truth,
+        # protecting every client.
+        query = _require_truncated_str(request, "query")
         top_k = int(request.get("top_k") or 5)
         if top_k < 1:
             raise ValueError("memory.lookup top_k must be >= 1")
         requested = _requested_sources(request)
         session_ids = _str_tuple(request.get("session_ids"))
+        # B1-2: honor the request-level collection_name as an optional filter for
+        # the documents source. When absent, the collection is resolved from the
+        # document rows' stored ingest-time collection, so ingest-time and
+        # lookup-time collections are consistent by default.
+        documents_collection_name = str(request.get("collection_name") or "")
         started = time.monotonic()
         results: dict[str, list[dict[str, Any]]] = {}
         consulted: dict[str, bool] = {}
         for source in _ordered_sources(requested):
-            matched = await self._lookup_source(scope, source, query, top_k, session_ids)
+            matched = await self._lookup_source(
+                scope,
+                source,
+                query,
+                top_k,
+                session_ids,
+                documents_collection_name=documents_collection_name,
+            )
             results[source] = matched
-            # FR-3.3: every requested source was searched. ``documents`` is
-            # reported as not-consulted because v1 has no distinct document
-            # collection (the source is unavailable/empty rather than searched).
-            consulted[source] = source != "documents"
+            # FR-3.3: every requested source was searched.
+            consulted[source] = True
         ordered = [s for s in _ordered_sources(requested) if results[s]]
         ordered += [s for s in _ordered_sources(requested) if not results[s]]
         response: dict[str, Any] = {
@@ -483,16 +515,111 @@ class MemoryDomainHandler:
                     {"source": source, "available": True, "count": count + summaries}
                 )
             elif source == "documents":
-                # v1 honesty: no distinct document collection is provisioned, so
-                # the documents source is unavailable rather than claiming 0
-                # documents in the shared agent_memory collection.
-                entries.append({"source": source, "available": False, "count": 0})
+                count = await self._repository.count_memory_records(
+                    scope.owner_user_id, scope.agent_id, kind="document"
+                )
+                entries.append(
+                    {"source": source, "available": count > 0, "count": count}
+                )
             else:
                 count = await self._repository.count_active_facts(scope.owner_user_id)
                 entries.append({"source": source, "available": True, "count": count})
         return {
             "scope": {"owner_user_id": scope.owner_user_id, "agent_id": scope.agent_id},
             "sources": entries,
+        }
+
+    # --- B1 owner-scoped documents source ----------------------------------
+
+    async def memory_documents_ingest(
+        self, scope: RequestScope, payload: DomainCommandPayload
+    ) -> dict[str, Any]:
+        """Ingest owner/agent-scoped documents into the distinct documents
+        collection (FR-3.1 ``documents`` source). Each document is persisted as
+        a ``kind='document'`` memory record; vector indexing is the same
+        fire-and-forget ``memory_ingest`` hand-off targeting the documents
+        collection (default ``MEMORY_DOCUMENTS_COLLECTION``)."""
+        request = payload.request
+        documents = request.get("documents")
+        if not isinstance(documents, list) or not documents:
+            raise ValueError(
+                "memory.documents.ingest requires a non-empty 'documents' list"
+            )
+        agent_id = str(request.get("agent_id") or scope.agent_id)
+        _require_agent_match(scope, agent_id)
+        # B1-6 trust-based collection validation: a caller must never index
+        # documents into the chat-memory collection. The guard applies only to a
+        # non-empty request `collection_name`; the operator-configured documents
+        # collection (the default when the request omits or empties the field) is
+        # trusted (validated against config defaults, not a hardcoded list;
+        # §7.2.9).
+        requested_collection = request.get("collection_name")
+        target = str(requested_collection or self._documents_collection_name)
+        self._validate_documents_collection(target, explicit=bool(requested_collection))
+        now = iso_utc_now()
+        records: list[MemoryRecord] = []
+        seen_doc_ids: set[str] = set()
+        for item in documents:
+            if not isinstance(item, dict):
+                raise ValueError("each document entry must be an object")
+            doc_id = _require_str(item, "doc_id")
+            # B1-3: reject duplicate doc_ids within one request so the per-doc
+            # recorded/status aggregation is unambiguous (a deduped second entry
+            # would otherwise flip recorded_by_id to False while the row exists).
+            if doc_id in seen_doc_ids:
+                raise ValueError(f"duplicate doc_id within one request: {doc_id}")
+            seen_doc_ids.add(doc_id)
+            # B1-1: doc_id stays short (_require_str keeps the 2048 cap); text
+            # is a long document body and only needs to be a non-empty string.
+            text = _require_long_text(item, "text")
+            records.append(
+                MemoryRecord(
+                    memory_id=doc_id,
+                    owner_user_id=scope.owner_user_id,
+                    agent_id=scope.agent_id,
+                    kind="document",
+                    content=text,
+                    collection_name=target,
+                    metadata=dict(item.get("metadata", {}) or {}),
+                    created_at=now,
+                )
+            )
+
+        async def run(tx: MemoryTransaction) -> dict[str, Any]:
+            statuses: list[dict[str, Any]] = []
+            for record in records:
+                recorded = tx.insert_memory_record(record)
+                statuses.append({"doc_id": record.memory_id, "recorded": recorded})
+            return {"documents": statuses}
+
+        result = await self._mutate(
+            "memory.documents.ingest",
+            request,
+            f"documents:{_canonical_hash(request)}",
+            run,
+            owner_user_id=scope.owner_user_id,
+        )
+        recorded_by_id = {
+            entry["doc_id"]: bool(entry["recorded"]) for entry in result["documents"]
+        }
+        to_index = [record for record in records if recorded_by_id[record.memory_id]]
+        # Async projection: `indexed=True` means the index command was *queued*,
+        # not that Qdrant holds the points. SQLite is the source of truth; the
+        # only recovery path for a lost hand-off is the §9 re-drive seam (a
+        # periodic job re-indexing memory_records lacking a Qdrant point).
+        indexed = bool(
+            await self._try_index(to_index, collection_name=target) if to_index else False
+        )
+        return {
+            "documents": [
+                {
+                    "doc_id": doc_id,
+                    "recorded": recorded_by_id[doc_id],
+                    "indexed": indexed if recorded_by_id[doc_id] else False,
+                }
+                for doc_id in recorded_by_id
+            ],
+            "collection_name": target,
         }
 
     # --- FR-4 profile and facts --------------------------------------------
@@ -624,17 +751,60 @@ class MemoryDomainHandler:
         query: str,
         top_k: int,
         session_ids: tuple[str, ...],
+        *,
+        documents_collection_name: str = "",
     ) -> list[dict[str, Any]]:
         if source == "chat_history":
             return await self._lookup_chat_history(scope, query, top_k, session_ids)
         if source == "documents":
-            # v1 honesty: no distinct document collection is provisioned — the
-            # documents collection name resolves to the same ``agent_memory``
-            # collection as chat_history. Searching it would mislabel chat-memory
-            # points as documents, so the source is reported unavailable/empty
-            # instead of returning a misleading result.
-            return []
+            return await self._lookup_documents(
+                scope, query, top_k, documents_collection_name
+            )
         return await self._lookup_facts(scope.owner_user_id, query, top_k)
+
+    async def _lookup_documents(
+        self,
+        scope: RequestScope,
+        query: str,
+        top_k: int,
+        collection_name: str = "",
+    ) -> list[dict[str, Any]]:
+        # B1-2: resolve the collection(s) from the rows actually indexed at
+        # ingest-time, so ingest-time == lookup-time even for a non-default
+        # collection. A request-level `collection_name` is an optional filter.
+        collections = await self._repository.list_document_collections(
+            scope.owner_user_id, scope.agent_id
+        )
+        if not collections:
+            # No document row carries a collection: either there are no
+            # documents, or they predate the collection column (legacy). Fall
+            # back to the count-gate, then the configured documents collection.
+            count = await self._repository.count_memory_records(
+                scope.owner_user_id, scope.agent_id, kind="document"
+            )
+            if count == 0:
+                return []
+            collections = (self._documents_collection_name,)
+        if collection_name:
+            collections = tuple(c for c in collections if c == collection_name)
+        if not collections:
+            return []
+        # Documents are NEVER session-filtered: the session filter only narrows
+        # chat_history. A missing/empty documents collection would raise on
+        # search, so the collection-resolution above short-circuits that case.
+        hits: list[dict[str, Any]] = []
+        for name in collections:
+            hits.extend(
+                await self._searcher.search(
+                    scope,
+                    query,
+                    top_k,
+                    collection_name=name,
+                    session_ids=(),
+                )
+            )
+        hits.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
+        return [_hit_item("documents", hit) for hit in hits[:top_k]]
 
     async def _lookup_chat_history(
         self,
@@ -683,6 +853,20 @@ class MemoryDomainHandler:
             for fact in matched[:top_k]
         ]
 
+    def _validate_documents_collection(self, collection_name: str, *, explicit: bool) -> None:
+        """Trust-based guard (B1-6): documents must never land in the chat-memory
+        collection.
+
+        Only an explicitly-supplied request ``collection_name`` is checked;
+        the operator-configured documents collection (``explicit=False``) is
+        trusted. Config defaults are compared, not a hardcoded list.
+        """
+        if explicit and collection_name == self._memory_collection_name:
+            raise ValueError(
+                f"collection_name {collection_name!r} is the chat-memory collection; "
+                "documents cannot be indexed into it"
+            )
+
     async def _mutate(
         self,
         operation: str,
@@ -714,11 +898,11 @@ class MemoryDomainHandler:
             )
             return result
 
-    async def _try_index(self, records: list[MemoryRecord]) -> bool:
+    async def _try_index(self, records: list[MemoryRecord], *, collection_name: str = "") -> bool:
         if not records:
             return True
         try:
-            await self._indexer.index(records)
+            await self._indexer.index(records, collection_name=collection_name)
             return True
         except Exception:  # noqa: BLE001 - indexing is a best-effort projection
             return False
@@ -760,6 +944,7 @@ _OPERATIONS = {
     "memory.compress": MemoryDomainHandler.memory_compress,
     "memory.lookup": MemoryDomainHandler.memory_lookup,
     "memory.sources": MemoryDomainHandler.memory_sources,
+    "memory.documents.ingest": MemoryDomainHandler.memory_documents_ingest,
     "profile.read": MemoryDomainHandler.profile_read,
     "profile.update": MemoryDomainHandler.profile_update,
 }
@@ -814,6 +999,39 @@ def _require_str(request: dict[str, Any], name: str) -> str:
         raise ValueError(f"missing required field: {name}")
     if len(value) > 2048:
         raise ValueError(f"field {name} exceeds 2048 characters")
+    return value
+
+
+def _require_truncated_str(
+    request: dict[str, Any], name: str, *, cap: int = _MEMORY_CONTENT_CAP
+) -> str:
+    """Require a non-empty string; deterministically truncate to ``cap`` chars.
+
+    Used for ``message.record`` content and ``memory.lookup`` query, both of
+    which legitimately exceed the 2048-char cap that ``_require_str`` applies to
+    short identifier-like fields. Truncation keeps the exact string prefix and
+    is the documented contract (§7.2.2 / §7.2.5): a long user turn is recorded
+    (history intact, bounded) and a long lookup query searches rather than being
+    rejected with ``validation_error``. Truncating server-side makes this the
+    single source of truth for every client.
+    """
+    value = str(request.get(name) or "").strip()
+    if not value:
+        raise ValueError(f"missing required field: {name}")
+    if len(value) > cap:
+        value = value[:cap]
+    return value
+
+
+def _require_long_text(request: dict[str, Any], name: str) -> str:
+    """Require a non-empty string but do NOT cap its length (B1-1).
+
+    Used for document bodies, which legitimately exceed the 2048-char limit
+    applied to short identifier-like fields by ``_require_str``.
+    """
+    value = str(request.get(name) or "").strip()
+    if not value:
+        raise ValueError(f"missing required field: {name}")
     return value
 
 

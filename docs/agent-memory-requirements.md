@@ -318,15 +318,16 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_order
     ON messages(session_id, sequence_number);
 
 -- Memory records: messages (kind='message'), compressed summaries
--- (kind='compression_summary'), and facts mirrored for semantic lookup
--- (kind='fact'). Vector indexing is a projection of this table via
--- retrieval_service; SQLite remains the source of truth.
+-- (kind='compression_summary'), facts mirrored for semantic lookup
+-- (kind='fact'), and owner/agent-scoped documents (kind='document', B1).
+-- Vector indexing is a projection of this table via retrieval_service; SQLite
+-- remains the source of truth.
 CREATE TABLE IF NOT EXISTS memory_records (
     memory_id         TEXT PRIMARY KEY,
     session_id        TEXT,
     owner_user_id     TEXT NOT NULL,
     agent_id          TEXT NOT NULL,
-    kind              TEXT NOT NULL CHECK (kind IN ('message', 'compression_summary', 'fact')),
+    kind              TEXT NOT NULL CHECK (kind IN ('message', 'compression_summary', 'fact', 'document')),
     content           TEXT NOT NULL,
     covered_from      INTEGER,                -- compression span, inclusive
     covered_to        INTEGER,                -- compression span, inclusive
@@ -425,7 +426,7 @@ edge is **not** extended.
 | `headers` (request, auth) | `X-Service-Name`, `Authorization: Bearer <service-token>`, `X-Actor-User-ID`, `X-Actor-Role`, `X-Agent-ID`, `traceparent` (see §8). Local/fake mode mints a real token with the local signing key over the same code path. |
 | `payload` (request) | `{operation, request: {...}, context: {...}, source_message_id: "..."}` (the `DomainCommandPayload` shape) |
 | `payload` (reply) | `{operation, result: {...}, attempt, retryable, error, source_message_id}` (the `DomainResultPayload` shape) |
-| **Publish key (partitioning)** | session-scoped ops (`session.start`, `message.record`, `session.close`, `memory.compress`) → `session_id`; user-scoped ops (`memory.lookup`, `memory.sources`, `profile.read`, `profile.update`) → `owner_user_id`. This preserves per-session/per-user ordering. |
+| **Publish key (partitioning)** | session-scoped ops (`session.start`, `message.record`, `session.close`, `memory.compress`) → `session_id`; user-scoped ops (`memory.lookup`, `memory.sources`, `memory.documents.ingest`, `profile.read`, `profile.update`) → `owner_user_id`. This preserves per-session/per-user ordering. |
 | **Response topic** | default `domain.memory.results` (derived from `data_type`). The caller MAY set `context.response_topic` to override for merged deployments. Reply key = `task_id`. |
 | **Consumed topic** | `domain.memory.commands` (consumer group `memory_service`) |
 
@@ -433,7 +434,7 @@ edge is **not** extended.
 
 | Operations | Mode | Why |
 | --- | --- | --- |
-| `session.start`, `message.record`, `session.close` | **Fire-and-forget** — caller publishes and does not await; broker durability + SQLite are the guarantee (FR-1.5) | Chat latency unaffected; caller already holds the data locally |
+| `session.start`, `message.record`, `session.close`, `memory.documents.ingest` | **Fire-and-forget** — caller publishes and does not await; broker durability + SQLite are the guarantee (FR-1.5) | Chat latency unaffected; caller already holds the data locally |
 | `memory.compress`, `memory.lookup`, `memory.sources`, `profile.read`, `profile.update` | **Request/reply** — caller publishes and awaits the DOMAIN_RESULT matching its `correlation_id` | The caller needs the answer before responding / before injecting context |
 
 memory_service publishes a DOMAIN_RESULT for **every** command (including
@@ -447,12 +448,15 @@ All `request` field tables list name, type, and optionality. `owner_user_id` is
 
 `agent_id` appears in the payload only for **agent-scoped** operations —
 `session.start`, `message.record`, `memory.compress` — where it is required and
-cross-checked against the `X-Agent-ID` header. The remaining operations
-(`session.close`, `memory.lookup`, `memory.sources`, `profile.read`,
-`profile.update`) are **user-scoped**: the `X-Agent-ID` header is still sent by
-the caller (the agent the user is chatting with, used for scoping facts) but is
-**not** compared against a payload field. The caller's service token always
-carries `actor_user_id`, which becomes `owner_user_id` for the whole request.
+cross-checked against the `X-Agent-ID` header, and for
+`memory.documents.ingest`, where it is optional and, when present, cross-checked
+against the `X-Agent-ID` header (documents are always bound to the scope's
+`agent_id`). The remaining operations (`session.close`, `memory.lookup`,
+`memory.sources`, `profile.read`, `profile.update`) are **user-scoped**: the
+`X-Agent-ID` header is still sent by the caller (the agent the user is chatting
+with, used for scoping facts) but is **not** compared against a payload field.
+The caller's service token always carries `actor_user_id`, which becomes
+`owner_user_id` for the whole request.
 
 #### 7.2.1 `session.start` (FR-1.1) — fire-and-forget
 
@@ -490,10 +494,18 @@ Request fields:
 | `agent_id` | string | required | |
 | `role` | string | required | `user` \| `assistant` |
 | `sequence_number` | integer | required | >= 1, per-session |
-| `content` | string | required | full text |
+| `content` | string | required | full text; stored up to **2048 chars** — a longer message is deterministically truncated to the exact prefix, never dropped (§7.2.2) |
 | `created_at` | string | optional | ISO-8601 UTC |
 | `metadata` | object | optional | web_search, attachments, tool_calls |
 | `idempotency_key` | string | optional | default `message:{message_id}` |
+
+**Per-message memory cap (documented contract):** `content` is stored up to
+**2048 characters**; a longer message is deterministically truncated to its
+2048-char prefix so the message is still recorded (`recorded=true`, history
+intact) and the bounded text flows through the vector-index hand-off unchanged.
+The same 2048 cap applies to the `memory.lookup` `query` field, which is
+truncated rather than rejected (§7.2.5). This is a hard, documented bound —
+there is no silent `validation_error` drop of long turns.
 
 Result:
 ```jsonc
@@ -562,9 +574,9 @@ Request fields:
 
 | Field | Type | Optional | Notes |
 | --- | --- | --- | --- |
-| `query` | string | required | |
+| `query` | string | required | searched up to **2048 chars**; a longer query is deterministically truncated to the exact prefix server-side, never rejected |
 | `sources` | list\<string\> | optional | subset of `["chat_history", "documents", "user_profile_facts"]`; default all three |
-| `collection_name` | string | optional | for the `documents` source: the project-RAG collection to search; default `agent_memory` (memory_service config `MEMORY_DOCUMENTS_COLLECTION`). The agent→collection mapping is resolved by the caller (conversation-server knows the agent's attached RAG collection); v1 uses a single configured collection. |
+| `collection_name` | string | optional | for the `documents` source: restrict the search to this vector collection. When absent, the collection(s) are resolved from the `kind='document'` rows' stored ingest-time collection (the collection `memory.documents.ingest` indexed into), so ingest-time and lookup-time collections are consistent by default. Legacy rows predating the collection column fall back to `agent_documents` (memory_service config `MEMORY_DOCUMENTS_COLLECTION`). The agent→collection mapping is resolved by the caller (conversation-server knows the agent's attached RAG collection); v1 uses a single configured collection. |
 | `top_k` | integer | optional | default 5, per source |
 | `session_ids` | list\<string\> | optional | restrict `chat_history` to these sessions |
 | `include_shared` | bool | optional | default false |
@@ -667,6 +679,40 @@ Result:
 `basic_info.updated_fields` lists fields applied; `account_authoritative_conflicts`
 lists fields rejected because account data differs (FR-4.6).
 
+#### 7.2.9 `memory.documents.ingest` (B1) — fire-and-forget
+
+Request fields:
+
+| Field | Type | Optional | Notes |
+| --- | --- | --- | --- |
+| `documents` | list\<object\> | required | non-empty; each item `{ "doc_id": string, "text": string, "metadata"?: object }` |
+| `collection_name` | string | optional | the documents vector collection to index into; default `agent_documents` (memory_service config `MEMORY_DOCUMENTS_COLLECTION`). Documents are **never** mixed into the chat-memory collection. |
+| `agent_id` | string | optional | when present, must equal the `X-Agent-ID` header; documents are always bound to the scope's `agent_id` |
+| `idempotency_key` | string | optional | default `documents:<sha256(request)>`; a repeated identical request replays the stored result |
+
+Each document is persisted as a `memory_records` row with `kind='document'`
+(owner/agent scoped, deduped by `memory_id=doc_id`) and handed to the retrieval
+index (`memory_ingest`) targeting the documents collection. The target
+collection is stored on the row (`memory_records.collection_name`) so
+`memory.lookup` resolves the same collection without the caller re-sending it.
+`text` may exceed 2048 characters (the 2048 cap applies to short identifier
+fields like `doc_id`, not document bodies); duplicate `doc_id`s within one
+request are rejected; per-document `metadata` is persisted and forwarded into
+the Qdrant payload. Separately, `message.record` `content` and `memory.lookup`
+`query` are **truncated** at 2048 chars (never rejected), so long user turns are
+recorded and searchable (§7.2.2 / §7.2.5).
+
+Result:
+```jsonc
+{
+  "documents": [
+    { "doc_id": "doc_...", "recorded": true, "indexed": true }
+    // recorded=false when doc_id already existed (dedup); indexed=false then
+  ],
+  "collection_name": "agent_documents"
+}
+```
+
 ### 7.3 Error taxonomy
 
 The reply payload carries the `DomainResultPayload` fields `error` (human
@@ -733,6 +779,7 @@ identity**, never from client-supplied owner IDs (FR-3.4).
 | `session.close` | `session.close:{session_id}` | already closed → `changed=false` |
 | `memory.compress` | `compress:{session_id}:{start_sequence}:{end_sequence}:{keep_recent}:{policy}` | the key uses the **request** span fields; the deterministic `memory_id = mem_sum_<sha256({session_id}|{covered_from}|{covered_to}|{policy})[:24]>` uses the **adjusted** covered range (`to = end_sequence - keep_recent`). Existing summary for the span → return it, `replayed=true`. This satisfies FR-2.6 exactly. |
 | `profile.update` | `fact:{fact_id}` if given, else request-hash-derived | existing `fact_id` → return stored fact (replay); a repeated identical update to the same `(user_id, fact_type, subject)` supersedes the prior one (this is the intended FR-4.5 update semantics, not a duplicate) |
+| `memory.documents.ingest` | `documents:<sha256(request)>` | idempotency replay for an identical request; a re-ingest of the same `doc_id` (different request) is deduped by `memory_records.memory_id` → `recorded=false` |
 | `memory.lookup`, `memory.sources`, `profile.read` | — (read-only) | no idempotency key required |
 
 Implementation:

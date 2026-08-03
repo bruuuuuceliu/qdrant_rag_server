@@ -139,6 +139,15 @@ class MemoryRepository(Protocol):
     ) -> int:
         ...
 
+    async def list_document_collections(
+        self, owner_user_id: str, agent_id: str
+    ) -> tuple[str, ...]:
+        """Distinct non-empty vector collections the owner's documents were
+        indexed into (``kind='document'``), ascending. Empty when no document
+        rows carry a collection (legacy) or the owner has no documents."""
+
+        ...
+
     async def get_profile(self, user_id: str) -> UserProfile | None:
         ...
 
@@ -394,6 +403,22 @@ class MemoryInMemoryRepository:
             and record.kind == kind
         )
 
+    async def list_document_collections(
+        self, owner_user_id: str, agent_id: str
+    ) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    record.collection_name
+                    for record in self._state.memory_records.values()
+                    if record.owner_user_id == owner_user_id
+                    and record.agent_id == agent_id
+                    and record.kind == "document"
+                    and record.collection_name
+                }
+            )
+        )
+
     async def get_profile(self, user_id: str) -> UserProfile | None:
         return self._state.profiles.get(user_id)
 
@@ -544,8 +569,8 @@ class SQLiteMemoryTransaction:
             cursor = self._conn.execute(
                 "INSERT INTO memory_records"
                 " (memory_id, session_id, owner_user_id, agent_id, kind, content,"
-                "  covered_from, covered_to, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "  covered_from, covered_to, collection_name, metadata_json, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     record.memory_id,
                     record.session_id or None,
@@ -555,6 +580,8 @@ class SQLiteMemoryTransaction:
                     record.content,
                     record.covered_from,
                     record.covered_to,
+                    record.collection_name,
+                    json.dumps(record.metadata, sort_keys=True),
                     record.created_at,
                 ),
             )
@@ -706,10 +733,12 @@ class SQLiteMemoryRepository:
                     session_id        TEXT,
                     owner_user_id     TEXT NOT NULL,
                     agent_id          TEXT NOT NULL,
-                    kind              TEXT NOT NULL CHECK (kind IN ('message', 'compression_summary', 'fact')),
+                    kind              TEXT NOT NULL CHECK (kind IN ('message', 'compression_summary', 'fact', 'document')),
                     content           TEXT NOT NULL,
                     covered_from      INTEGER,
                     covered_to        INTEGER,
+                    collection_name   TEXT NOT NULL DEFAULT '',
+                    metadata_json     TEXT NOT NULL DEFAULT '{}',
                     created_at        TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_owner_agent
@@ -755,6 +784,82 @@ class SQLiteMemoryRepository:
                     PRIMARY KEY (owner_user_id, idempotency_key)
                 );
                 """
+            )
+            self._migrate_memory_records_document(conn)
+            self._migrate_memory_records_columns(conn)
+
+    def _migrate_memory_records_document(self, conn: sqlite3.Connection) -> None:
+        """One-time idempotent migration widening ``memory_records.kind``.
+
+        Existing databases created before the ``document`` kind must be rebuilt
+        so the CHECK constraint accepts ``kind='document'``. The rebuild is
+        idempotent: once the CREATE SQL contains ``'document'`` it is a no-op.
+        The rebuilt table includes the newer ``collection_name`` and
+        ``metadata_json`` columns (added in the same B1 review pass).
+        """
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_records'"
+        ).fetchone()
+        if row is None:
+            return
+        create_sql = str(row["sql"] or "")
+        if "'document'" in create_sql:
+            return
+        conn.executescript(
+            """
+            ALTER TABLE memory_records RENAME TO memory_records_old;
+            CREATE TABLE memory_records (
+                memory_id         TEXT PRIMARY KEY,
+                session_id        TEXT,
+                owner_user_id     TEXT NOT NULL,
+                agent_id          TEXT NOT NULL,
+                kind              TEXT NOT NULL CHECK (kind IN ('message', 'compression_summary', 'fact', 'document')),
+                content           TEXT NOT NULL,
+                covered_from      INTEGER,
+                covered_to        INTEGER,
+                collection_name   TEXT NOT NULL DEFAULT '',
+                metadata_json     TEXT NOT NULL DEFAULT '{}',
+                created_at        TEXT NOT NULL
+            );
+            INSERT INTO memory_records
+                (memory_id, session_id, owner_user_id, agent_id, kind, content,
+                 covered_from, covered_to, collection_name, metadata_json, created_at)
+                SELECT memory_id, session_id, owner_user_id, agent_id, kind, content,
+                       covered_from, covered_to, '', '{}', created_at
+                FROM memory_records_old;
+            DROP TABLE memory_records_old;
+            """
+        )
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_memory_owner_agent
+                ON memory_records(owner_user_id, agent_id);
+            CREATE INDEX IF NOT EXISTS idx_memory_session_span
+                ON memory_records(session_id, covered_from, covered_to);
+            """
+        )
+
+    def _migrate_memory_records_columns(self, conn: sqlite3.Connection) -> None:
+        """One-time idempotent migration adding ``collection_name``/``metadata_json``.
+
+        Databases created between the ``document`` kind widening and this review
+        pass already have ``kind='document'`` in the CHECK but lack the two newer
+        columns; ALTER TABLE adds them in place. Fresh databases get the columns
+        from the base CREATE TABLE and this is a no-op.
+        """
+        cols = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(memory_records)").fetchall()
+        }
+        if "collection_name" not in cols:
+            conn.execute(
+                "ALTER TABLE memory_records"
+                " ADD COLUMN collection_name TEXT NOT NULL DEFAULT ''"
+            )
+        if "metadata_json" not in cols:
+            conn.execute(
+                "ALTER TABLE memory_records"
+                " ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
             )
 
     @asynccontextmanager
@@ -848,7 +953,7 @@ class SQLiteMemoryRepository:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT memory_id, session_id, owner_user_id, agent_id, kind, content,"
-                "       covered_from, covered_to, created_at"
+                "       covered_from, covered_to, collection_name, metadata_json, created_at"
                 "  FROM memory_records WHERE memory_id = ?",
                 (memory_id,),
             ).fetchone()
@@ -863,7 +968,7 @@ class SQLiteMemoryRepository:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT memory_id, session_id, owner_user_id, agent_id, kind, content,"
-                "       covered_from, covered_to, created_at"
+                "       covered_from, covered_to, collection_name, metadata_json, created_at"
                 "  FROM memory_records"
                 " WHERE owner_user_id = ? AND session_id = ? AND kind = 'compression_summary'"
                 " ORDER BY covered_from ASC, memory_id ASC",
@@ -878,7 +983,7 @@ class SQLiteMemoryRepository:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT memory_id, session_id, owner_user_id, agent_id, kind, content,"
-                "       covered_from, covered_to, created_at"
+                "       covered_from, covered_to, collection_name, metadata_json, created_at"
                 "  FROM memory_records WHERE owner_user_id = ? AND agent_id = ?"
                 " ORDER BY created_at ASC, memory_id ASC",
                 (owner_user_id, agent_id),
@@ -895,6 +1000,20 @@ class SQLiteMemoryRepository:
                 (owner_user_id, agent_id, kind),
             ).fetchone()
         return int(row[0])
+
+    async def list_document_collections(
+        self, owner_user_id: str, agent_id: str
+    ) -> tuple[str, ...]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT DISTINCT collection_name FROM memory_records"
+                " WHERE owner_user_id = ? AND agent_id = ? AND kind = 'document'"
+                "   AND collection_name != ''"
+                " ORDER BY collection_name ASC",
+                (owner_user_id, agent_id),
+            ).fetchall()
+        return tuple(str(row["collection_name"]) for row in rows)
 
     async def get_profile(self, user_id: str) -> UserProfile | None:
         with self._connect() as conn:
@@ -1007,6 +1126,8 @@ def _memory_record_from_row(row: sqlite3.Row) -> MemoryRecord:
         content=row["content"],
         covered_from=row["covered_from"],
         covered_to=row["covered_to"],
+        collection_name=row["collection_name"] or "",
+        metadata=json.loads(row["metadata_json"] or "{}"),
         created_at=row["created_at"],
     )
 

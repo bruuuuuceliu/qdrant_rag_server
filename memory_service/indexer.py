@@ -36,7 +36,7 @@ class MemoryIndexUnavailableError(MemoryIndexError):
 class MemoryIndexer(Protocol):
     """Port: index memory records for semantic retrieval (fire-and-forget)."""
 
-    async def index(self, records: list[MemoryRecord]) -> None:
+    async def index(self, records: list[MemoryRecord], *, collection_name: str = "") -> None:
         ...
 
 
@@ -45,9 +45,11 @@ class FakeMemoryIndexer:
 
     def __init__(self) -> None:
         self.indexed: list[list[MemoryRecord]] = []
+        self.collections: list[str] = []
 
-    async def index(self, records: list[MemoryRecord]) -> None:
+    async def index(self, records: list[MemoryRecord], *, collection_name: str = "") -> None:
         self.indexed.append(list(records))
+        self.collections.append(collection_name)
 
 
 class BrokerMemoryIndexer:
@@ -64,7 +66,7 @@ class BrokerMemoryIndexer:
         self._response_topic = response_topic
         self._collection_name = collection_name
 
-    async def index(self, records: list[MemoryRecord]) -> None:
+    async def index(self, records: list[MemoryRecord], *, collection_name: str = "") -> None:
         if not records:
             return
         chunks: list[MemoryChunk] = []
@@ -74,6 +76,7 @@ class BrokerMemoryIndexer:
             chunks.append(chunk)
             payloads.append(MemoryChunkPayload.from_chunk(chunk))
         task_id = records[0].memory_id
+        target = collection_name or self._collection_name
         envelope = MessageEnvelope.create(
             producer="memory_service",
             message_type=MessageType.HELPER_COMMAND,
@@ -85,7 +88,7 @@ class BrokerMemoryIndexer:
                 helper=TOPICS.helper_retrieval_index_commands,
                 attempt=1,
                 plan={
-                    "collection_name": self._collection_name,
+                    "collection_name": target,
                     "chunks": [_mapping(chunk) for chunk in chunks],
                     "payloads": [_mapping(payload) for payload in payloads],
                     "response_topic": self._response_topic,
@@ -104,6 +107,11 @@ class BrokerMemoryIndexer:
 
 
 def _chunk_from_record(record: MemoryRecord) -> MemoryChunk:
+    # v1 produces one chunk per record (chunk_index always 0). This is
+    # acceptable for the initial memory/documents hand-off: a single long
+    # document becomes a single vector point, so very large documents are
+    # under-indexed. Multi-chunk splitting is a documented follow-up (design
+    # doc §9 "Index durability" / chunking seam).
     chunk_id = f"{record.memory_id}:0"
     return MemoryChunk(
         chunk_id=chunk_id,
@@ -119,9 +127,15 @@ def _chunk_from_record(record: MemoryRecord) -> MemoryChunk:
 
 
 def _record_metadata(record: MemoryRecord) -> dict[str, Any]:
-    metadata: dict[str, Any] = {"kind": record.kind}
+    # Caller-supplied per-record metadata (e.g. document `metadata`, §7.2.9) is
+    # merged into the Qdrant payload; reserved keys (kind, session, collection,
+    # span) are set last so they win over caller keys.
+    metadata: dict[str, Any] = dict(record.metadata)
+    metadata["kind"] = record.kind
     if record.session_id:
         metadata["session_id"] = record.session_id
+    if record.collection_name:
+        metadata["collection_name"] = record.collection_name
     if record.covered_from is not None:
         metadata["covered_from"] = record.covered_from
     if record.covered_to is not None:
