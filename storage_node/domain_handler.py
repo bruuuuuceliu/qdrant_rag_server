@@ -45,7 +45,7 @@ class StorageHelperHandler:
     async def _run(self, payload: HelperCommandPayload) -> dict[str, object]:
         plan = payload.plan
         operation = str(plan.get("operation") or payload.operation)
-        key = str(plan.get("key") or plan.get("storage_key") or plan.get("raw_storage_key") or "")
+        key = _storage_key(plan)
         if operation == "put":
             result = await self._storage.put(key=key, value=str(plan.get("value", "")))
         elif operation == "get":
@@ -55,3 +55,15 @@ class StorageHelperHandler:
         else:
             raise ValueError(f"unsupported storage operation: {operation}")
         return result.to_payload()
+
+
+def _storage_key(plan: dict[str, object]) -> str:
+    explicit = plan.get("key") or plan.get("storage_key") or plan.get("raw_storage_key")
+    if explicit:
+        return str(explicit)
+    project_id = str(plan.get("project_id", "")).strip().strip("/")
+    user_id = str(plan.get("user_id", "")).strip().strip("/")
+    doc_id = str(plan.get("doc_id", "")).strip().strip("/")
+    if project_id and user_id and doc_id:
+        return f"{project_id}/{user_id}/{doc_id}"
+    return ""

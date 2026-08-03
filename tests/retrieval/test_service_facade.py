@@ -62,6 +62,107 @@ class RetrievalServiceFacadeTest(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
+    async def test_search_memory_builds_query_without_document_filter(self) -> None:
+        """Memory search has no document retrieval_filter; the query must be
+        built without the document filter validation and carry the memory
+        owner_id/agent_id isolation filter instead."""
+        embedding = _Embedding()
+        retriever = _Retriever()
+        service = RetrievalService(
+            embedding_provider=embedding,
+            qdrant_store=AsyncMock(),
+            retriever_factory=_RetrieverFactory(retriever),
+        )
+
+        result = await service.search_memory(
+            RetrievalSearchRequest(
+                project_id="memory",
+                user_id="u1",
+                query_text="hello",
+                collection_name="agent_memory",
+                retrieval_config={"top_k": 1, "candidate_count": 3},
+            ),
+            owner_id="u1",
+            agent_id="agent1",
+        )
+
+        self.assertEqual(result.chunks, [{"text": "answer", "score": 0.7}])
+        self.assertEqual(retriever.query.collection_name, "agent_memory")
+        self.assertEqual(retriever.query.query_vector, [0.1, 0.2])
+        self.assertEqual(retriever.query.metadata["filter_fields"], {})
+        memory_filter = retriever.query.retrieval_filter
+        self.assertIsNotNone(memory_filter)
+        must_keys = {condition.key for condition in memory_filter.must}
+        self.assertEqual(must_keys, {"owner_id", "agent_id"})
+
+    async def test_search_memory_threads_session_ids_and_top_k(self) -> None:
+        """Memory-search hand-off must thread session_ids (within-owner session
+        isolation) and top_k (override) into the Qdrant filter and settings."""
+        embedding = _Embedding()
+        retriever = _Retriever()
+        factory = _RetrieverFactory(retriever)
+        service = RetrievalService(
+            embedding_provider=embedding,
+            qdrant_store=AsyncMock(),
+            retriever_factory=factory,
+        )
+
+        await service.search_memory(
+            RetrievalSearchRequest(
+                project_id="memory",
+                user_id="u1",
+                query_text="hello",
+                collection_name="agent_memory",
+                retrieval_config={"top_k": 1, "candidate_count": 5},
+                session_ids=("con_1", "con_2"),
+                top_k=3,
+            ),
+            owner_id="u1",
+            agent_id="agent1",
+        )
+
+        # top_k from the hand-off overrides the parsed settings
+        self.assertEqual(factory.settings.top_k, 3)
+        self.assertEqual(factory.settings.candidate_count, 5)
+        memory_filter = retriever.query.retrieval_filter
+        self.assertIsNotNone(memory_filter)
+        must_keys = {condition.key for condition in memory_filter.must}
+        self.assertIn("metadata.session_id", must_keys)
+        session_condition = next(
+            condition
+            for condition in memory_filter.must
+            if condition.key == "metadata.session_id"
+        )
+        self.assertEqual(session_condition.match.any, ["con_1", "con_2"])
+
+    async def test_search_memory_without_session_ids_leaves_filter_owner_agent_only(self) -> None:
+        """When no session_ids are supplied the memory filter is bounded only by
+        owner_id/agent_id (no within-owner session narrowing)."""
+        embedding = _Embedding()
+        retriever = _Retriever()
+        service = RetrievalService(
+            embedding_provider=embedding,
+            qdrant_store=AsyncMock(),
+            retriever_factory=_RetrieverFactory(retriever),
+        )
+
+        await service.search_memory(
+            RetrievalSearchRequest(
+                project_id="memory",
+                user_id="u1",
+                query_text="hello",
+                collection_name="agent_memory",
+                retrieval_config={"top_k": 2, "candidate_count": 5},
+            ),
+            owner_id="u1",
+            agent_id="agent1",
+        )
+
+        memory_filter = retriever.query.retrieval_filter
+        self.assertIsNotNone(memory_filter)
+        must_keys = {condition.key for condition in memory_filter.must}
+        self.assertEqual(must_keys, {"owner_id", "agent_id"})
+
     async def test_delete_document_deletes_qdrant_raw_storage_and_caches(self) -> None:
         qdrant_store = AsyncMock()
         object_storage = AsyncMock()

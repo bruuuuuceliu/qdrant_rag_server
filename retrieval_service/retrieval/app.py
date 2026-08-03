@@ -13,6 +13,11 @@ class RetrievalAppContext:
     async def search(self, request: Any) -> Any:
         return await self.retrieval_service.search(request)
 
+    async def search_memory(self, request: Any, *, owner_id: str = "", agent_id: str = "") -> Any:
+        return await self.retrieval_service.search_memory(
+            request, owner_id=owner_id, agent_id=agent_id
+        )
+
     async def delete_document(self, request: Any) -> Any:
         return await self.retrieval_service.delete_document(request)
 

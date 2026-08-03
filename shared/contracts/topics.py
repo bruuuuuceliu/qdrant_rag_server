@@ -18,6 +18,7 @@ class TopicSet:
     domain_workflow_log_results: str = "domain.workflow_log.results"
     domain_memory_commands: str = "domain.memory.commands"
     domain_memory_results: str = "domain.memory.results"
+    identity_user_events: str = "identity.user.events"
     domain_other_commands: str = "domain.other.commands"
     domain_other_results: str = "domain.other.results"
     helper_ingestion_commands: str = "helper.ingestion.commands"

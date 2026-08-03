@@ -65,22 +65,20 @@ class ManagerRouter:
         if data_type == DataType.PROJECT_DOCUMENT:
             return self._route_project_document(operation)
         if data_type == DataType.AGENT_MEMORY:
-            spec = data_type_spec(data_type)
+            data_type_spec(data_type)
             return RouteDecision(
                 operation=operation,
                 data_type=data_type,
                 target_service=ServiceTarget.MEMORY,
                 executable=False,
-                reason=spec.reserved_reason,
             )
         if data_type == DataType.WORKFLOW_LOG:
-            spec = data_type_spec(data_type)
+            data_type_spec(data_type)
             return RouteDecision(
                 operation=operation,
                 data_type=data_type,
                 target_service=ServiceTarget.WORKFLOW_LOG,
                 executable=False,
-                reason=spec.reserved_reason,
             )
         raise ValueError(f"unsupported data_type: {data_type!r}")
 

@@ -26,6 +26,8 @@ class RetrievalHelperHandler:
         operation = payload.operation
         if operation == "search":
             result = await self._run_search(envelope, payload)
+        elif operation == "memory_search":
+            result = await self._run_memory_search(envelope, payload)
         elif operation == "delete":
             result = await self._run_delete(envelope, payload)
         else:
@@ -59,6 +61,19 @@ class RetrievalHelperHandler:
         if search is None:
             return {"ok": False, "error": "retrieval search API is not configured"}
         result = await search(payload.plan, fallback_request_id=envelope.task_id)
+        return result if isinstance(result, dict) else {"ok": True, "value": str(result)}
+
+    async def _run_memory_search(
+        self,
+        envelope: MessageEnvelope,
+        payload: HelperCommandPayload,
+    ) -> dict[str, Any]:
+        handle_memory_search = getattr(self._api, "handle_memory_search", None)
+        if handle_memory_search is None:
+            return {"ok": False, "error": "retrieval memory search API is not configured"}
+        result = await handle_memory_search(
+            payload.plan, fallback_request_id=envelope.task_id
+        )
         return result if isinstance(result, dict) else {"ok": True, "value": str(result)}
 
     async def _run_delete(

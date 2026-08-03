@@ -20,11 +20,11 @@ class DataTypeContractTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             normalize_data_type("unknown")
 
-    def test_registry_marks_reserved_types(self) -> None:
+    def test_registry_marks_memory_executable(self) -> None:
         memory = data_type_spec("agent_memory")
         workflow = data_type_spec("workflow_log")
 
-        self.assertFalse(memory.executable)
+        self.assertTrue(memory.executable)
         self.assertEqual(memory.owner_service, "memory_service")
         self.assertFalse(workflow.executable)
         self.assertEqual(workflow.owner_service, "workflow_log_service")

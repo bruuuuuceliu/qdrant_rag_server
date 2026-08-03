@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from retrieval_service.retrieval.contracts import MemorySearchCommand
 from retrieval_service.server import RetrievalHelperHandler
 from shared.contracts import MessageEnvelope, MessageType, MessageValidationError, TOPICS
 
@@ -19,11 +20,21 @@ class FakeProducer:
 class FakeRetrievalApi:
     def __init__(self) -> None:
         self.search_payload = None
+        self.memory_search_payload = None
         self.delete_payload = None
 
     async def search(self, payload: dict[str, object], *, fallback_request_id: str) -> dict[str, object]:
         self.search_payload = payload
         return {"ok": True, "hits": []}
+
+    async def handle_memory_search(
+        self,
+        payload: dict[str, object],
+        *,
+        fallback_request_id: str,
+    ) -> dict[str, object]:
+        self.memory_search_payload = payload
+        return {"ok": True, "hits": [{"source_id": "mem_1", "text": "x", "score": 0.9}]}
 
     async def delete_document(
         self,
@@ -69,6 +80,41 @@ async def test_retrieval_helper_handler_reports_missing_runtime() -> None:
     result = await handler.handle(_command(operation="search"))
 
     assert result.payload["result"]["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_retrieval_helper_handler_runs_memory_search() -> None:
+    api = FakeRetrievalApi()
+    handler = RetrievalHelperHandler(api=api)
+
+    result = await handler.handle(_command(operation="memory_search"))
+
+    assert api.memory_search_payload is not None
+    assert result.payload["result"]["ok"] is True
+    assert result.payload["result"]["hits"][0]["source_id"] == "mem_1"
+
+
+def test_memory_search_command_parses_session_ids_and_top_k() -> None:
+    """Memory-search hand-off must not drop session_ids/top_k (A1 regression)."""
+    command = MemorySearchCommand.from_payload(
+        {
+            "request_id": "r1",
+            "response_topic": "helper.retrieval.results",
+            "request": {
+                "query_text": "hello",
+                "collection_name": "agent_memory",
+                "agent_id": "agent_1",
+                "top_k": 7,
+                "session_ids": ["con_1", "con_2"],
+            },
+        },
+        fallback_request_id="fb",
+    )
+    assert command.session_ids == ("con_1", "con_2")
+    assert command.top_k == 7
+    service_request = command.to_service_request()
+    assert service_request.session_ids == ("con_1", "con_2")
+    assert service_request.top_k == 7
 
 
 @pytest.mark.asyncio

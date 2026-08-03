@@ -56,6 +56,23 @@ async def test_storage_helper_handler_uses_plan_operation_for_ingest_followup(tm
     assert (tmp_path / "raw" / "p1" / "u1" / "d1").read_text(encoding="utf-8") == "raw text"
 
 
+@pytest.mark.asyncio
+async def test_storage_helper_handler_derives_document_key_for_delete_plan(tmp_path) -> None:
+    storage = FilesystemStorageService(root=tmp_path)
+    handler = StorageHelperHandler(storage=storage)
+    await storage.put(key="p1/u1/d1", value="raw text")
+
+    result = await handler.handle(
+        _command(
+            operation="delete",
+            plan={"project_id": "p1", "user_id": "u1", "doc_id": "d1"},
+        )
+    )
+
+    assert result.payload["result"] == {"ok": True, "key": "p1/u1/d1"}
+    assert not (tmp_path / "p1" / "u1" / "d1").exists()
+
+
 def _command(*, operation: str, plan: dict[str, object]) -> MessageEnvelope:
     return MessageEnvelope.create(
         producer="task_service",

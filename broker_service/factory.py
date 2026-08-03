@@ -16,8 +16,9 @@ def create_redpanda_consumer(
     *,
     topic: str,
     group_id: str,
+    raw: bool = False,
 ) -> RedpandaConsumer:
-    return RedpandaConsumer(settings=settings, topic=topic, group_id=group_id)
+    return RedpandaConsumer(settings=settings, topic=topic, group_id=group_id, raw=raw)
 
 
 def create_redpanda_admin(settings: BrokerSettings) -> RedpandaAdmin:
@@ -29,11 +30,12 @@ def create_redpanda_bus(
     *,
     topic: str | None = None,
     group_id: str | None = None,
+    raw: bool = False,
 ) -> BrokerMessageBus:
     producer = create_redpanda_producer(settings)
     consumer = None
     if topic is not None:
         if not group_id:
             raise ValueError("group_id is required when topic is provided")
-        consumer = create_redpanda_consumer(settings, topic=topic, group_id=group_id)
+        consumer = create_redpanda_consumer(settings, topic=topic, group_id=group_id, raw=raw)
     return BrokerMessageBus(producer=producer, consumer=consumer, consumer_topic=topic or "")

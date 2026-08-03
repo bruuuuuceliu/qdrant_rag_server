@@ -21,7 +21,6 @@ class DataTypeSpec:
     data_type: DataType
     owner_service: str
     executable: bool
-    reserved_reason: str = ""
 
 
 DATA_TYPE_REGISTRY: dict[DataType, DataTypeSpec] = {
@@ -33,14 +32,12 @@ DATA_TYPE_REGISTRY: dict[DataType, DataTypeSpec] = {
     DataType.AGENT_MEMORY: DataTypeSpec(
         data_type=DataType.AGENT_MEMORY,
         owner_service="memory_service",
-        executable=False,
-        reserved_reason="agent memory service is reserved for a future iteration",
+        executable=True,
     ),
     DataType.WORKFLOW_LOG: DataTypeSpec(
         data_type=DataType.WORKFLOW_LOG,
         owner_service="workflow_log_service",
         executable=False,
-        reserved_reason="workflow log service is reserved for a future iteration",
     ),
 }
 

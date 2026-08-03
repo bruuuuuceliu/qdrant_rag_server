@@ -14,6 +14,7 @@ This project is a minimal, extensible information retrieval service. It can supp
 - [Implementation Documentation](implementations/README.md): implemented subsystem details and verification notes.
 - [Section Design Index](design/section-design-index.md): accepted development loop sections and status docs.
 - [Document handling module design](design/document-handling-module.md): proposed URL/file parsing and chunking architecture.
+- [Agent Memory, Chat History, and User Profile Requirements](agent-memory-requirements.md): approved requirements for the RAG service as the chat platform's memory/knowledge layer — session recording, history compression, cross-source retrieval, and user profiles.
 - [Examples](../examples/README.md): local startup and first ingest/search calls.
 - [Configuration Profiles](../configs/README.md): local/production config modules, env files, and override order.
 

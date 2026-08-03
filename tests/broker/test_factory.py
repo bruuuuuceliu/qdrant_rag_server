@@ -14,10 +14,17 @@ class FakeProducer:
 
 
 class FakeConsumer:
-    def __init__(self, settings: BrokerSettings, topic: str, group_id: str) -> None:
+    def __init__(
+        self,
+        settings: BrokerSettings,
+        topic: str,
+        group_id: str,
+        raw: bool = False,
+    ) -> None:
         self.settings = settings
         self.topic = topic
         self.group_id = group_id
+        self.raw = raw
 
 
 def test_create_redpanda_bus_without_consumer(monkeypatch: pytest.MonkeyPatch) -> None:

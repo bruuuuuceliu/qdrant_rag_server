@@ -26,7 +26,7 @@ class IngestionHelperHandler:
         operation = payload.operation
         if operation != "ingest":
             raise ValueError(f"unsupported ingestion helper operation: {operation}")
-        result = await self._run_ingest(payload)
+        result = await self._run_ingest(payload, fallback_request_id=envelope.task_id)
         response = MessageEnvelope.create(
             producer="ingestion_service",
             message_type=MessageType.HELPER_RESULT,
@@ -47,9 +47,16 @@ class IngestionHelperHandler:
             await self._producer.publish(TOPICS.helper_ingestion_results, response, key=envelope.task_id)
         return response
 
-    async def _run_ingest(self, payload: HelperCommandPayload) -> dict[str, Any]:
+    async def _run_ingest(
+        self,
+        payload: HelperCommandPayload,
+        *,
+        fallback_request_id: str,
+    ) -> dict[str, Any]:
         start_ingest = getattr(self._app, "start_ingest", None)
         if start_ingest is None:
             return {"ok": False, "error": "ingestion helper app is not configured"}
-        result = await start_ingest(payload.plan)
+        plan = dict(payload.plan)
+        plan.setdefault("request_id", fallback_request_id)
+        result = await start_ingest(plan)
         return result if isinstance(result, dict) else {"ok": True, "value": str(result)}

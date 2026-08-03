@@ -82,11 +82,60 @@ async def test_retrieval_index_helper_handler_publishes_indexing_failures() -> N
 
 
 @pytest.mark.asyncio
+async def test_retrieval_index_helper_handler_indexes_memory_ingest() -> None:
+    indexing_service = FakeIndexingService()
+    handler = RetrievalIndexHelperHandler(indexing_service=indexing_service)
+
+    result = await handler.handle(
+        _memory_command(operation="memory_ingest")
+    )
+
+    # memory payloads preserve the memory/owner keys through the handler
+    assert indexing_service.request.collection_name == "agent_memory"
+    assert result.payload["result"]["ok"] is True
+    payload = indexing_service.request.payloads[0]
+    assert getattr(payload, "memory_id", "") == "mem_1"
+    assert getattr(payload, "owner_id", "") == "user_1"
+    assert getattr(payload, "agent_id", "") == "agent_1"
+
+
+@pytest.mark.asyncio
 async def test_retrieval_index_helper_handler_rejects_unknown_operation() -> None:
     handler = RetrievalIndexHelperHandler(indexing_service=FakeIndexingService())
 
     with pytest.raises(ValueError, match="unsupported"):
         await handler.handle(_command(operation="search"))
+
+
+def _memory_command(*, operation: str = "memory_ingest") -> MessageEnvelope:
+    return MessageEnvelope.create(
+        producer="memory_service",
+        message_type=MessageType.HELPER_COMMAND,
+        data_type="agent_memory",
+        task_id="task-1",
+        correlation_id="corr-1",
+        payload={
+            "operation": operation,
+            "helper": TOPICS.helper_retrieval_index_commands,
+            "attempt": 1,
+            "plan": {
+                "collection_name": "agent_memory",
+                "chunks": [
+                    {
+                        "chunk_id": "c1",
+                        "chunk_index": 0,
+                        "text": "user avoids gluten",
+                        "memory_id": "mem_1",
+                        "owner_id": "user_1",
+                        "agent_id": "agent_1",
+                        "document_id": "mem_1",
+                        "data_type": "memory",
+                        "memory_type": "semantic",
+                    }
+                ],
+            },
+        },
+    )
 
 
 def _command(*, operation: str = "ingest") -> MessageEnvelope:

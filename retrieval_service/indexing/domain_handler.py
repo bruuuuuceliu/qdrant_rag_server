@@ -6,7 +6,10 @@ from dataclasses import asdict, is_dataclass
 import logging
 from typing import Any
 
-from retrieval_service.indexing.commands import RetrievalIndexCommand
+from retrieval_service.indexing.commands import (
+    RetrievalIndexCommand,
+    RetrievalMemoryIndexCommand,
+)
 from shared.contracts import (
     HelperCommandPayload,
     HelperResultPayload,
@@ -29,9 +32,12 @@ class RetrievalIndexHelperHandler:
 
     async def handle(self, envelope: MessageEnvelope) -> MessageEnvelope:
         payload = HelperCommandPayload.from_envelope(envelope)
-        if payload.operation != "ingest":
+        if payload.operation not in {"ingest", "memory_ingest"}:
             raise ValueError(f"unsupported retrieval-index operation: {payload.operation}")
-        result = await self._run_index(envelope, payload)
+        if payload.operation == "memory_ingest":
+            result = await self._run_memory_index(envelope, payload)
+        else:
+            result = await self._run_index(envelope, payload)
         response = MessageEnvelope.create(
             producer="retrieval_service",
             message_type=MessageType.HELPER_RESULT,
@@ -51,6 +57,29 @@ class RetrievalIndexHelperHandler:
         if self._producer is not None:
             await self._producer.publish(TOPICS.helper_retrieval_index_results, response, key=envelope.task_id)
         return response
+
+    async def _run_memory_index(
+        self,
+        envelope: MessageEnvelope,
+        payload: HelperCommandPayload,
+    ) -> dict[str, Any]:
+        index_chunks = getattr(self._indexing_service, "index_chunks", None)
+        if index_chunks is None:
+            return {"ok": False, "error": "retrieval indexing service is not configured"}
+        try:
+            command = RetrievalMemoryIndexCommand.from_payload(
+                payload.plan,
+                fallback_request_id=envelope.task_id,
+            )
+            result = await index_chunks(command.to_index_request())
+        except Exception as exc:
+            logger.exception(
+                "retrieval memory-index helper failed task_id=%s source_message_id=%s",
+                envelope.task_id,
+                envelope.message_id,
+            )
+            return {"ok": False, "error": str(exc), "retryable": False}
+        return {"ok": True, **_result_to_payload(result)}
 
     async def _run_index(
         self,

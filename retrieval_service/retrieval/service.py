@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from retrieval_service.indexing.sparse_text import _build_sparse_text
@@ -16,6 +16,7 @@ from retrieval_service.placement.execution import (
     placement_write_targets,
 )
 from retrieval_service.query.qdrant_filters import _build_qdrant_filter
+from retrieval_service.services.vector_store import models
 from retrieval_service.ranking.entity_boost import (
     apply_entity_boosts,
     extract_query_entity_keys,
@@ -50,6 +51,12 @@ class RetrievalSearchRequest:
     retrieval_filter: Any = None
     cache_key: str = ""
     placement_plan: dict[str, Any] = field(default_factory=dict)
+    # Memory-search hand-off carries these through the transport; document
+    # searches leave them unset. ``session_ids`` bounds memory search to the
+    # given conversation/session ids (within-owner isolation) and ``top_k``
+    # overrides the configured top-k for the memory path.
+    session_ids: tuple[str, ...] = ()
+    top_k: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +179,68 @@ class RetrievalService:
 
         return result
 
+    async def search_memory(
+        self,
+        request: RetrievalSearchRequest,
+        *,
+        owner_id: str = "",
+        agent_id: str = "",
+    ) -> RetrievalSearchResult:
+        """Search the memory collection with a memory-aware Qdrant filter.
+
+        Unlike the document ``search`` path, the memory collection carries
+        ``owner_id``/``agent_id`` payload keys (written by
+        ``MemoryChunkPayload.to_qdrant_payload``), not ``project_id``/``user_id``.
+        This builds the dense/sparse query through the shared machinery but with
+        an isolation filter over the memory keys.
+        """
+        settings = parse_retrieval_settings(
+            request.retrieval_config,
+            default_top_k=self._default_top_k,
+            default_candidate_count=self._default_candidate_count,
+        )
+        # The memory-search hand-off carries an explicit ``top_k`` from the
+        # memory_service lookup request; apply it over the parsed settings.
+        if request.top_k and request.top_k > 0 and request.top_k != settings.top_k:
+            settings = replace(
+                settings,
+                top_k=request.top_k,
+                candidate_count=max(settings.candidate_count, request.top_k),
+            )
+        memory_filter = _build_memory_filter(
+            request,
+            owner_id=owner_id,
+            agent_id=agent_id,
+            session_ids=request.session_ids,
+        )
+        # Memory search does not carry the document retrieval_filter; build the
+        # dense/sparse query without the document filter validation and override
+        # the query filter with the owner_id/agent_id memory filter below.
+        query = await self._build_query(
+            request, settings=settings, validate_filter=False
+        )
+        query = RetrievalQuery(
+            collection_name=query.collection_name,
+            query_text=query.query_text,
+            query_vector=query.query_vector,
+            query_sparse_vector=query.query_sparse_vector,
+            retrieval_filter=memory_filter,
+            limit=query.limit,
+            metadata=dict(query.metadata),
+        )
+        start_ns = time.monotonic_ns()
+        hits = await self._search_candidates(query=query, settings=settings)
+        final = await self._finalize_hits(
+            query.query_text,
+            hits,
+            top_k=settings.top_k,
+        )
+        return RetrievalSearchResult(
+            chunks=_chunks_from_hits(final),
+            elapsed_ms=_elapsed_ms(start_ns),
+            cache_hit=False,
+        )
+
     async def delete_document(self, request: DeleteDocumentRequest) -> None:
         targets = placement_write_targets(
             request.placement_plan,
@@ -244,9 +313,13 @@ class RetrievalService:
         *,
         settings: ProjectRetrievalSettings,
         collection_name: str | None = None,
+        validate_filter: bool = True,
     ) -> RetrievalQuery:
-        _validate_retrieval_filter(request.retrieval_filter)
-        qdrant_filter = _build_qdrant_filter(request.retrieval_filter)
+        if validate_filter:
+            _validate_retrieval_filter(request.retrieval_filter)
+            qdrant_filter = _build_qdrant_filter(request.retrieval_filter)
+        else:
+            qdrant_filter = None
         query_vector = None
         if settings.dense_enabled:
             query_vector = await _encode_query(
@@ -275,7 +348,11 @@ class RetrievalService:
             retrieval_filter=qdrant_filter,
             limit=settings.candidate_count,
             metadata={
-                "filter_fields": _build_filter_fields(request.retrieval_filter),
+                "filter_fields": (
+                    _build_filter_fields(request.retrieval_filter)
+                    if validate_filter
+                    else {}
+                ),
                 "dense_vector_name": (
                     settings.bm25.dense_vector_name
                     if settings.bm25.use_named_dense_vector
@@ -417,6 +494,47 @@ def _read_target_groups(
         sorted(group, key=lambda target: target.role != "primary")
         for group in groups.values()
     ]
+
+
+def _build_memory_filter(
+    request: RetrievalSearchRequest,
+    *,
+    owner_id: str,
+    agent_id: str,
+    session_ids: tuple[str, ...] = (),
+) -> Any:
+    """Build a Qdrant isolation filter over the memory payload keys.
+
+    Memory points carry ``owner_id`` and ``agent_id`` (from
+    ``MemoryChunkPayload.to_qdrant_payload``); the memory search is bounded by
+    those keys rather than the document ``project_id``/``user_id``. When
+    ``session_ids`` is non-empty, the filter is further bounded to those
+    conversation/session ids so a lookup cannot surface hits from the owner's
+    other sessions (within-owner isolation).
+    """
+    conditions: list[Any] = [
+        models.FieldCondition(
+            key="owner_id",
+            match=models.MatchValue(value=owner_id),
+        )
+    ]
+    if agent_id:
+        conditions.append(
+            models.FieldCondition(
+                key="agent_id",
+                match=models.MatchValue(value=agent_id),
+            )
+        )
+    if session_ids:
+        conditions.append(
+            models.FieldCondition(
+                # Memory payloads carry session_id nested under metadata
+                # (MemoryChunkPayload.to_qdrant_payload -> metadata).
+                key="metadata.session_id",
+                match=models.MatchAny(any=list(session_ids)),
+            )
+        )
+    return models.Filter(must=conditions)
 
 
 def _build_filter_fields(retrieval_filter: Any) -> dict[str, str | tuple[str, ...]]:

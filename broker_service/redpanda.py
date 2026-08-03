@@ -88,6 +88,7 @@ class RedpandaConsumer:
     settings: BrokerSettings
     topic: str
     group_id: str
+    raw: bool = False
     _consumer: Any | None = None
     _started: bool = False
 
@@ -113,8 +114,23 @@ class RedpandaConsumer:
                 f"topic={self.settings.topic(self.topic)} group_id={self.group_id}"
             ) from exc
 
-    async def _consume_next(self) -> MessageEnvelope:
+    async def _consume_next(self) -> MessageEnvelope | dict[str, Any]:
         async for message in self._consumer:
+            if self.raw:
+                value = message.value
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8")
+                loaded = json.loads(value)
+                if not isinstance(loaded, dict):
+                    raise ValueError("raw broker message value must be a JSON object")
+                logger.info(
+                    "broker consume topic=%s partition=%s offset=%s group_id=%s raw_json=True",
+                    getattr(message, "topic", self.settings.topic(self.topic)),
+                    getattr(message, "partition", ""),
+                    getattr(message, "offset", ""),
+                    self.group_id,
+                )
+                return loaded
             envelope = decode_envelope(message.value)
             logger.info(
                 "broker consume topic=%s partition=%s offset=%s group_id=%s task_id=%s message_type=%s producer=%s",

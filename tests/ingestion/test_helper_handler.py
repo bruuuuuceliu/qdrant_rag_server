@@ -33,12 +33,22 @@ async def test_ingestion_helper_handler_runs_ingest_and_publishes_result() -> No
 
     result = await handler.handle(_command(operation="ingest"))
 
-    assert app.plan == {"project_id": "p1"}
+    assert app.plan == {"project_id": "p1", "request_id": "task-1"}
     assert result.message_type == MessageType.HELPER_RESULT
     assert result.payload["helper"] == TOPICS.helper_ingestion_commands
     assert result.payload["attempt"] == 2
     assert result.payload["result"] == {"ok": True, "job_id": "job-1"}
     assert producer.published == [(TOPICS.helper_ingestion_results, result, "task-1")]
+
+
+@pytest.mark.asyncio
+async def test_ingestion_helper_handler_preserves_explicit_request_id() -> None:
+    app = FakeIngestionApp()
+    handler = IngestionHelperHandler(app=app)
+
+    await handler.handle(_command(operation="ingest", plan={"project_id": "p1", "request_id": "req-1"}))
+
+    assert app.plan == {"project_id": "p1", "request_id": "req-1"}
 
 
 @pytest.mark.asyncio
@@ -66,12 +76,22 @@ async def test_ingestion_helper_handler_rejects_missing_helper() -> None:
         await handler.handle(_command(operation="ingest", helper=""))
 
 
-def _command(*, operation: str, helper: str = TOPICS.helper_ingestion_commands) -> MessageEnvelope:
+def _command(
+    *,
+    operation: str,
+    helper: str = TOPICS.helper_ingestion_commands,
+    plan: dict[str, object] | None = None,
+) -> MessageEnvelope:
     return MessageEnvelope.create(
         producer="task_service",
         message_type=MessageType.HELPER_COMMAND,
         data_type="project_document",
         task_id="task-1",
         correlation_id="corr-1",
-        payload={"operation": operation, "helper": helper, "plan": {"project_id": "p1"}, "attempt": 2},
+        payload={
+            "operation": operation,
+            "helper": helper,
+            "plan": dict(plan or {"project_id": "p1"}),
+            "attempt": 2,
+        },
     )

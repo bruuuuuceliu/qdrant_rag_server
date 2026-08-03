@@ -62,6 +62,17 @@ class RetrievalHelperApiContext:
             fallback_request_id=fallback_request_id,
         )
 
+    async def handle_memory_search(
+        self,
+        payload: dict[str, Any],
+        *,
+        fallback_request_id: str,
+    ) -> dict[str, Any]:
+        return await self.handler.handle_memory_search(
+            payload,
+            fallback_request_id=fallback_request_id,
+        )
+
     async def get_raw_document(
         self,
         payload: dict[str, Any],
