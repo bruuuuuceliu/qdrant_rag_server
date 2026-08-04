@@ -8,8 +8,8 @@ from pathlib import Path
 
 from retrieval_service.placement import (
     InMemoryPlacementRepository,
-    InMemoryRoutingPolicyRepository,
     InMemoryRetrievalShardRepository,
+    InMemoryRoutingPolicyRepository,
     PlacementResolver,
     ProjectPlacementScope,
     RetrievalShard,

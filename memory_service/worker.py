@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal
 from dataclasses import dataclass
 
 from broker_service import BrokerSettings
@@ -19,6 +18,8 @@ from memory_service.domain_app import (
 )
 from memory_service.reconciliation import reconcile_pending_index
 from shared.logging import configure_logging
+from shared.ops.server import ops_server_from_env
+from shared.ops.shutdown import run_service
 from shared.runtime_health import RuntimeHealth
 
 
@@ -65,32 +66,20 @@ async def create_worker_context(
 
 async def serve_forever() -> None:
     context = await create_worker_context()
-    await context.domain_app.start_runtime()
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        try:
-            loop.add_signal_handler(sig, stop.set)
-        except NotImplementedError:
-            # Non-Unix platforms without signal-handler support: fall back to the
-            # default (process termination). The finally below still runs when an
-            # exception interrupts the loop.
-            break
-    try:
+    ops_server = ops_server_from_env("memory_service", default_port=9012, readiness=context.health)
+
+    async def serve() -> None:
+        await context.domain_app.start_runtime()
         # §9 re-drive seam: re-queue memory_records whose index hand-off was
         # never confirmed (indexed=0). Best-effort, log-only on failure.
         await reconcile_pending_index(
             repository=context.domain_app.handler._repository,
             indexer=context.domain_app.handler._indexer,
         )
-        await stop.wait()
-    finally:
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                loop.remove_signal_handler(sig)
-            except (NotImplementedError, ValueError):
-                pass
-        await context.shutdown()
+        while True:
+            await asyncio.sleep(3600)
+
+    await run_service(serve=serve, shutdown=context.shutdown, ops_server=ops_server)
 
 
 def main() -> None:

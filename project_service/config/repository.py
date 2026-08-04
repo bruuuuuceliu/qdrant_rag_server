@@ -5,8 +5,8 @@ All blocking SQLite calls run through the shared thread-pool executor.
 
 from __future__ import annotations
 
-import json
 import contextlib
+import json
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -15,7 +15,6 @@ from typing import Any
 
 from project_service.schemas import ProjectConfig
 from shared.executor import AsyncExecutor
-
 
 DEFAULT_CONFIG_DB_PATH = Path("/var/lib/rag/config.db")
 

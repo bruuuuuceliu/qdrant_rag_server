@@ -2,18 +2,17 @@
 
 from retrieval_service.core.schemas.cache import BaseCacheScope
 from retrieval_service.core.schemas.common import (
-    DEFAULT_NAMESPACE,
     DEFAULT_KB_ID,
+    DEFAULT_NAMESPACE,
     SHARED_OWNER_ID,
     SHARED_USER_ID,
-    JobStatus,
-    IngestJobStatus,
     Visibility,
 )
 from retrieval_service.core.schemas.document import BaseChunk, BaseChunkPayload, BaseDocument
 from retrieval_service.core.schemas.ingest import BaseIngestJob
 from retrieval_service.core.schemas.project import BaseServiceConfig
 from retrieval_service.core.schemas.scope import BaseQueryScope, BaseRetrievalFilter
+from shared.contracts import IngestJobStatus, JobStatus
 
 __all__ = [
     "BaseCacheScope",

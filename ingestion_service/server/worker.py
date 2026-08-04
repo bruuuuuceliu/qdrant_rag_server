@@ -13,6 +13,8 @@ from ingestion_service.server.broker_runtime import BrokerIngestionApp
 from ingestion_service.server.helper_app import IngestionHelperServerContext, create_helper_app
 from ingestion_service.service import IngestionService
 from shared.logging import configure_logging
+from shared.ops.server import ops_server_from_env
+from shared.ops.shutdown import run_service
 from shared.runtime_health import RuntimeHealth
 
 
@@ -64,12 +66,14 @@ async def create_worker_server(
 
 async def serve_forever() -> None:
     app = await create_worker_server()
-    await app.helper_app.start_runtime()
-    try:
+    ops_server = ops_server_from_env("ingestion", default_port=9006, readiness=app.health)
+
+    async def serve() -> None:
+        await app.helper_app.start_runtime()
         while True:
             await asyncio.sleep(3600)
-    finally:
-        await app.shutdown()
+
+    await run_service(serve=serve, shutdown=app.shutdown, ops_server=ops_server)
 
 
 def main() -> None:

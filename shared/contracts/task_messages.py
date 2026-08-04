@@ -17,12 +17,12 @@ class TaskRequestPayload:
     source_message_id: str = ""
 
     @classmethod
-    def from_envelope(cls, envelope: MessageEnvelope) -> "TaskRequestPayload":
+    def from_envelope(cls, envelope: MessageEnvelope) -> TaskRequestPayload:
         _expect_type_in(envelope, MessageType.TASK_REQUEST, MessageType.REQUEST_ACCEPTED)
         return cls.from_payload(envelope.payload)
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "TaskRequestPayload":
+    def from_payload(cls, payload: dict[str, Any]) -> TaskRequestPayload:
         return cls(
             operation=_operation(payload),
             request=_mapping(payload.get("request", {}), "request"),
@@ -47,12 +47,12 @@ class ProjectPlanRequestPayload:
     source_message_id: str = ""
 
     @classmethod
-    def from_envelope(cls, envelope: MessageEnvelope) -> "ProjectPlanRequestPayload":
+    def from_envelope(cls, envelope: MessageEnvelope) -> ProjectPlanRequestPayload:
         _expect_type_in(envelope, MessageType.PROJECT_PLAN_REQUEST, MessageType.DOMAIN_COMMAND)
         return cls.from_payload(envelope.payload)
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "ProjectPlanRequestPayload":
+    def from_payload(cls, payload: dict[str, Any]) -> ProjectPlanRequestPayload:
         return cls(
             operation=_operation(payload),
             request=_mapping(payload.get("request", {}), "request"),
@@ -80,12 +80,12 @@ class ProjectPlanResultPayload:
     source_message_id: str = ""
 
     @classmethod
-    def from_envelope(cls, envelope: MessageEnvelope) -> "ProjectPlanResultPayload":
+    def from_envelope(cls, envelope: MessageEnvelope) -> ProjectPlanResultPayload:
         _expect_type_in(envelope, MessageType.PROJECT_PLAN_RESULT, MessageType.DOMAIN_RESULT)
         return cls.from_payload(envelope.payload)
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "ProjectPlanResultPayload":
+    def from_payload(cls, payload: dict[str, Any]) -> ProjectPlanResultPayload:
         return cls(
             operation=_operation(payload),
             plan=_mapping(payload.get("plan", {}), "plan"),
@@ -117,12 +117,12 @@ class HelperCommandPayload:
     source_message_id: str = ""
 
     @classmethod
-    def from_envelope(cls, envelope: MessageEnvelope) -> "HelperCommandPayload":
+    def from_envelope(cls, envelope: MessageEnvelope) -> HelperCommandPayload:
         _expect_type(envelope, MessageType.HELPER_COMMAND)
         return cls.from_payload(envelope.payload)
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "HelperCommandPayload":
+    def from_payload(cls, payload: dict[str, Any]) -> HelperCommandPayload:
         helper = str(payload.get("helper", "")).strip()
         if not helper:
             raise MessageValidationError("helper command payload requires helper")
@@ -155,7 +155,7 @@ class HelperResultPayload:
     source_message_id: str = ""
 
     @classmethod
-    def from_envelope(cls, envelope: MessageEnvelope) -> "HelperResultPayload":
+    def from_envelope(cls, envelope: MessageEnvelope) -> HelperResultPayload:
         _expect_type(envelope, MessageType.HELPER_RESULT)
         return cls.from_payload(envelope.payload, fallback_helper=envelope.producer)
 
@@ -165,7 +165,7 @@ class HelperResultPayload:
         payload: dict[str, Any],
         *,
         fallback_helper: str = "",
-    ) -> "HelperResultPayload":
+    ) -> HelperResultPayload:
         helper = str(payload.get("helper") or fallback_helper).strip()
         if not helper:
             raise MessageValidationError("helper result payload requires helper")
@@ -202,7 +202,7 @@ class TaskEventPayload:
     context: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_envelope(cls, envelope: MessageEnvelope) -> "TaskEventPayload":
+    def from_envelope(cls, envelope: MessageEnvelope) -> TaskEventPayload:
         _expect_type_in(
             envelope,
             MessageType.TASK_EVENT,
@@ -212,7 +212,7 @@ class TaskEventPayload:
         return cls.from_payload(envelope.payload)
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "TaskEventPayload":
+    def from_payload(cls, payload: dict[str, Any]) -> TaskEventPayload:
         return cls(
             operation=_operation(payload),
             status=_status(payload.get("status", TaskStatus.RUNNING.value)),
@@ -242,12 +242,12 @@ class TaskStartedPayload:
     source_message_id: str = ""
 
     @classmethod
-    def from_envelope(cls, envelope: MessageEnvelope) -> "TaskStartedPayload":
+    def from_envelope(cls, envelope: MessageEnvelope) -> TaskStartedPayload:
         _expect_type(envelope, MessageType.TASK_STARTED)
         return cls.from_payload(envelope.payload)
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "TaskStartedPayload":
+    def from_payload(cls, payload: dict[str, Any]) -> TaskStartedPayload:
         return cls(
             operation=_operation(payload),
             status=_status(payload.get("status", TaskStatus.RUNNING.value)),
@@ -270,12 +270,12 @@ class TaskExecutionResultPayload:
     source_message_id: str = ""
 
     @classmethod
-    def from_envelope(cls, envelope: MessageEnvelope) -> "TaskExecutionResultPayload":
+    def from_envelope(cls, envelope: MessageEnvelope) -> TaskExecutionResultPayload:
         _expect_type(envelope, MessageType.TASK_RESULT)
         return cls.from_payload(envelope.payload)
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "TaskExecutionResultPayload":
+    def from_payload(cls, payload: dict[str, Any]) -> TaskExecutionResultPayload:
         return cls(
             operation=_operation(payload),
             status=_status(payload.get("status", "")),
@@ -306,7 +306,7 @@ class DeadLetterPayload:
     context: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "DeadLetterPayload":
+    def from_payload(cls, payload: dict[str, Any]) -> DeadLetterPayload:
         return cls(
             operation=_operation(payload),
             status=_status(payload.get("status", TaskStatus.FAILED.value)),

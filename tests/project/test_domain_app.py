@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from project_service import ProjectDomainServerContext
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope, MessageType
 
 
 class Handler:

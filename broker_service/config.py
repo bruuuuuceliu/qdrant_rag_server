@@ -28,6 +28,9 @@ class BrokerSettings:
 
     @classmethod
     def from_values(cls, values: dict[str, str]) -> BrokerSettings:
+        from configs.secrets import resolve_secret_files
+
+        values = resolve_secret_files(values)
         settings = cls(
             broker_type=values.get("BROKER_TYPE", "redpanda").strip().lower(),
             bootstrap_servers=values.get("BROKER_BOOTSTRAP_SERVERS", "127.0.0.1:9092"),

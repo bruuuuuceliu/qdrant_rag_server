@@ -17,8 +17,9 @@ import json
 import logging
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 from uuid import uuid4
 
 from memory_service.compression import CompressionPolicy
@@ -42,17 +43,17 @@ from memory_service.repository import (
     MemoryTransaction,
 )
 from memory_service.searcher import (
+    MemorySearcher,
     MemorySearchUnavailableError,
     MemorySearchUpstreamError,
-    MemorySearcher,
 )
 from shared.contracts import (
+    TOPICS,
     DomainCommandPayload,
     DomainResultPayload,
     MessageEnvelope,
     MessageProducer,
     MessageType,
-    TOPICS,
 )
 from shared.service_auth import ServiceAuthError, ServiceAuthSettings, verify_service_token
 

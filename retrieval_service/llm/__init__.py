@@ -10,10 +10,10 @@ with ``LLMProviderFactory``.
 
 from __future__ import annotations
 
-from retrieval_service.llm.protocols import ChatMessage, LLMProvider
 from retrieval_service.llm.factory import LLMProviderFactory
 from retrieval_service.llm.openai_compatible import OpenAICompatibleLLM
 from retrieval_service.llm.openrouter import OpenRouterLLM
+from retrieval_service.llm.protocols import ChatMessage, LLMProvider
 from retrieval_service.llm.utils import LLMProviderError, _redact_key
 
 OpenRouterClient = OpenRouterLLM

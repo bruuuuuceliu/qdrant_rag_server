@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import ssl
+from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
-from importlib.util import find_spec
 
 from broker_service.config import BrokerSettings
 from broker_service.redpanda import (
@@ -18,13 +18,13 @@ from broker_service.redpanda import (
     RedpandaProducer,
     _build_kafka_admin,
     _build_kafka_consumer,
-    _build_lag_consumer,
     _build_kafka_producer,
+    _build_lag_consumer,
     _kafka_security_kwargs,
     decode_envelope,
     encode_envelope,
 )
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope, MessageType
 
 
 class FakeKafkaProducer:
@@ -550,3 +550,37 @@ def test_build_kafka_admin_passes_security_kwargs(
     assert captured["kwargs"]["sasl_plain_username"] == "admin"
     assert captured["kwargs"]["sasl_plain_password"] == "s3cret"
     assert isinstance(captured["kwargs"]["ssl_context"], ssl.SSLContext)
+
+
+@pytest.mark.asyncio
+async def test_redpanda_publish_and_consume_increment_metrics() -> None:
+    from shared.ops import metrics
+
+    envelope = MessageEnvelope.create(
+        producer="manager_service",
+        message_type=MessageType.REQUEST_ACCEPTED,
+        data_type="project_document",
+        task_id="task-1",
+        correlation_id="corr-1",
+    )
+    producer = RedpandaProducer(settings=BrokerSettings(), _producer=FakeKafkaProducer())
+    await producer.start()
+    await producer.publish(TOPICS.task_intake, envelope, key="task-1")
+    await producer.stop()
+
+    fake = FakeKafkaConsumer([FakeKafkaMessage(encode_envelope(envelope))])
+    consumer = RedpandaConsumer(
+        settings=BrokerSettings(),
+        topic=TOPICS.task_intake,
+        group_id="metrics-group",
+        _consumer=fake,
+    )
+    await consumer.start()
+    await consumer.consume()
+    await consumer.stop()
+
+    body = metrics.render()
+    assert b"rag_broker_messages_produced_total" in body
+    assert b'topic="task.intake"' in body
+    assert b"rag_broker_messages_consumed_total" in body
+    assert b'group="metrics-group"' in body

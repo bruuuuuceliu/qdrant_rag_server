@@ -14,12 +14,12 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from shared.contracts import (
+    TOPICS,
     HelperCommandPayload,
     HelperResultPayload,
     MessageEnvelope,
     MessageProducer,
     MessageType,
-    TOPICS,
 )
 
 
@@ -139,7 +139,7 @@ class BrokerMemorySearcher:
                 key=task_id,
             )
             return await asyncio.wait_for(future, timeout=self.timeout_seconds)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise MemorySearchUnavailableError(
                 f"memory search timed out after {self.timeout_seconds}s"
             ) from exc

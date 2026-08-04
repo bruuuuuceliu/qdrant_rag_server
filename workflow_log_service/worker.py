@@ -8,6 +8,8 @@ from dataclasses import dataclass
 
 from broker_service import BrokerSettings
 from shared.logging import configure_logging
+from shared.ops.server import ops_server_from_env
+from shared.ops.shutdown import run_service
 from shared.runtime_health import RuntimeHealth
 from workflow_log_service.domain_app import (
     WorkflowLogDomainServerContext,
@@ -57,12 +59,14 @@ async def create_worker_context(
 
 async def serve_forever() -> None:
     context = await create_worker_context()
-    await context.domain_app.start_runtime()
-    try:
+    ops_server = ops_server_from_env("workflow_log", default_port=9005, readiness=context.health)
+
+    async def serve() -> None:
+        await context.domain_app.start_runtime()
         while True:
             await asyncio.sleep(3600)
-    finally:
-        await context.shutdown()
+
+    await run_service(serve=serve, shutdown=context.shutdown, ops_server=ops_server)
 
 
 def main() -> None:

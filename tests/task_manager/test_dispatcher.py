@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from redis_status_node import InMemoryTaskStatusStore
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope, MessageType
 from task_manager_service import TaskManagerDispatcher, TaskManagerSettings
 
 

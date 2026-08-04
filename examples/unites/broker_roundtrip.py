@@ -32,7 +32,7 @@ from broker_service import (  # noqa: E402
     create_redpanda_producer,
     required_topics,
 )
-from shared.contracts import MessageEnvelope, MessageType, TOPICS  # noqa: E402
+from shared.contracts import TOPICS, MessageEnvelope, MessageType  # noqa: E402
 
 load_dotenv(Path(__file__).with_name(".env"))
 

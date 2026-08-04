@@ -10,7 +10,6 @@ from configs.validation import (
     validate_settings_or_raise,
 )
 
-
 _PROJECT_EXPORTS = {
     "DEFAULT_CONFIG_DB_PATH",
     "ProjectConfigNotFoundError",

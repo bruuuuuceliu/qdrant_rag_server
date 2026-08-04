@@ -74,7 +74,7 @@ class ProjectRetrievalFilter:
         *,
         doc_ids: tuple[str, ...] = (),
         shared_user_id: str = SHARED_USER_ID,
-    ) -> "ProjectRetrievalFilter":
+    ) -> ProjectRetrievalFilter:
         return cls(
             project_id=scope.project_id,
             user_id=scope.user_id,

@@ -1,0 +1,28 @@
+# Prometheus scrape config for the broker-first RAG stack.
+# Every RAG service exposes /metrics on its RAG_OPS_PORT (9001-9012).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: rag
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - manager:9001
+          - task-manager:9002
+          - task-service:9003
+          - project:9004
+          - workflow-log:9005
+          - ingestion:9006
+          - retrieval:9007
+          - retrieval-index:9008
+          - storage:9009
+          - sqlite-node:9010
+          - redis-status-node:9011
+          - memory:9012
+
+  - job_name: redis
+    static_configs:
+      - targets:
+          - redis-exporter:9121

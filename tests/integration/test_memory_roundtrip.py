@@ -18,7 +18,7 @@ from memory_service.identity import FakeIdentitySource
 from memory_service.indexer import FakeMemoryIndexer
 from memory_service.repository import MemoryInMemoryRepository
 from memory_service.searcher import FakeMemorySearcher
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope
 from tests.memory.conftest import command
 
 

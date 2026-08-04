@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from retrieval_service.indexing import RetrievalIndexHelperServerContext
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope, MessageType
 
 
 class Handler:

@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass, field
 
 from broker_service import BrokerSettings, create_redpanda_bus
-from shared.contracts import MessageConsumer, MessageProducer, TOPICS
+from shared.contracts import TOPICS, MessageConsumer, MessageProducer
 from storage_node.domain_handler import StorageHelperHandler
 
 

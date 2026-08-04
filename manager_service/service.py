@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
 from manager_service.routing import DataType, ManagerRouter, Operation, RouteRequest
-from shared.contracts import MessageEnvelope, MessageProducer, MessageType, TOPICS, TaskIntakePayload
-from shared.contracts import TaskStatusStore
+from shared.contracts import (
+    TOPICS,
+    MessageEnvelope,
+    MessageProducer,
+    MessageType,
+    TaskIntakePayload,
+    TaskStatusStore,
+)
+from shared.ops import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +172,7 @@ class ManagerService:
                 context=context_payload,
             ).to_payload(),
         )
+        metrics.tasks_accepted.labels(service="manager_service").inc()
         await self._task_producer.publish(self._task_intake_topic, envelope, key=task_id)
         await self._publish_manager_request_accepted(
             operation=operation,
@@ -323,10 +331,10 @@ def _request_summary(request: dict[str, Any]) -> dict[str, Any]:
 
 def _context_summary(context: dict[str, Any]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
-    for field in ("request_id", "auth_context", "customer_context", "placement_hint"):
-        value = context.get(field)
+    for key in ("request_id", "auth_context", "customer_context", "placement_hint"):
+        value = context.get(key)
         if isinstance(value, dict):
-            summary[field] = dict(value)
+            summary[key] = dict(value)
         elif value is not None and str(value).strip():
-            summary[field] = str(value)
+            summary[key] = str(value)
     return summary

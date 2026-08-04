@@ -8,7 +8,6 @@ import re
 
 from retrieval_service.embedding.protocols import EmbeddingProvider, EmbeddingTask
 
-
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 
 

@@ -1,7 +1,13 @@
 """Independent broker service workspace."""
 
-from broker_service.config import BrokerSettings
 from broker_service.bootstrap import bootstrap_topics, broker_health, required_topics
+from broker_service.config import BrokerSettings
+from broker_service.factory import (
+    create_redpanda_admin,
+    create_redpanda_bus,
+    create_redpanda_consumer,
+    create_redpanda_producer,
+)
 from broker_service.lag import (
     BrokerLagReport,
     BrokerLagTarget,
@@ -10,18 +16,12 @@ from broker_service.lag import (
     parse_broker_lag_targets,
 )
 from broker_service.message_bus import BrokerMessageBus
-from broker_service.factory import (
-    create_redpanda_admin,
-    create_redpanda_bus,
-    create_redpanda_consumer,
-    create_redpanda_producer,
-)
 from broker_service.redpanda import (
+    RedpandaAdmin,
     RedpandaConsumer,
     RedpandaConsumeTimeoutError,
     RedpandaDependencyError,
     RedpandaHealth,
-    RedpandaAdmin,
     RedpandaProducer,
     decode_envelope,
     encode_envelope,

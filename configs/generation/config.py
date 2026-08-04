@@ -7,7 +7,6 @@ from pathlib import Path
 
 from configs.config import get_bool_value, get_int_value, get_value
 
-
 CONFIG_DIR = Path(__file__).resolve().parent
 
 

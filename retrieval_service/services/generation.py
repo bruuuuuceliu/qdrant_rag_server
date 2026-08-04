@@ -12,12 +12,8 @@ This module remains for backward compatibility.
 
 from __future__ import annotations
 
-from retrieval_service.llm import ChatMessage
-from retrieval_service.llm import LLMProvider
+from retrieval_service.llm import ChatMessage, LLMProvider, LLMProviderFactory, OpenRouterLLM, _redact_key
 from retrieval_service.llm import LLMProviderError as OpenRouterClientError
-from retrieval_service.llm import LLMProviderFactory
-from retrieval_service.llm import OpenRouterLLM
-from retrieval_service.llm import _redact_key
 
 OpenRouterClient = OpenRouterLLM
 

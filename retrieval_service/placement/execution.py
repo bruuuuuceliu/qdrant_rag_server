@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlparse
 
 from retrieval_service.services.vector_store import QdrantStore
@@ -23,7 +24,7 @@ class PlacementExecutionTarget:
         payload: dict[str, Any],
         *,
         placement_version: int,
-    ) -> "PlacementExecutionTarget":
+    ) -> PlacementExecutionTarget:
         shard_id = str(payload.get("shard_id", "")).strip()
         collection_name = str(payload.get("collection_name", "")).strip()
         if not shard_id:

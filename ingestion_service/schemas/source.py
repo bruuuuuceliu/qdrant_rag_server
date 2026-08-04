@@ -18,7 +18,7 @@ class SourceDescriptor:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_request(cls, request: Any) -> "SourceDescriptor":
+    def from_request(cls, request: Any) -> SourceDescriptor:
         if isinstance(request, dict):
             metadata = dict(request.get("metadata", {}) or {})
             raw_text = request.get("raw_text")

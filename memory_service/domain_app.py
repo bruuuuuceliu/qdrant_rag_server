@@ -21,7 +21,7 @@ from memory_service.identity import BrokerIdentitySource, FakeIdentitySource
 from memory_service.indexer import BrokerMemoryIndexer, FakeMemoryIndexer
 from memory_service.repository import SQLiteMemoryRepository
 from memory_service.searcher import BrokerMemorySearcher, FakeMemorySearcher
-from shared.contracts import MessageConsumer, MessageProducer, TOPICS
+from shared.contracts import TOPICS, MessageConsumer, MessageProducer
 
 
 @dataclass(slots=True)

@@ -12,12 +12,23 @@ dependencies = [
     "python-dotenv>=1.0",
     "aiokafka>=0.10",
     "redis>=5",
+    "prometheus-client>=0.20",
+    # Pinned patched for CVE-2026-69247 in the transitive dependency tree.
+    "cryptography>=50.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
+    "pip-audit>=2.7",
+    "ruff>=0.6",
+    "coverage>=7",
+]
+tracing = [
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27",
 ]
 ner = [
     "spacy>=3.7",
@@ -62,3 +73,48 @@ testpaths = ["tests"]
 markers = [
     "live_infra: requires live Docker or externally configured Redpanda/Redis/Qdrant services",
 ]
+
+[tool.coverage.run]
+source = [
+    "broker_service",
+    "configs",
+    "deployment",
+    "ingestion_service",
+    "manager_service",
+    "memory_service",
+    "project_service",
+    "retrieval_service",
+    "shared",
+    "sqlite_node",
+    "storage_node",
+    "task_manager_service",
+    "task_service",
+    "workflow_log_service",
+]
+omit = ["*/__init__.py", "*/generated/*", "tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 50
+skip_covered = true
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+exclude = ["shared/transport/grpc/generated"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "BLE001",  # blind `except Exception` is used deliberately at service edges
+    "B008",    # function calls in default arguments (dataclass defaults)
+    "UP006",   # keep `typing.List`/`typing.Dict` for py3.12 dataclass symmetry
+    "E402",    # conditional/optional-dependency imports after module code
+    "E501",    # line length is cosmetic; no formatter gate is enforced
+    "B017",    # pytest.raises(Exception) is an accepted test pattern
+    "B905",    # zip(strict=) is a preference, not enforced here
+]
+# Never auto-remove imports: F401 frequently strips load-bearing re-exports
+# (modules that re-export shared contracts for their package __init__). Those
+# are annotated with `# noqa: F401`; genuine unused imports are still reported.
+extend-unfixable = ["F401"]

@@ -4,18 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
-from memory_service.repository import (
-    FactSupersessionConflict,
-    IdempotencyConflictError,
-    MemoryInMemoryRepository,
-)
 from memory_service.searcher import MemorySearchUpstreamError
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
-from shared.service_auth import ServiceAuthSettings
+from shared.contracts import MessageEnvelope, MessageType
 
-from .conftest import command, request_hash, token
+from .conftest import command, token
 
 
 def _result(envelope: MessageEnvelope) -> dict[str, Any]:
@@ -767,7 +759,7 @@ async def test_ac16_fake_mode_full_set_without_broker(seeded_handler) -> None:
 
 async def test_scope_forbidden_when_service_not_allowed(seeded_handler, auth_settings) -> None:
     handler = seeded_handler
-    env = await handler.handle(
+    await handler.handle(
         command("session.start", {"session_id": "con_1", "agent_id": "agent_1"})
     )
     # re-mint token as an unlisted service

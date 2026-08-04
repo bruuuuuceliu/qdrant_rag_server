@@ -30,6 +30,8 @@ from retrieval_service.services.entities import LocalNerExtractor, NoopNerExtrac
 from retrieval_service.services.sparse_encoder import FastEmbedSparseTextEncoder
 from retrieval_service.services.vector_store import QdrantStore
 from shared.logging import configure_logging
+from shared.ops.server import ops_server_from_env
+from shared.ops.shutdown import run_service
 from shared.runtime_health import RuntimeHealth
 
 
@@ -156,12 +158,14 @@ async def create_worker_server(
 
 async def serve_forever(settings: AppSettings | None = None) -> None:
     app = await create_worker_server(settings)
-    await app.helper_app.start_runtime()
-    try:
+    ops_server = ops_server_from_env("retrieval_index", default_port=9008, readiness=app.health)
+
+    async def serve() -> None:
+        await app.helper_app.start_runtime()
         while True:
             await asyncio.sleep(3600)
-    finally:
-        await app.shutdown()
+
+    await run_service(serve=serve, shutdown=app.shutdown, ops_server=ops_server)
 
 
 def main() -> None:

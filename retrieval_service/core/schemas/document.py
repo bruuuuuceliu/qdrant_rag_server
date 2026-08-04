@@ -68,7 +68,7 @@ class BaseChunkPayload:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_chunk(cls, chunk: BaseChunk) -> "BaseChunkPayload":
+    def from_chunk(cls, chunk: BaseChunk) -> BaseChunkPayload:
         return cls(
             payload_id=chunk.chunk_id,
             chunk_id=chunk.chunk_id,

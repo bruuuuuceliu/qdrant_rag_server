@@ -4,18 +4,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from dataclasses import dataclass, field
 import json
 import os
+from dataclasses import dataclass, field
 from typing import Any
 
 import grpc
 from google.protobuf.json_format import MessageToDict
 from google.protobuf.message import Message
 
-from shared.transport.grpc.generated import retrieval_service_pb2
-from shared.transport.grpc.generated import retrieval_service_pb2_grpc
-
+from shared.transport.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
 
 DEFAULT_GRPC_TARGET = "127.0.0.1:50051"
 DEFAULT_PROJECT_ID = "demo"
@@ -51,7 +49,7 @@ class RagTestClientConfig:
     metadata: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> "RagTestClientConfig":
+    def from_env(cls, env: dict[str, str] | None = None) -> RagTestClientConfig:
         values = os.environ if env is None else env
         project_id = values.get("RAG_TEST_PROJECT_ID", DEFAULT_PROJECT_ID)
         version = values.get("RAG_TEST_COLLECTION_VERSION", DEFAULT_VERSION)
@@ -91,7 +89,7 @@ class RagTestClient:
         self._stub = grpc_stub
         self._channel: grpc.aio.Channel | None = None
 
-    async def __aenter__(self) -> "RagTestClient":
+    async def __aenter__(self) -> RagTestClient:
         await self.connect()
         return self
 

@@ -6,6 +6,7 @@ Uses presigned-URL-style PUT/GET operations via the S3 REST API.
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 
 from retrieval_service.storage.base import ObjectStorage, ObjectStorageError, _aws_sign
 
@@ -35,9 +36,9 @@ class S3ObjectStorage(ObjectStorage):
 
     async def put(self, key: str, content: bytes, content_type: str = "") -> None:
         import hashlib as hl
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         amz_date = now.strftime("%Y%m%dT%H%M%SZ")
         date_stamp = now.strftime("%Y%m%d")
 
@@ -83,9 +84,9 @@ class S3ObjectStorage(ObjectStorage):
 
     async def get(self, key: str) -> bytes:
         import hashlib as hl
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         amz_date = now.strftime("%Y%m%dT%H%M%SZ")
         date_stamp = now.strftime("%Y%m%d")
 
@@ -129,9 +130,9 @@ class S3ObjectStorage(ObjectStorage):
 
     async def delete(self, key: str) -> None:
         import hashlib as hl
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         amz_date = now.strftime("%Y%m%dT%H%M%SZ")
         date_stamp = now.strftime("%Y%m%d")
 

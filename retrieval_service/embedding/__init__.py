@@ -13,11 +13,11 @@ with ``EmbeddingProviderFactory``.
 from __future__ import annotations
 
 from retrieval_service.embedding.deterministic import DeterministicHashEmbedding
-from retrieval_service.embedding.protocols import EmbeddingProvider, EmbeddingTask
 from retrieval_service.embedding.factory import EmbeddingProviderFactory
 from retrieval_service.embedding.local import LocalSentenceTransformerEmbedding
 from retrieval_service.embedding.openai_compatible import OpenAICompatibleEmbedding
 from retrieval_service.embedding.openrouter import OpenRouterEmbedding
+from retrieval_service.embedding.protocols import EmbeddingProvider, EmbeddingTask
 from retrieval_service.embedding.utils import (
     RemoteEmbeddingError,
     _parse_embedding_response,

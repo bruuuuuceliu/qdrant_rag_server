@@ -1,6 +1,10 @@
 from retrieval_service.storage.base import (
     ObjectStorage as ObjectStorage,
+)
+from retrieval_service.storage.base import (
     ObjectStorageError as ObjectStorageError,
+)
+from retrieval_service.storage.base import (
     make_storage_key as make_storage_key,
 )
 from retrieval_service.storage.filesystem import (

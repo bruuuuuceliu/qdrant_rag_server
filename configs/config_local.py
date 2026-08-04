@@ -13,6 +13,8 @@ from pathlib import Path
 
 from configs.base import (
     AppSettings as BaseAppSettings,
+)
+from configs.base import (
     get_bool_value,
     get_float_value,
     get_int_value,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from broker_service import BrokerMessageBus
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope, MessageType
 
 
 class Component:

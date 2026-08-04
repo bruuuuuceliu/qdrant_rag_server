@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-import logging
 from typing import Any
 
 from shared.contracts import (
+    TOPICS,
     DeadLetterPayload,
     HelperCommandPayload,
     HelperResultPayload,
@@ -17,7 +18,6 @@ from shared.contracts import (
     MessageType,
     ProjectPlanRequestPayload,
     ProjectPlanResultPayload,
-    TOPICS,
     TaskEventPayload,
     TaskExecutionResultPayload,
     TaskRequestPayload,

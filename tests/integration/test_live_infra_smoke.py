@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import asyncio
+import os
 from uuid import uuid4
 
 import pytest
@@ -18,8 +18,7 @@ from broker_service import (
 )
 from manager_service.service import ManagerService
 from redis_status_node import RedisStatusSettings, RedisTaskStatusStore
-from shared.contracts import MessageEnvelope, MessageType, TOPICS, TaskStatusRecord
-
+from shared.contracts import TOPICS, MessageEnvelope, MessageType, TaskStatusRecord
 
 pytestmark = pytest.mark.live_infra
 

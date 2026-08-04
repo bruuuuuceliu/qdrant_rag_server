@@ -9,7 +9,7 @@ from pathlib import Path
 
 from broker_service import BrokerSettings, create_redpanda_bus
 from configs.config import get_value
-from shared.contracts import MessageConsumer, MessageProducer, TOPICS
+from shared.contracts import TOPICS, MessageConsumer, MessageProducer
 from workflow_log_service.domain_handler import WorkflowLogDomainHandler
 from workflow_log_service.repository import SQLiteWorkflowLogRepository
 
@@ -131,7 +131,7 @@ class WorkflowLogDomainSettings:
     db_path: Path = Path("/var/lib/rag/workflow_log.db")
 
     @classmethod
-    def from_values(cls, values: dict[str, str]) -> "WorkflowLogDomainSettings":
+    def from_values(cls, values: dict[str, str]) -> WorkflowLogDomainSettings:
         return cls(
             service_name=get_value(values, "WORKFLOW_LOG_SERVICE_NAME", "workflow_log_service"),
             command_topic=get_value(

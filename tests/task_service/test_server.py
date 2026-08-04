@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope, MessageType
 from task_service import TaskServiceDispatcher, TaskServiceServerContext
 
 

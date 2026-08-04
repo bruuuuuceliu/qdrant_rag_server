@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from ingestion_service.server import IngestionHelperServerContext
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope, MessageType
 
 
 class Handler:

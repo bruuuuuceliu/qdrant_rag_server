@@ -5,9 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from shared.contracts import JobStatus
-
 from project_service.schemas.common import require_non_empty
+from shared.contracts import JobStatus
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

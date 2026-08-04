@@ -19,7 +19,6 @@ from retrieval_service.placement.execution import (
     placement_write_targets,
 )
 from retrieval_service.query.qdrant_filters import _build_qdrant_filter
-from retrieval_service.services.vector_store import models
 from retrieval_service.ranking.entity_boost import (
     apply_entity_boosts,
     extract_query_entity_keys,
@@ -41,7 +40,7 @@ from retrieval_service.services.retriever import (
     Retriever,
 )
 from retrieval_service.services.sparse_encoder import SparseTextEncoder
-from retrieval_service.services.vector_store import QdrantStore
+from retrieval_service.services.vector_store import QdrantStore, models
 
 
 @dataclass(frozen=True, slots=True)

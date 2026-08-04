@@ -21,8 +21,8 @@ from retrieval_service.placement.hashing import (
 )
 from retrieval_service.placement.models import (
     PlacementPlan,
-    PlacementRecord,
     PlacementRebalancePlan,
+    PlacementRecord,
     PlacementTarget,
     ProjectPlacementScope,
     RetrievalShard,
@@ -30,8 +30,8 @@ from retrieval_service.placement.models import (
 )
 from retrieval_service.placement.repository import (
     InMemoryPlacementRepository,
-    InMemoryRoutingPolicyRepository,
     InMemoryRetrievalShardRepository,
+    InMemoryRoutingPolicyRepository,
     PlacementRepository,
     RetrievalShardRepository,
     RoutingPolicyRepository,

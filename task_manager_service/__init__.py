@@ -1,5 +1,6 @@
 """Independent task manager service workspace."""
 
+from task_manager_service.app import create_app
 from task_manager_service.config import TaskManagerHealth, TaskManagerSettings
 from task_manager_service.dispatcher import (
     DispatchResult,
@@ -9,7 +10,6 @@ from task_manager_service.dispatcher import (
     TaskManagerDispatcher,
 )
 from task_manager_service.server import TaskManagerServerContext
-from task_manager_service.app import create_app
 
 __all__ = [
     "DispatchResult",

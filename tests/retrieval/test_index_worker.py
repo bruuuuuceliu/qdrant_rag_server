@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import unittest
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from tempfile import TemporaryDirectory
-import unittest
+from types import SimpleNamespace
 
 from configs.config import AppSettings
 from configs.retrieval.config import RetrievalIndexWorkerSettings

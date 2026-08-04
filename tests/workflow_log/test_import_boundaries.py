@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 GUARDED_FILES = (
     ROOT / "workflow_log_service" / "domain_app.py",

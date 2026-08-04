@@ -34,6 +34,8 @@ pytest.importorskip(
 
 from simple_agent_service_auth import (  # noqa: E402
     ServiceAuthSettings as SaServiceAuthSettings,
+)
+from simple_agent_service_auth import (
     create_service_token,
 )
 

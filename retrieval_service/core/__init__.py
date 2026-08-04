@@ -1,20 +1,20 @@
 """Core shared types."""
 
 from retrieval_service.core.schemas import (
+    DEFAULT_KB_ID,
+    DEFAULT_NAMESPACE,
+    SHARED_OWNER_ID,
+    SHARED_USER_ID,
     BaseCacheScope,
     BaseChunk,
     BaseChunkPayload,
     BaseDocument,
     BaseIngestJob,
-    BaseServiceConfig,
     BaseQueryScope,
     BaseRetrievalFilter,
-    DEFAULT_NAMESPACE,
-    DEFAULT_KB_ID,
-    SHARED_OWNER_ID,
+    BaseServiceConfig,
     IngestJobStatus,
     JobStatus,
-    SHARED_USER_ID,
     Visibility,
 )
 

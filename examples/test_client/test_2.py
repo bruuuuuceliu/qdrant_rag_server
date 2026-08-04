@@ -14,7 +14,6 @@ from examples.test_client.test_client import (
     require_terminal_ingest_status,
 )
 
-
 DEFAULT_TEXT = (
     "Qdrant stores vector embeddings for semantic retrieval. "
     "This document was inserted by examples.test_client.test_2."

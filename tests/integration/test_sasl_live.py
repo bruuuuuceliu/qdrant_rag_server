@@ -23,7 +23,7 @@ from broker_service import (
     create_redpanda_producer,
     required_topics,
 )
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope, MessageType
 
 pytestmark = pytest.mark.live_infra
 

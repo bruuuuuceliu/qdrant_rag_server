@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from shared.contracts import (
@@ -11,7 +11,6 @@ from shared.contracts import (
     MessageEnvelope,
     MessageProducer,
     MessageType,
-    TOPICS,
     TaskEventPayload,
     TaskExecutionResultPayload,
     TaskRequestPayload,
@@ -19,6 +18,7 @@ from shared.contracts import (
     TaskStatusRecord,
     TaskStatusStore,
 )
+from shared.ops import metrics
 from task_manager_service.config import TaskManagerSettings
 
 logger = logging.getLogger(__name__)
@@ -155,11 +155,17 @@ class TaskManagerDispatcher:
     ) -> None:
         if self._status_store is None:
             return
+        status_value = str(status)
+        service = getattr(self._settings, "service_name", "task_manager")
+        if status_value == TaskStatus.COMPLETED.value:
+            metrics.tasks_completed.labels(service=service).inc()
+        elif status_value == TaskStatus.FAILED.value:
+            metrics.tasks_failed.labels(service=service).inc()
         logger.info(
             "task manager status write task_id=%s operation=%s status=%s ttl_seconds=%s",
             envelope.task_id,
             operation,
-            str(status),
+            status_value,
             ttl_seconds if ttl_seconds is not None else "",
         )
         await self._status_store.set_status(

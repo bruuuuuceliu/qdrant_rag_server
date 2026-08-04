@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 from broker_service import BrokerSettings, create_redpanda_bus
 from retrieval_service.server.domain_handler import RetrievalHelperHandler
-from shared.contracts import MessageConsumer, MessageProducer, TOPICS
+from shared.contracts import TOPICS, MessageConsumer, MessageProducer
 
 
 @dataclass(slots=True)

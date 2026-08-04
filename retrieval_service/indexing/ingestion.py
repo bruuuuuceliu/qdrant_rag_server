@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from ingestion_service import IngestedChunk
 from retrieval_service.core.schemas import BaseChunkPayload

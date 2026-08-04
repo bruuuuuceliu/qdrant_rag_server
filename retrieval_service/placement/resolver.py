@@ -10,8 +10,8 @@ from retrieval_service.placement.hashing import (
     write_routing_key,
 )
 from retrieval_service.placement.models import (
-    PlacementRebalancePlan,
     PlacementPlan,
+    PlacementRebalancePlan,
     PlacementRecord,
     PlacementTarget,
     ProjectPlacementScope,

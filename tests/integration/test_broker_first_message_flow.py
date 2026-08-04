@@ -14,7 +14,7 @@ from project_service import ProjectDomainHandler
 from redis_status_node import InMemoryTaskStatusStore
 from retrieval_service.indexing import RetrievalIndexHelperHandler
 from retrieval_service.server import RetrievalHelperHandler
-from shared.contracts import MessageEnvelope, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope
 from storage_node import FilesystemStorageService, StorageHelperHandler
 from task_manager_service import TaskManagerDispatcher
 from task_service import InMemoryTaskStateRepository, TaskServiceDispatcher

@@ -56,7 +56,7 @@ class BaseRetrievalFilter:
         *,
         resource_ids: tuple[str, ...] = (),
         shared_owner_id: str = SHARED_OWNER_ID,
-    ) -> "BaseRetrievalFilter":
+    ) -> BaseRetrievalFilter:
         return cls(
             scope_id=scope.scope_id,
             owner_id=scope.owner_id,

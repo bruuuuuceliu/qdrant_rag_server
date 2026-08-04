@@ -5,15 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from project_service.adapters.base import ProjectAdapter
-from project_service.schemas import (
-    ProjectConfig,
-    ProjectQueryScope,
-    ProjectRetrievalFilter,
-)
 from project_service.gateway.requests import (
     DeleteDocumentRequest,
     IngestRequest,
     SearchRequest,
+)
+from project_service.schemas import (
+    ProjectConfig,
+    ProjectQueryScope,
+    ProjectRetrievalFilter,
 )
 
 

@@ -7,8 +7,8 @@ from typing import Any
 
 from ingestion_service.jobs import IngestionJobRepository
 from ingestion_service.schemas import IngestionJob
-from ingestion_service.storage import make_raw_storage_key
 from ingestion_service.service import IngestionResult, IngestionService
+from ingestion_service.storage import make_raw_storage_key
 from shared.contracts import DataType, JobStatus, normalize_data_type
 
 
@@ -28,7 +28,7 @@ class IngestionPlan:
     raw_content: Any | None = None
 
     @classmethod
-    def from_plan(cls, plan: dict[str, Any]) -> "IngestionPlan":
+    def from_plan(cls, plan: dict[str, Any]) -> IngestionPlan:
         payload = _command_plan(plan)
         metadata = _metadata(payload.get("metadata", {}))
         data_type = normalize_data_type(metadata.get("data_type"))

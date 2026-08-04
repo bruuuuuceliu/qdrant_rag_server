@@ -11,6 +11,8 @@ from typing import Any
 
 from broker_service.config import BrokerSettings
 from shared.contracts import MessageEnvelope
+from shared.ops import metrics
+from shared.ops.tracing import optional_span, setup_tracing
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,7 @@ class RedpandaProducer:
 
     async def publish(self, topic: str, envelope: MessageEnvelope, *, key: str = "") -> None:
         configured_topic = self.settings.topic(topic)
+        metrics.broker_messages_produced.labels(topic=configured_topic).inc()
         logger.info(
             "broker publish topic=%s task_id=%s message_type=%s producer=%s key=%s",
             configured_topic,
@@ -91,11 +94,19 @@ class RedpandaProducer:
             envelope.producer,
             key,
         )
-        await self._producer.send_and_wait(
-            configured_topic,
-            value=encode_envelope(envelope),
-            key=key.encode("utf-8") if key else None,
-        )
+        tracer = setup_tracing(self.settings.client_id)
+        with optional_span(
+            tracer,
+            f"broker.publish {configured_topic}",
+            topic=configured_topic,
+            task_id=envelope.task_id,
+            correlation_id=envelope.correlation_id,
+        ):
+            await self._producer.send_and_wait(
+                configured_topic,
+                value=encode_envelope(envelope),
+                key=key.encode("utf-8") if key else None,
+            )
 
     async def start(self) -> None:
         await self._producer.start()
@@ -132,7 +143,7 @@ class RedpandaConsumer:
             return await self._consume_next()
         try:
             return await asyncio.wait_for(self._consume_next(), timeout=timeout_seconds)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise RedpandaConsumeTimeoutError(
                 "timed out consuming "
                 f"topic={self.settings.topic(self.topic)} group_id={self.group_id}"
@@ -140,6 +151,8 @@ class RedpandaConsumer:
 
     async def _consume_next(self) -> MessageEnvelope | dict[str, Any]:
         async for message in self._consumer:
+            consumed_topic = getattr(message, "topic", self.settings.topic(self.topic))
+            metrics.broker_messages_consumed.labels(topic=consumed_topic, group=self.group_id).inc()
             if self.raw:
                 value = message.value
                 if isinstance(value, bytes):
@@ -149,7 +162,7 @@ class RedpandaConsumer:
                     raise ValueError("raw broker message value must be a JSON object")
                 logger.info(
                     "broker consume topic=%s partition=%s offset=%s group_id=%s raw_json=True",
-                    getattr(message, "topic", self.settings.topic(self.topic)),
+                    consumed_topic,
                     getattr(message, "partition", ""),
                     getattr(message, "offset", ""),
                     self.group_id,
@@ -158,7 +171,7 @@ class RedpandaConsumer:
             envelope = decode_envelope(message.value)
             logger.info(
                 "broker consume topic=%s partition=%s offset=%s group_id=%s task_id=%s message_type=%s producer=%s",
-                getattr(message, "topic", self.settings.topic(self.topic)),
+                consumed_topic,
                 getattr(message, "partition", ""),
                 getattr(message, "offset", ""),
                 self.group_id,
@@ -166,7 +179,16 @@ class RedpandaConsumer:
                 envelope.message_type,
                 envelope.producer,
             )
-            return envelope
+            tracer = setup_tracing(self.settings.client_id)
+            with optional_span(
+                tracer,
+                f"broker.consume {consumed_topic}",
+                topic=consumed_topic,
+                task_id=envelope.task_id,
+                correlation_id=envelope.correlation_id,
+                group_id=self.group_id,
+            ):
+                return envelope
         raise RuntimeError("consumer stopped before receiving a message")
 
     async def start(self) -> None:

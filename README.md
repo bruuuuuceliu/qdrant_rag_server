@@ -309,6 +309,36 @@ settings = load_settings(profile="production")
 validate_settings_or_raise(settings, profile="production")
 ```
 
+## Production Deployment
+
+The same broker-first topology runs in production through
+`deployment/docker-compose.prod.yml` — one container per worker on a private
+network, a non-root `rag` user, and an ops HTTP surface (`/healthz`, `/readyz`,
+`/metrics`) on every service. Build the image, set the required secrets, and
+bring it up:
+
+```bash
+docker build --build-arg INSTALL_CPU_ONLY_TORCH=1 -t qdrant-rag-server:latest .
+cp deployment/compose.prod.env.example deployment/.env   # fill secrets
+cd deployment && docker compose -f docker-compose.prod.yml up -d
+docker compose ps   # all services report healthy
+```
+
+Highlights (details in [docs/operations.md §11](docs/operations.md)):
+
+- **Observability**: JSON structured logs with correlation IDs
+  (`RAG_LOG_FORMAT=json`), Prometheus metrics on `:9001-:9012` scraped by the
+  bundled Prometheus (`:9090`), optional OpenTelemetry tracing via
+  `RAG_OTEL_ENDPOINT`.
+- **Hardening**: manager gRPC rate limiting + payload caps, broker SASL/TLS
+  (commented env in the compose), secret-file injection (`KEY_FILE` pattern for
+  Docker/k8s secrets), unprivileged containers, graceful SIGTERM shutdown.
+- **Backups**: `deployment/backup.py` snapshots SQLite + Qdrant with rotation;
+  run via `docker compose --profile backup run --rm backup`.
+- **CI**: ruff lint, pip-audit, and a coverage gate run on every push/PR; a
+  manual `container-smoke` job builds the image and verifies the full compose
+  topology end to end.
+
 ## Current Status
 
 Implemented and tested locally:

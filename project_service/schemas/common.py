@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-
 DEFAULT_KB_ID = "default"
 SHARED_USER_ID = "__shared__"
 

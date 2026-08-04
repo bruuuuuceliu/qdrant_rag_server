@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 
-
 CONFIG_ROOT = Path(__file__).resolve().parent
 
 
@@ -104,6 +103,10 @@ def load_settings_from_defaults(
         values.update(read_env_file(path))
 
     values.update(os.environ)
+
+    from configs.secrets import resolve_secret_files
+
+    values = resolve_secret_files(values)
 
     from configs.embeddings.config import load_embedding_settings
     from configs.generation.config import load_generation_settings

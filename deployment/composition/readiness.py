@@ -21,7 +21,7 @@ from broker_service import (
 from memory_service.config import MemoryServiceSettings
 from memory_service.repository import SQLiteMemoryRepository
 from redis_status_node import RedisStatusSettings, RedisTaskStatusStore, TaskStatusRecord
-from sqlite_node import SQLiteNodeSettings, SQLiteNodeService
+from sqlite_node import SQLiteNodeService, SQLiteNodeSettings
 from storage_node.config import StorageNodeSettings
 
 

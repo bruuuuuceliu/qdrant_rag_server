@@ -10,7 +10,6 @@ from retrieval_service.placement.models import (
     RoutingPolicy,
 )
 
-
 ROUTING_MODES = {
     "project_single",
     "user_single",

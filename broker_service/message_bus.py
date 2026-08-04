@@ -1,6 +1,7 @@
 """Message bus composition helpers."""
 
 from __future__ import annotations
+
 from dataclasses import dataclass
 
 from shared.contracts import MessageEnvelope
@@ -15,7 +16,7 @@ class BrokerMessageBus:
     consumer_topic: str = ""
 
     async def publish(self, topic: str, envelope: MessageEnvelope, *, key: str = "") -> None:
-        publish = getattr(self.producer, "publish")
+        publish = self.producer.publish
         await publish(topic, envelope, key=key)
 
     async def consume(self, topic: str) -> MessageEnvelope:
@@ -23,7 +24,7 @@ class BrokerMessageBus:
             raise RuntimeError("broker message bus has no consumer")
         if self.consumer_topic and topic != self.consumer_topic:
             raise ValueError(f"broker message bus consumes only {self.consumer_topic}")
-        consume = getattr(self.consumer, "consume")
+        consume = self.consumer.consume
         return await consume(topic)
 
     async def commit(self) -> None:

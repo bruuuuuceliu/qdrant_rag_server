@@ -1,0 +1,367 @@
+# Production compose for the broker-first RAG topology.
+#
+# Local parity guarantee: this runs the exact same service code and broker
+# contracts as `examples/local/run-all.sh`; only addresses, ports, credentials,
+# and paths differ (the structure.md golden rule). Every RAG process exposes
+# /healthz + /readyz + /metrics on its RAG_OPS_PORT and shuts down gracefully
+# on SIGTERM.
+#
+# Required secrets (fail-fast via compose interpolation):
+#   REDIS_PASSWORD
+#   SERVICE_AUTH_SIGNING_KEY   (must equal simple_agent's auth signing key)
+# Set them in a `.env` next to this file (see compose.prod.env.example) or via
+# the platform secret manager. Prefer *_FILE injection for secrets; the config
+# layer reads them at startup.
+#
+# Broker security: the internal listener is PLAINTEXT here. To enable
+# SASL/SCRAM + TLS (operations.md §4), uncomment the BROKER_SECURITY_* / SASL_*
+# env under `x-rag-service` and configure Redpanda accordingly.
+name: qdrant-rag
+
+networks:
+  # Normal bridge so workers can reach S3/OpenRouter/HuggingFace when enabled.
+  # Harden at the host/cloud firewall; the RAG stack is never publicly exposed.
+  rag-internal:
+
+volumes:
+  rag-data:
+  redpanda-data:
+  redis-data:
+  qdrant-data:
+  prometheus-data:
+  backup-data:
+
+x-rag-env: &rag-env
+  RAG_CONFIG_PROFILE: production
+  RAG_LOG_FORMAT: ${RAG_LOG_FORMAT:-json}
+  RAG_LOG_LEVEL: ${RAG_LOG_LEVEL:-INFO}
+  RAG_OPS_ENABLED: "true"
+
+  # Broker: internal listener on the private network (bare topics so the
+  # simple_agent memory path shares names).
+  BROKER_BOOTSTRAP_SERVERS: redpanda:19092
+  BROKER_TOPIC_PREFIX: "${BROKER_TOPIC_PREFIX:-}"
+  # --- SASL/TLS hardening (uncomment to enable) ---
+  # BROKER_SECURITY_PROTOCOL: SASL_SSL
+  # BROKER_SASL_MECHANISM: SCRAM-SHA-256
+  # BROKER_SASL_PLAIN_USERNAME: "${BROKER_SASL_PLAIN_USERNAME:-}"
+  # BROKER_SASL_PLAIN_PASSWORD_FILE: /run/secrets/broker_sasl_password
+  # BROKER_SSL_CAFILE: /etc/redpanda/certs/ca.crt
+  # BROKER_SSL_CERTFILE: /etc/redpanda/certs/client.crt
+  # BROKER_SSL_KEYFILE: /etc/redpanda/certs/client.key
+
+  # Task status store.
+  REDIS_TASK_STATUS_URL: "redis://:${REDIS_PASSWORD}@redis:6379/0"
+
+  # Retrieval backend.
+  RAG_QDRANT_HOST: qdrant
+  RAG_QDRANT_PORT: "6333"
+  RAG_QDRANT_URL: http://qdrant:6333
+
+  # Embeddings (production: local bge 768-dim; override for smoke).
+  RAG_EMBEDDING_PROVIDER: ${RAG_EMBEDDING_PROVIDER:-local}
+  RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}
+  RAG_EMBEDDING_DIMENSION: ${RAG_EMBEDDING_DIMENSION:-768}
+  RAG_EMBEDDING_DEVICE: ${RAG_EMBEDDING_DEVICE:-cpu}
+
+  # Durable retrieval state lives on the shared rag-data volume.
+  RAG_RESPONSE_CACHE_DB_PATH: /var/lib/rag/response_cache.db
+  RETRIEVAL_PLACEMENT_ENABLED: "true"
+  RETRIEVAL_PLACEMENT_DB_PATH: /var/lib/rag/placement.db
+  RETRIEVAL_PLACEMENT_SHARD_ID: retrieval-primary
+  RETRIEVAL_PLACEMENT_CLUSTER_ID: retrieval-cluster
+  RAG_OBJECT_STORAGE_PROVIDER: filesystem
+  RAG_OBJECT_STORAGE_BASE_PATH: /var/lib/rag/raw_storage
+
+  RAG_GENERATION_ENABLED: "false"
+
+x-rag-service: &rag-service
+  image: qdrant-rag-server:${RAG_IMAGE_TAG:-latest}
+  restart: unless-stopped
+  networks: [rag-internal]
+  environment:
+    <<: *rag-env
+  volumes:
+    - rag-data:/var/lib/rag
+  depends_on:
+    redpanda:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    qdrant:
+      condition: service_healthy
+
+x-rag-healthcheck: &rag-healthcheck
+  interval: 10s
+  timeout: 3s
+  retries: 10
+  start_period: 45s
+
+services:
+  # --- Infrastructure --------------------------------------------------------
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:${REDPANDA_TAG:-latest}
+    command: >
+      redpanda start --overprovisioned --smp 1 --memory 1G --reserve-memory 0M
+      --node-id 0 --check=false
+      --kafka-addr PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:19092
+      --advertise-kafka-addr PLAINTEXT://localhost:9092,INTERNAL://redpanda:19092
+      --rpc-addr 0.0.0.0:33145 --advertise-rpc-addr redpanda:33145
+    ports:
+      - "9092:9092"   # host dev listener (PLAINTEXT, dev-only)
+      - "9644:9644"   # admin API
+      - "19092:19092" # internal listener for the RAG mesh
+    networks: [rag-internal]
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9644/v1/status/ready || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"]
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
+    networks: [rag-internal]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:${QDRANT_TAG:-v1.9.7}
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    networks: [rag-internal]
+    volumes:
+      - qdrant-data:/qdrant/storage
+    # The qdrant image ships no curl/wget/bash, so probe the HTTP listener
+    # (port 6333 = hex 18BD) directly via /proc/net/tcp.
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ':18BD ' /proc/net/tcp || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # --- RAG services (same image, per-service command + ops port) -------------
+
+  manager:
+    <<: *rag-service
+    command: ["python", "-m", "manager_service.worker"]
+    environment:
+      <<: *rag-env
+      RAG_OPS_PORT: "9001"
+      RAG_GRPC_PORT: "50051"
+      MANAGER_RATE_LIMIT_REQUESTS_PER_SECOND: ${MANAGER_RATE_LIMIT_REQUESTS_PER_SECOND:-100}
+      MANAGER_RATE_LIMIT_BURST: ${MANAGER_RATE_LIMIT_BURST:-200}
+      MANAGER_MAX_REQUEST_BYTES: ${MANAGER_MAX_REQUEST_BYTES:-4194304}
+    ports:
+      - "50051:50051"
+      - "9001:9001"
+    healthcheck:
+      <<: *rag-healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9001/readyz"]
+
+  redis-status-node:
+    <<: *rag-service
+    command: ["python", "-m", "redis_status_node.worker"]
+    environment:
+      <<: *rag-env
+      RAG_OPS_PORT: "9011"
+    ports: ["9011:9011"]
+    healthcheck:
+      <<: *rag-healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9011/readyz"]
+
+  sqlite-node:
+    <<: *rag-service
+    command: ["python", "-m", "sqlite_node.worker"]
+    environment:
+      <<: *rag-env
+      RAG_OPS_PORT: "9010"
+      SQLITE_NODE_DATABASE_ROOT: /var/lib/rag/sqlite_node
+    ports: ["9010:9010"]
+    healthcheck:
+      <<: *rag-healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9010/readyz"]
+
+  storage:
+    <<: *rag-service
+    command: ["python", "-m", "storage_node.worker"]
+    environment:
+      <<: *rag-env
+      RAG_OPS_PORT: "9009"
+      STORAGE_NODE_ROOT: /var/lib/rag/raw_storage
+    ports: ["9009:9009"]
+    healthcheck:
+      <<: *rag-healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9009/readyz"]
+
+  task-manager:
+    <<: *rag-service
+    command: ["python", "-m", "task_manager_service.worker"]
+    environment:
+      <<: *rag-env
+      RAG_OPS_PORT: "9002"
+    ports: ["9002:9002"]
+    healthcheck:
+      <<: *rag-healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9002/readyz"]
+
+  task-service:
+    <<: *rag-service
+    command: ["python", "-m", "task_service.worker"]
+    environment:
+      <<: *rag-env
+      RAG_OPS_PORT: "9003"
+      TASK_SERVICE_STATE_DB_PATH: /var/lib/rag/task_service.db
+      RAG_LOCAL_DATA_DIR: /var/lib/rag/task_service
+    ports: ["9003:9003"]
+    healthcheck:
+      <<: *rag-healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9003/readyz"]
+
+  project:
+    <<: *rag-service
+    command: ["python", "-m", "project_service.domain_app"]
+    environment:
+      <<: *rag-env
+      RAG_OPS_PORT: "9004"
+      PROJECT_CONFIG_DB_PATH: /var/lib/rag/config.db
+    ports: ["9004:9004"]
+    healthcheck:
+      <<: *rag-healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9004/readyz"]
+
+  workflow-log:
+    <<: *rag-service
+    command: ["python", "-m", "workflow_log_service.worker"]
+    environment:
+      <<: *rag-env
+      RAG_OPS_PORT: "9005"
+      WORKFLOW_LOG_DB_PATH: /var/lib/rag/workflow_log.db
+    ports: ["9005:9005"]
+    healthcheck:
+      <<: *rag-healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9005/readyz"]
+
+  ingestion:
+    <<: *rag-service
+    command: ["python", "-m", "ingestion_service.server.worker"]
+    environment:
+      <<: *rag-env
+      RAG_OPS_PORT: "9006"
+      INGESTION_JOB_DB_PATH: /var/lib/rag/ingestion_jobs.db
+    ports: ["9006:9006"]
+    healthcheck:
+      <<: *rag-healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9006/readyz"]
+
+  retrieval:
+    <<: *rag-service
+    command: ["python", "-m", "retrieval_service.server.worker"]
+    environment:
+      <<: *rag-env
+      RAG_OPS_PORT: "9007"
+    ports: ["9007:9007"]
+    healthcheck:
+      <<: *rag-healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9007/readyz"]
+
+  retrieval-index:
+    <<: *rag-service
+    command: ["python", "-m", "retrieval_service.indexing.worker"]
+    environment:
+      <<: *rag-env
+      RAG_OPS_PORT: "9008"
+    ports: ["9008:9008"]
+    healthcheck:
+      <<: *rag-healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9008/readyz"]
+
+  memory:
+    <<: *rag-service
+    command: ["python", "-m", "memory_service.worker"]
+    environment:
+      <<: *rag-env
+      RAG_OPS_PORT: "9012"
+      MEMORY_DB_PATH: /var/lib/rag/agent_memory.db
+      MEMORY_IDENTITY_MODE: broker
+      MEMORY_INDEX_MODE: broker
+      MEMORY_SEARCH_MODE: broker
+      MEMORY_ALLOWED_SERVICES: ${MEMORY_ALLOWED_SERVICES:-conversation-server}
+      MEMORY_COLLECTION: ${MEMORY_COLLECTION:-agent_memory}
+      MEMORY_DOCUMENTS_COLLECTION: ${MEMORY_DOCUMENTS_COLLECTION:-agent_documents}
+      # Single signing-key contract with simple_agent (operations.md §3).
+      SERVICE_AUTH_SIGNING_KEY: "${SERVICE_AUTH_SIGNING_KEY:?SERVICE_AUTH_SIGNING_KEY is required}"
+      SERVICE_AUTH_TOKEN_ISSUER: ${SERVICE_AUTH_TOKEN_ISSUER:-simple-agent-local}
+      SERVICE_AUTH_TOKEN_AUDIENCE: ${SERVICE_AUTH_TOKEN_AUDIENCE:-simple-agent-internal}
+      SERVICE_AUTH_TOKEN_TTL_SECONDS: ${SERVICE_AUTH_TOKEN_TTL_SECONDS:-300}
+    ports: ["9012:9012"]
+    healthcheck:
+      <<: *rag-healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9012/readyz"]
+
+  # --- Observability ----------------------------------------------------------
+
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_TAG:-v2.53.0}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [rag-internal]
+    depends_on:
+      manager:
+        condition: service_healthy
+
+  redis-exporter:
+    image: oliver006/redis_exporter:${REDIS_EXPORTER_TAG:-v1.62.0}
+    command:
+      - --redis.addr=redis://redis:6379
+      - --redis.password=${REDIS_PASSWORD}
+    networks: [rag-internal]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Manual/scheduled backup (deployment/backup.py): snapshots every service
+  # SQLite DB under /var/lib/rag plus Qdrant collections, then rotates.
+  #   docker compose --profile backup run --rm backup
+  # Schedule via host cron or a k8s CronJob (docs/operations.md §6).
+  backup:
+    image: qdrant-rag-server:${RAG_IMAGE_TAG:-latest}
+    command:
+      - python
+      - -m
+      - deployment.backup
+      - --root
+      - /backup/rag
+      - --sqlite-root
+      - /var/lib/rag
+      - --qdrant-url
+      - http://qdrant:6333
+      - --keep
+      - "${BACKUP_KEEP:-7}"
+    profiles: ["backup"]
+    networks: [rag-internal]
+    volumes:
+      - rag-data:/var/lib/rag
+      - backup-data:/backup/rag
+    depends_on:
+      qdrant:
+        condition: service_healthy

@@ -13,8 +13,10 @@ from project_service.config import SQLiteProjectConfigRepository
 from project_service.domain_handler import ProjectDomainHandler
 from project_service.gateway import AsyncConcurrencyLimiter, RagGateway
 from project_service.planning import ProjectPlanningService
-from shared.contracts import MessageConsumer, MessageProducer, TOPICS
+from shared.contracts import TOPICS, MessageConsumer, MessageProducer
 from shared.logging import configure_logging
+from shared.ops.server import ops_server_from_env
+from shared.ops.shutdown import run_service
 from shared.runtime_health import RuntimeHealth
 
 
@@ -104,7 +106,7 @@ class ProjectDomainSettings:
     max_per_user: int = 5
 
     @classmethod
-    def from_values(cls, values: dict[str, str]) -> "ProjectDomainSettings":
+    def from_values(cls, values: dict[str, str]) -> ProjectDomainSettings:
         return cls(
             service_name=get_value(values, "PROJECT_SERVICE_NAME", "project_service"),
             command_topic=get_value(
@@ -157,12 +159,14 @@ async def serve_forever() -> None:
     context = await create_default_domain_app(
         settings=ProjectDomainSettings.from_values(dict(os.environ)),
     )
-    await context.start_runtime()
-    try:
+    ops_server = ops_server_from_env("project_service", default_port=9004, readiness=context.health)
+
+    async def serve() -> None:
+        await context.start_runtime()
         while True:
             await asyncio.sleep(3600)
-    finally:
-        await context.stop()
+
+    await run_service(serve=serve, shutdown=context.stop, ops_server=ops_server)
 
 
 def main() -> None:

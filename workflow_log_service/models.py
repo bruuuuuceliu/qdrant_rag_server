@@ -27,7 +27,7 @@ class WorkflowLogEntry:
     created_at: float = field(default_factory=time.time)
 
     @classmethod
-    def from_message(cls, message: Any) -> "WorkflowLogEntry":
+    def from_message(cls, message: Any) -> WorkflowLogEntry:
         payload = dict(message.payload)
         return cls(
             event=str(payload.get("event", "")),

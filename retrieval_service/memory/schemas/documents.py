@@ -64,7 +64,7 @@ class MemoryChunkPayload(BaseChunkPayload):
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_chunk(cls, chunk: MemoryChunk) -> "MemoryChunkPayload":
+    def from_chunk(cls, chunk: MemoryChunk) -> MemoryChunkPayload:
         return cls(
             payload_id=chunk.chunk_id,
             memory_id=chunk.memory_id,

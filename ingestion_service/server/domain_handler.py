@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from shared.contracts import (
+    TOPICS,
     HelperCommandPayload,
     HelperResultPayload,
     MessageEnvelope,
     MessageProducer,
     MessageType,
-    TOPICS,
 )
 
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from broker_service import (
-    BrokerSettings,
     BrokerLagTarget,
+    BrokerSettings,
     bootstrap_topics,
     broker_health,
     required_topics,

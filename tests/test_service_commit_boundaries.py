@@ -10,7 +10,7 @@ from ingestion_service.server import IngestionHelperServerContext
 from project_service import ProjectDomainServerContext
 from retrieval_service.indexing import RetrievalIndexHelperServerContext
 from retrieval_service.server import RetrievalHelperServerContext
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope, MessageType
 from storage_node import StorageHelperServerContext
 from task_manager_service import TaskManagerDispatcher, TaskManagerServerContext
 from task_service import TaskServiceDispatcher, TaskServiceServerContext

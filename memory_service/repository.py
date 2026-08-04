@@ -14,7 +14,7 @@ import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from memory_service.models import (
     IdempotencyRecord,
@@ -1081,9 +1081,10 @@ class SQLiteMemoryRepository:
         if not memory_ids:
             return 0
         with self._connect() as conn:
+            placeholders = ",".join("?" * len(memory_ids))
             cursor = conn.execute(
                 "UPDATE memory_records SET indexed = 1"
-                " WHERE memory_id IN (%s)" % ",".join("?" * len(memory_ids)),
+                f" WHERE memory_id IN ({placeholders})",
                 list(memory_ids),
             )
         return cursor.rowcount

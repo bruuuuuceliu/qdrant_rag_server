@@ -38,8 +38,8 @@ class ObjectStorage(ABC):
 
 
 def _aws_sign(secret_key: str, date_stamp: str, region: str, string_to_sign: str) -> str:
-    import hmac
     import hashlib as hl
+    import hmac
 
     def _sign(key: bytes, msg: str) -> bytes:
         return hmac.new(key, msg.encode(), hl.sha256).digest()

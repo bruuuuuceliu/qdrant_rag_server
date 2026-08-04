@@ -7,7 +7,6 @@ transport fields carried over the broker. Each model exposes explicit
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,7 +26,7 @@ class MemorySession:
     updated_at: str = ""
 
     @classmethod
-    def from_mapping(cls, value: dict[str, Any]) -> "MemorySession":
+    def from_mapping(cls, value: dict[str, Any]) -> MemorySession:
         return cls(
             session_id=str(value.get("session_id", "")),
             owner_user_id=str(value.get("owner_user_id", "")),
@@ -71,7 +70,7 @@ class MemoryMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_mapping(cls, value: dict[str, Any]) -> "MemoryMessage":
+    def from_mapping(cls, value: dict[str, Any]) -> MemoryMessage:
         return cls(
             message_id=str(value.get("message_id", "")),
             session_id=str(value.get("session_id", "")),
@@ -123,7 +122,7 @@ class MemoryRecord:
     created_at: str = ""
 
     @classmethod
-    def from_mapping(cls, value: dict[str, Any]) -> "MemoryRecord":
+    def from_mapping(cls, value: dict[str, Any]) -> MemoryRecord:
         return cls(
             memory_id=str(value.get("memory_id", "")),
             owner_user_id=str(value.get("owner_user_id", "")),
@@ -170,7 +169,7 @@ class UserProfile:
     updated_at: str = ""
 
     @classmethod
-    def from_mapping(cls, value: dict[str, Any]) -> "UserProfile":
+    def from_mapping(cls, value: dict[str, Any]) -> UserProfile:
         return cls(
             user_id=str(value.get("user_id", "")),
             basic_info=dict(value.get("basic_info", {}) or {}),
@@ -207,7 +206,7 @@ class UserFact:
     updated_at: str = ""
 
     @classmethod
-    def from_mapping(cls, value: dict[str, Any]) -> "UserFact":
+    def from_mapping(cls, value: dict[str, Any]) -> UserFact:
         return cls(
             fact_id=str(value.get("fact_id", "")),
             user_id=str(value.get("user_id", "")),
@@ -254,7 +253,7 @@ class IdempotencyRecord:
     created_at: str = ""
 
     @classmethod
-    def from_mapping(cls, value: dict[str, Any]) -> "IdempotencyRecord":
+    def from_mapping(cls, value: dict[str, Any]) -> IdempotencyRecord:
         return cls(
             idempotency_key=str(value.get("idempotency_key", "")),
             operation=str(value.get("operation", "")),

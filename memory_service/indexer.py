@@ -11,18 +11,18 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any, Protocol
 
+from memory_service.models import MemoryRecord
 from retrieval_service.memory.schemas.documents import (
     MemoryChunk,
     MemoryChunkPayload,
 )
 from shared.contracts import (
+    TOPICS,
     HelperCommandPayload,
     MessageEnvelope,
     MessageProducer,
     MessageType,
-    TOPICS,
 )
-from memory_service.models import MemoryRecord
 
 
 class MemoryIndexError(RuntimeError):

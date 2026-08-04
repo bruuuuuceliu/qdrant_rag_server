@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from shared.contracts import IngestJobStatus, JobStatus
+# Re-exported for the retrieval schema packages (memory/schemas/jobs.py,
+# core/schemas/ingest.py, core/schemas/__init__.py). The inline noqa below
+# keeps the lint gate from stripping these load-bearing re-exports.
+from shared.contracts import IngestJobStatus, JobStatus  # noqa: F401
 
 DEFAULT_NAMESPACE = "default"
 SHARED_OWNER_ID = "__shared__"

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
 import logging
+from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from retrieval_service.indexing.commands import (
@@ -11,14 +11,13 @@ from retrieval_service.indexing.commands import (
     RetrievalMemoryIndexCommand,
 )
 from shared.contracts import (
+    TOPICS,
     HelperCommandPayload,
     HelperResultPayload,
     MessageEnvelope,
     MessageProducer,
     MessageType,
-    TOPICS,
 )
-
 
 logger = logging.getLogger(__name__)
 

@@ -6,9 +6,11 @@ import asyncio
 import os
 from dataclasses import dataclass
 
+from shared.ops.server import ops_server_from_env
+from shared.ops.shutdown import run_service
+from shared.runtime_health import RuntimeHealth
 from sqlite_node.config import SQLiteNodeSettings
 from sqlite_node.service import SQLiteNodeService
-from shared.runtime_health import RuntimeHealth
 
 
 @dataclass(slots=True)
@@ -48,11 +50,13 @@ async def create_worker_context(
 
 async def serve_forever() -> None:
     context = await create_worker_context()
-    try:
+    ops_server = ops_server_from_env("sqlite_node", default_port=9010, readiness=context.health)
+
+    async def serve() -> None:
         while True:
             await asyncio.sleep(3600)
-    finally:
-        await context.shutdown()
+
+    await run_service(serve=serve, shutdown=context.shutdown, ops_server=ops_server)
 
 
 def main() -> None:

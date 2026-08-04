@@ -13,17 +13,19 @@ This module remains for backward compatibility.
 
 from __future__ import annotations
 
-from retrieval_service.embedding import EmbeddingProviderFactory
-from retrieval_service.embedding import EmbeddingProvider
-from retrieval_service.embedding import EmbeddingService
-from retrieval_service.embedding import EmbeddingTask
-from retrieval_service.embedding import LocalSentenceTransformerEmbedding
-from retrieval_service.embedding import OpenAICompatibleEmbedding
-from retrieval_service.embedding import OpenRouterEmbedding
-from retrieval_service.embedding import RemoteEmbeddingError
-from retrieval_service.embedding import RemoteEmbeddingService
-from retrieval_service.embedding import _parse_embedding_response
-from retrieval_service.embedding import _redact_key
+from retrieval_service.embedding import (
+    EmbeddingProvider,
+    EmbeddingProviderFactory,
+    EmbeddingService,
+    EmbeddingTask,
+    LocalSentenceTransformerEmbedding,
+    OpenAICompatibleEmbedding,
+    OpenRouterEmbedding,
+    RemoteEmbeddingError,
+    RemoteEmbeddingService,
+    _parse_embedding_response,
+    _redact_key,
+)
 
 __all__ = [
     "EmbeddingProvider",

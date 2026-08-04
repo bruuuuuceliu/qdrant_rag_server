@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from shared.contracts import (
+    TOPICS,
     DomainCommandPayload,
     DomainResultPayload,
     MessageEnvelope,
     MessageProducer,
     MessageType,
-    TOPICS,
 )
 from workflow_log_service.models import WorkflowLogEntry
 

@@ -102,11 +102,12 @@ async def test_manager_composition_wires_broker_and_redis(monkeypatch: pytest.Mo
         captured["broker_settings"] = settings
         return "bus"
 
-    async def fake_create_manager_app(settings, *, task_producer, task_status_store, manager_settings):
+    async def fake_create_manager_app(settings, *, task_producer, task_status_store, manager_settings, guard=None):
         captured["settings"] = settings
         captured["task_producer"] = task_producer
         captured["task_status_store"] = task_status_store
         captured["manager_settings"] = manager_settings
+        captured["guard"] = guard
         return "manager-context"
 
     monkeypatch.setattr(manager_composition, "create_redpanda_bus", fake_create_bus)
@@ -123,6 +124,8 @@ async def test_manager_composition_wires_broker_and_redis(monkeypatch: pytest.Mo
     assert captured["broker_settings"].client_id == "manager-test"
     assert captured["task_producer"] == "bus"
     assert captured["task_status_store"].settings.url == "redis://redis:6379/2"
+    assert captured["guard"] is not None
+    assert captured["guard"].max_request_bytes == 4 * 1024 * 1024
 
 
 @pytest.mark.asyncio
@@ -134,9 +137,10 @@ async def test_manager_composition_loads_redis_namespace_from_env(
     def fake_create_bus(settings: BrokerSettings):
         return "bus"
 
-    async def fake_create_manager_app(settings, *, task_producer, task_status_store, manager_settings):
+    async def fake_create_manager_app(settings, *, task_producer, task_status_store, manager_settings, guard=None):
         captured["task_status_store"] = task_status_store
         captured["manager_settings"] = manager_settings
+        captured["guard"] = guard
         return "manager-context"
 
     monkeypatch.setenv("REDIS_TASK_STATUS_URL", "redis://redis:6379/4")

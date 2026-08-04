@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 
 from shared.contracts import (
-    DomainCommandPayload,
+    TOPICS,
     DeadLetterPayload,
+    DomainCommandPayload,
     DomainResultPayload,
     HelperCommandPayload,
     HelperResultPayload,
@@ -15,10 +16,9 @@ from shared.contracts import (
     MessageValidationError,
     ProjectPlanRequestPayload,
     ProjectPlanResultPayload,
-    TOPICS,
     TaskEventPayload,
-    TaskRequestPayload,
     TaskIntakePayload,
+    TaskRequestPayload,
     TaskResultPayload,
     TaskStartedPayload,
     TaskStatus,

@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from project_service.gateway.errors import InvalidRequestError
-from project_service.schemas import DEFAULT_KB_ID
+
+# Re-exported for gateway/requests.py. The inline noqa below keeps the lint
+# gate from stripping this load-bearing re-export.
+from project_service.schemas import DEFAULT_KB_ID  # noqa: F401
 
 FORBIDDEN_FILTER_KEYS = frozenset(
     {"filter", "filters", "qdrant_filter", "raw_filter", "raw_qdrant_filter"}

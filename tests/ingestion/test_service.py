@@ -8,8 +8,8 @@ from tempfile import TemporaryDirectory
 
 from ingestion_service import (
     CleaningPolicy,
-    DocumentHandlingPolicy,
     DocumentCleaner,
+    DocumentHandlingPolicy,
     IngestedDocument,
     IngestedSection,
     IngestionService,

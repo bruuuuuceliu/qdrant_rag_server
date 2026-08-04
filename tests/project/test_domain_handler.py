@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pytest
 
 from project_service import ProjectDomainHandler
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope, MessageType
 
 
 class FakeProducer:

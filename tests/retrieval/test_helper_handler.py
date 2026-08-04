@@ -6,7 +6,7 @@ import pytest
 
 from retrieval_service.retrieval.contracts import MemorySearchCommand
 from retrieval_service.server import RetrievalHelperHandler
-from shared.contracts import MessageEnvelope, MessageType, MessageValidationError, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope, MessageType, MessageValidationError
 
 
 class FakeProducer:

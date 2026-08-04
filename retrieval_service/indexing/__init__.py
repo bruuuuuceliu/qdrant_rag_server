@@ -6,15 +6,15 @@ from retrieval_service.indexing.helper_app import (
     RetrievalIndexHelperServerContext,
     create_helper_app,
 )
-from retrieval_service.indexing.worker import (
-    RetrievalIndexWorkerServerContext,
-    create_worker_server,
-)
 from retrieval_service.indexing.ingestion import payloads_from_ingested_chunks
 from retrieval_service.indexing.service import (
     IndexChunksRequest,
     IndexChunksResult,
     IndexingService,
+)
+from retrieval_service.indexing.worker import (
+    RetrievalIndexWorkerServerContext,
+    create_worker_server,
 )
 
 __all__ = [

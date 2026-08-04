@@ -38,7 +38,7 @@ from memory_service.identity import FakeIdentitySource
 from memory_service.indexer import FakeMemoryIndexer
 from memory_service.repository import SQLiteMemoryRepository
 from memory_service.searcher import FakeMemorySearcher
-from shared.contracts import MessageEnvelope, MessageType, TOPICS
+from shared.contracts import TOPICS, MessageType
 from shared.service_auth import ServiceAuthSettings
 from tests.memory.conftest import command
 

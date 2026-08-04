@@ -6,12 +6,12 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from shared.contracts import (
+    TOPICS,
     MessageEnvelope,
     MessageProducer,
     MessageType,
     ProjectPlanRequestPayload,
     ProjectPlanResultPayload,
-    TOPICS,
 )
 
 

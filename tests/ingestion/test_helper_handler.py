@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from ingestion_service.server import IngestionHelperHandler
-from shared.contracts import MessageEnvelope, MessageType, MessageValidationError, TOPICS
+from shared.contracts import TOPICS, MessageEnvelope, MessageType, MessageValidationError
 
 
 class FakeProducer:

@@ -17,9 +17,9 @@ from configs.retrieval.config import (
 from retrieval_service.embedding import EmbeddingProviderFactory
 from retrieval_service.health import MetricsCollector
 from retrieval_service.placement import PlacementStoreResolver, RetrievalShard, SQLitePlacementRegistry
+from retrieval_service.retrieval.app import create_app as create_retrieval_app
 from retrieval_service.retrieval.factory import ProjectRetrieverFactory
 from retrieval_service.retrieval.handler import RetrievalApiHandler
-from retrieval_service.retrieval.app import create_app as create_retrieval_app
 from retrieval_service.retrieval.service import RetrievalService
 from retrieval_service.server.helper_app import RetrievalHelperServerContext, create_helper_app
 from retrieval_service.services.bm25 import BM25Retriever, QdrantSparseBM25Index
@@ -31,6 +31,8 @@ from retrieval_service.services.vector_store import QdrantStore
 from retrieval_service.storage.filesystem import FilesystemObjectStorage
 from retrieval_service.storage.memory import MemoryObjectStorage
 from shared.logging import configure_logging
+from shared.ops.server import ops_server_from_env
+from shared.ops.shutdown import run_service
 from shared.runtime_health import RuntimeHealth
 
 
@@ -95,7 +97,7 @@ class RetrievalWorkerServerContext:
     helper_app: RetrievalHelperServerContext
     helper_settings: RetrievalHelperSettings
     retrieval_service: Any
-    owned: "OwnedRetrievalDependencies"
+    owned: OwnedRetrievalDependencies
 
     async def shutdown(self) -> None:
         await self.helper_app.stop()
@@ -147,12 +149,14 @@ async def create_worker_server(
 
 async def serve_forever(settings: AppSettings | None = None) -> None:
     app = await create_worker_server(settings)
-    await app.helper_app.start_runtime()
-    try:
+    ops_server = ops_server_from_env("retrieval", default_port=9007, readiness=app.health)
+
+    async def serve() -> None:
+        await app.helper_app.start_runtime()
         while True:
             await asyncio.sleep(3600)
-    finally:
-        await app.shutdown()
+
+    await run_service(serve=serve, shutdown=app.shutdown, ops_server=ops_server)
 
 
 def main() -> None:

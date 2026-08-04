@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from shared.contracts import (
+    TOPICS,
     HelperCommandPayload,
     HelperResultPayload,
     MessageEnvelope,
     MessageProducer,
     MessageType,
-    TOPICS,
 )
 
 

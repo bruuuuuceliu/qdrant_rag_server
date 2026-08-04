@@ -1,0 +1,32 @@
+# VCS
+.git
+.gitignore
+
+# Local runtime artifacts
+.run
+.pytest_cache
+__pycache__
+*.py[cod]
+*.egg-info
+.venv
+venv
+.envrc
+
+# Tests and docs do not belong in the runtime image
+tests
+docs
+examples
+*.md
+database.md
+message.md
+plan.md
+progress.md
+structure.md
+task.md
+
+# Secrets: never bake env files or credentials into the image
+configs/*.env
+**/.env
+*.pem
+*.key
+*.crt

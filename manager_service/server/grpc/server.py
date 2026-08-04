@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,11 +21,42 @@ import grpc
 from grpc import aio
 
 from manager_service.service import ManagerService, ManagerTaskAccepted
-from shared.transport.grpc.generated import retrieval_service_pb2
-from shared.transport.grpc.generated import retrieval_service_pb2_grpc
 from shared.contracts import TaskStatus, TaskStatusRecord
+from shared.ops.ratelimit import TokenBucket
+from shared.transport.grpc.generated import retrieval_service_pb2, retrieval_service_pb2_grpc
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class ManagerGuard:
+    """Public-edge request guards: token-bucket rate limit + payload cap."""
+
+    rate_per_second: float = 100.0
+    burst: int = 200
+    max_request_bytes: int = 4 * 1024 * 1024
+    _bucket: TokenBucket = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._bucket = TokenBucket(self.rate_per_second, self.burst)
+
+    def acquire(self) -> bool:
+        """Return True when a request may proceed (tokens were available)."""
+        return self._bucket.try_acquire()
+
+
+def _guarded(method: Any) -> Any:
+    """Reject RPC calls once the manager token bucket is empty."""
+
+    async def wrapper(self: Any, request: Any, context: Any) -> Any:
+        guard = getattr(self, "_guard", None)
+        if guard is not None and not guard.acquire():
+            await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "manager rate limit exceeded")
+        return await method(self, request, context)
+
+    wrapper.__name__ = getattr(method, "__name__", "guarded")
+    wrapper.__doc__ = getattr(method, "__doc__", None)
+    return wrapper
 
 
 class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
@@ -41,12 +73,15 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
         *,
         manager: ManagerService,
         health_checker: Any = None,
+        guard: ManagerGuard | None = None,
     ) -> None:
         self._manager = manager
         self._health_checker = health_checker
+        self._guard = guard
 
     # -- Search -----------------------------------------------------------
 
+    @_guarded
     async def Search(
         self,
         request: retrieval_service_pb2.SearchRequest,
@@ -75,6 +110,7 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
 
     # -- Ingest -----------------------------------------------------------
 
+    @_guarded
     async def Ingest(
         self,
         request: retrieval_service_pb2.IngestRequest,
@@ -107,6 +143,7 @@ class ManagerRagServiceServicer(retrieval_service_pb2_grpc.RagServiceServicer):
 
     # -- Status -----------------------------------------------------------
 
+    @_guarded
     async def GetIngestJobStatus(
         self,
         request: retrieval_service_pb2.GetIngestJobStatusRequest,
@@ -305,11 +342,22 @@ async def serve_grpc(
     manager: ManagerService,
     health_checker: Any = None,
     port: int = 50051,
+    guard: ManagerGuard | None = None,
 ) -> aio.Server:
-    server = aio.server()
+    options: list[tuple[str, Any]] = []
+    if guard is not None and guard.max_request_bytes > 0:
+        # Reject oversized messages at the transport before any handler runs.
+        options.extend(
+            [
+                ("grpc.max_receive_message_length", guard.max_request_bytes),
+                ("grpc.max_send_message_length", guard.max_request_bytes),
+            ]
+        )
+    server = aio.server(options=options)
     servicer = ManagerRagServiceServicer(
         manager=manager,
         health_checker=health_checker,
+        guard=guard,
     )
     retrieval_service_pb2_grpc.add_RagServiceServicer_to_server(servicer, server)
     server.add_insecure_port(f"[::]:{port}")

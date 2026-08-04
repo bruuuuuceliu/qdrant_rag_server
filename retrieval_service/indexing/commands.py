@@ -29,7 +29,7 @@ class RetrievalIndexCommand:
         payload: dict[str, Any],
         *,
         fallback_request_id: str,
-    ) -> "RetrievalIndexCommand":
+    ) -> RetrievalIndexCommand:
         chunks = [_chunk_from_mapping(item) for item in _list(payload.get("chunks"))]
         payload_items = _list(payload.get("payloads"))
         payloads = (
@@ -90,7 +90,7 @@ class RetrievalMemoryIndexCommand:
         payload: dict[str, Any],
         *,
         fallback_request_id: str,
-    ) -> "RetrievalMemoryIndexCommand":
+    ) -> RetrievalMemoryIndexCommand:
         chunks = [_memory_chunk_from_mapping(item) for item in _list(payload.get("chunks"))]
         payload_items = _list(payload.get("payloads"))
         payloads = (

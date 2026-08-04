@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
 import logging
+from dataclasses import dataclass, field
 
 from shared.contracts import MessageConsumer
 from shared.runtime_health import RuntimeHealth

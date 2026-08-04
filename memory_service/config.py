@@ -37,7 +37,12 @@ class MemoryServiceSettings:
     include_merged: bool = False
 
     @classmethod
-    def from_values(cls, values: dict[str, str]) -> "MemoryServiceSettings":
+    def from_values(cls, values: dict[str, str]) -> MemoryServiceSettings:
+        from configs.secrets import resolve_secret_files
+
+        # Support SERVICE_AUTH_SIGNING_KEY_FILE (Docker/k8s secret file mount)
+        # transparently; the B3 guard below must see the resolved value.
+        values = resolve_secret_files(values)
         # B3 — RAG-side signing-key single contract: broker mode requires the
         # caller to set SERVICE_AUTH_SIGNING_KEY explicitly (it must equal
         # simple_agent's auth signing key). Fake mode and direct construction

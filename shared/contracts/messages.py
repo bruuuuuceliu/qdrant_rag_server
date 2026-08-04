@@ -12,7 +12,6 @@ from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
-
 CURRENT_SCHEMA_VERSION = "1"
 SUPPORTED_SCHEMA_VERSIONS = frozenset({CURRENT_SCHEMA_VERSION})
 

@@ -45,7 +45,7 @@ class RetrievalResponseEnvelope:
         *,
         request_id: str,
         result: dict[str, Any] | None = None,
-    ) -> "RetrievalResponseEnvelope":
+    ) -> RetrievalResponseEnvelope:
         return cls(request_id=request_id, ok=True, result=dict(result or {}))
 
     @classmethod
@@ -56,7 +56,7 @@ class RetrievalResponseEnvelope:
         code: str,
         message: str,
         retryable: bool = False,
-    ) -> "RetrievalResponseEnvelope":
+    ) -> RetrievalResponseEnvelope:
         return cls(
             request_id=request_id,
             ok=False,
@@ -89,7 +89,7 @@ class RetrievalFilterSpec:
     doc_ids: tuple[str, ...] = ()
 
     @classmethod
-    def from_mapping(cls, payload: dict[str, Any]) -> "RetrievalFilterSpec":
+    def from_mapping(cls, payload: dict[str, Any]) -> RetrievalFilterSpec:
         project_id = str(payload.get("project_id", ""))
         allowed_user_ids = _str_tuple(payload.get("allowed_user_ids"))
         if not allowed_user_ids and payload.get("user_id") is not None:
@@ -141,7 +141,7 @@ class RetrievalSearchCommand:
         payload: dict[str, Any],
         *,
         fallback_request_id: str,
-    ) -> "RetrievalSearchCommand":
+    ) -> RetrievalSearchCommand:
         request_payload = _request_payload(payload)
         query_text = request_payload.get("query_text", request_payload.get("query", ""))
         return cls(
@@ -216,7 +216,7 @@ class RetrievalDeleteDocumentCommand:
         payload: dict[str, Any],
         *,
         fallback_request_id: str,
-    ) -> "RetrievalDeleteDocumentCommand":
+    ) -> RetrievalDeleteDocumentCommand:
         request_payload = _request_payload(payload)
         return cls(
             request_id=str(payload.get("request_id") or fallback_request_id),
@@ -279,7 +279,7 @@ class RetrievalRawDocumentCommand:
         payload: dict[str, Any],
         *,
         fallback_request_id: str,
-    ) -> "RetrievalRawDocumentCommand":
+    ) -> RetrievalRawDocumentCommand:
         request_payload = _request_payload(payload)
         return cls(
             request_id=str(payload.get("request_id") or fallback_request_id),
@@ -345,7 +345,7 @@ class MemorySearchCommand:
         payload: dict[str, Any],
         *,
         fallback_request_id: str,
-    ) -> "MemorySearchCommand":
+    ) -> MemorySearchCommand:
         request_payload = _request_payload(payload)
         return cls(
             request_id=str(payload.get("request_id") or fallback_request_id),

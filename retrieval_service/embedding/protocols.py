@@ -10,7 +10,7 @@ EmbeddingTask = Literal["ingest", "search", "update"]
 class EmbeddingProvider(Protocol):
     """Protocol for async embedding providers."""
 
-    async def initialize(self) -> "EmbeddingProvider":
+    async def initialize(self) -> EmbeddingProvider:
         """Open provider resources and return self."""
         ...
 

@@ -11,7 +11,6 @@ from task_service.dispatcher import TaskServiceDispatcher
 from task_service.repository import SQLiteTaskStateRepository, TaskStateRepository
 from task_service.server import TaskServiceServerContext
 
-
 HELPER_RESULT_TOPICS = (
     TOPICS.helper_ingestion_results,
     TOPICS.helper_retrieval_results,

@@ -6,7 +6,6 @@ task-status dependencies must be provided by the runtime composition layer.
 
 from __future__ import annotations
 
-import asyncio
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -48,6 +47,7 @@ async def create_app(
     task_status_store: TaskStatusStore | None = None,
     manager_settings: ManagerSettings | None = None,
     health_checker: Any = None,
+    guard: Any = None,
 ) -> ManagerAppContext:
     """Create the manager server with injected broker/status dependencies."""
 
@@ -68,6 +68,7 @@ async def create_app(
         manager=manager,
         health_checker=health_checker,
         port=settings.grpc_port,
+        guard=guard,
     )
     return ManagerAppContext(
         task_producer=task_producer,

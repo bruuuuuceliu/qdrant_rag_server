@@ -10,7 +10,7 @@ ChatMessage = dict[str, str]
 class LLMProvider(Protocol):
     """Protocol for async chat-completion providers."""
 
-    async def initialize(self) -> "LLMProvider":
+    async def initialize(self) -> LLMProvider:
         """Open provider resources and return self."""
         ...
 

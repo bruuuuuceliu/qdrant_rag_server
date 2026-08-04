@@ -18,8 +18,62 @@ on:
         required: false
         type: boolean
         default: false
+      run_container_smoke:
+        description: Build the production image and smoke the docker-compose topology
+        required: false
+        type: boolean
+        default: false
+      publish_images:
+        description: Build and push the service image to GHCR
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: python -m pip install "ruff>=0.6"
+
+      - name: Run ruff
+        run: python -m ruff check .
+
+  audit:
+    name: Dependency Audit (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package and audit tool
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install "pip-audit>=2.7"
+
+      - name: Audit dependencies
+        run: python -m pip_audit
+
   test:
     name: Unit, Contract, And Runtime Checks
     runs-on: ubuntu-latest
@@ -64,8 +118,10 @@ jobs:
           bash -n examples/local/run-all.sh
           bash -n examples/local/stop-all.sh
 
-      - name: Run pytest
-        run: python -m pytest
+      - name: Run pytest with coverage gate
+        run: |
+          python -m coverage run -m pytest
+          python -m coverage report --fail-under=50
 
   live-infra:
     name: Manual Docker Live Infra
@@ -140,3 +196,115 @@ jobs:
       - name: Stop local stack
         if: always()
         run: examples/local/stop-all.sh --clean
+
+  container-smoke:
+    name: Manual Container Topology Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_container_smoke }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build the service image
+        run: |
+          docker build --build-arg INSTALL_CPU_ONLY_TORCH=1 \
+            -t qdrant-rag-server:latest .
+
+      - name: Bring up the production compose (internal network, deterministic embeddings)
+        env:
+          REDIS_PASSWORD: ci-secret
+          SERVICE_AUTH_SIGNING_KEY: ci-signing-key
+          RAG_EMBEDDING_PROVIDER: deterministic
+          RAG_EMBEDDING_MODEL: deterministic-hash
+          RAG_EMBEDDING_DIMENSION: "384"
+        run: |
+          cd deployment
+          docker compose -f docker-compose.prod.yml -f docker-compose.prod.override.smoke.yml up -d
+
+      - name: Wait for all services healthy
+        env:
+          REDIS_PASSWORD: ci-secret
+          SERVICE_AUTH_SIGNING_KEY: ci-signing-key
+        run: |
+          cd deployment
+          for i in $(seq 1 60); do
+            unhealthy=$(docker compose -f docker-compose.prod.yml -f docker-compose.prod.override.smoke.yml ps \
+              --format '{{.Name}} {{.Health}}' | grep -cE '(unhealthy|starting|\(none\):)' || true)
+            healthy=$(docker compose -f docker-compose.prod.yml -f docker-compose.prod.override.smoke.yml ps \
+              --format '{{.Name}} {{.Health}}' | grep -c 'healthy' || true)
+            echo "iteration=$i healthy=$healthy"
+            [ "$healthy" -ge 13 ] && [ "$unhealthy" -eq 0 ] && break
+            sleep 10
+          done
+          docker compose -f docker-compose.prod.yml -f docker-compose.prod.override.smoke.yml ps
+
+      - name: Probe health, readiness, and metrics on the manager
+        run: |
+          curl -fsS http://localhost:9001/healthz
+          curl -fsS http://localhost:9001/readyz
+          curl -fsS http://localhost:9001/metrics | grep -q 'rag_ops_ready'
+
+      - name: Run a live backup and verify output
+        env:
+          REDIS_PASSWORD: ci-secret
+          SERVICE_AUTH_SIGNING_KEY: ci-signing-key
+        run: |
+          cd deployment
+          docker compose --profile backup run --rm backup | tee /tmp/backup.log
+          grep -q "backup complete" /tmp/backup.log
+
+      - name: Verify graceful shutdown (SIGTERM -> clean exit)
+        run: |
+          cid=$(docker run -d qdrant-rag-server:latest python -m sqlite_node.worker)
+          sleep 4
+          docker kill --signal=SIGTERM "$cid"
+          code=$(docker wait "$cid")
+          echo "sqlite-node exit code after SIGTERM: $code"
+          [ "$code" = "0" ]
+
+      - name: Tear down the compose stack
+        if: always()
+        env:
+          REDIS_PASSWORD: ci-secret
+          SERVICE_AUTH_SIGNING_KEY: ci-signing-key
+        run: |
+          cd deployment
+          docker compose -f docker-compose.prod.yml -f docker-compose.prod.override.smoke.yml down -v --remove-orphans
+
+  publish-images:
+    name: Build And Publish Image To GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_images }}
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        run: |
+          echo "tags=${{ env.IMAGE }}:latest,${{ env.IMAGE }}:sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            INSTALL_CPU_ONLY_TORCH=1

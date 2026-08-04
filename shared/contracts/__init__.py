@@ -16,8 +16,6 @@ from shared.contracts.messages import (
     MessageType,
     MessageValidationError,
 )
-from shared.contracts.topics import TOPICS, TopicSet, domain_command_topic, domain_result_topic
-from shared.contracts.task_status import TaskStatus, TaskStatusRecord, TaskStatusStore
 from shared.contracts.task_messages import (
     DeadLetterPayload,
     DomainCommandPayload,
@@ -28,11 +26,13 @@ from shared.contracts.task_messages import (
     ProjectPlanResultPayload,
     TaskEventPayload,
     TaskExecutionResultPayload,
+    TaskIntakePayload,
     TaskRequestPayload,
     TaskResultPayload,
     TaskStartedPayload,
-    TaskIntakePayload,
 )
+from shared.contracts.task_status import TaskStatus, TaskStatusRecord, TaskStatusStore
+from shared.contracts.topics import TOPICS, TopicSet, domain_command_topic, domain_result_topic
 
 __all__ = [
     "CURRENT_SCHEMA_VERSION",

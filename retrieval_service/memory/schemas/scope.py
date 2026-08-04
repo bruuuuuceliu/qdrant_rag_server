@@ -51,7 +51,7 @@ class MemoryRetrievalFilter(BaseRetrievalFilter):
         *,
         memory_ids: tuple[str, ...] = (),
         memory_types: tuple[str, ...] = (),
-    ) -> "MemoryRetrievalFilter":
+    ) -> MemoryRetrievalFilter:
         agent_ids = (scope.agent_id,) if scope.agent_id else ()
         run_ids = (scope.run_id,) if scope.run_id else ()
         return cls(

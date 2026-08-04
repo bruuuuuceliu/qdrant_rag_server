@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 import task_service.worker as worker
+from shared.runtime_health import RuntimeHealth
 
 
 class Context:
@@ -19,6 +20,9 @@ class Context:
 
     async def stop(self) -> None:
         self.stopped = True
+
+    async def health(self) -> RuntimeHealth:
+        return RuntimeHealth(service="task_service", ready=True)
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from redis_status_node.config import RedisStatusSettings
-from shared.contracts import TaskStatusRecord, TaskStatusStore
+from shared.contracts import TaskStatusRecord
 
 
 class InMemoryTaskStatusStore:

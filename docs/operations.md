@@ -521,3 +521,130 @@ source, versus wiring the existing project-RAG collections into `memory.lookup`.
 **SA-side gap (declared):** Simple Agent has **no `ingest_documents` client**
 yet, so documents are reachable only out-of-band. Wiring an SA
 `ingest_documents` client to the RAG op is a declared SA-sprint item.
+
+---
+
+## 11. Production Docker Compose deployment
+
+The repo ships a production compose (`deployment/docker-compose.prod.yml`) that
+runs the **same service code and broker contracts as local** (structure.md
+golden rule): one container per worker, a private `rag-internal` network, and a
+shared `rag-data` volume for durable state. Every RAG container runs as the
+unprivileged `rag` user (uid 10001) and exposes an ops HTTP surface.
+
+### 11.1 Image
+
+```bash
+# Single image serves every service; compose overrides the command per service.
+docker build --build-arg INSTALL_CPU_ONLY_TORCH=1 -t qdrant-rag-server:latest .
+```
+
+- `INSTALL_CPU_ONLY_TORCH=1` installs the much smaller CPU-only torch wheel.
+- `EMBEDDING_MODEL=BAAI/bge-base-en-v1.5` pre-caches the embedding model into
+  the image (workers then start offline).
+- Secrets are never baked in; `.dockerignore` excludes all `*.env`, certs, and
+  keys. Publish the image to GHCR with the manual `publish_images` CI input.
+
+### 11.2 Bring-up
+
+```bash
+cp deployment/compose.prod.env.example deployment/.env
+# edit deployment/.env: REDIS_PASSWORD, SERVICE_AUTH_SIGNING_KEY, ...
+
+cd deployment
+docker compose -f docker-compose.prod.yml up -d
+docker compose ps            # every RAG service reports "healthy"
+```
+
+Required secrets fail fast at compose parse time (`REDIS_PASSWORD`,
+`SERVICE_AUTH_SIGNING_KEY`). Broker SASL/TLS is commented in the compose
+`x-rag-env` block (see §4). For a smoke run that avoids the embedding model and
+host-port clashes, use the included override:
+
+```bash
+REDIS_PASSWORD=x SERVICE_AUTH_SIGNING_KEY=y \
+RAG_EMBEDDING_PROVIDER=deterministic RAG_EMBEDDING_MODEL=deterministic-hash RAG_EMBEDDING_DIMENSION=384 \
+docker compose -f docker-compose.prod.yml -f docker-compose.prod.override.smoke.yml up -d
+```
+
+### 11.3 Ops surface (health, readiness, metrics)
+
+Every RAG worker runs a small HTTP ops server when `RAG_OPS_ENABLED=true`
+(production compose sets it): `/healthz` (liveness), `/readyz` (readiness, from
+the worker's own dependency checks), and `/metrics` (Prometheus). Ports:
+
+| Service | Ops port |
+| --- | --- |
+| manager | 9001 |
+| task-manager | 9002 |
+| task-service | 9003 |
+| project | 9004 |
+| workflow-log | 9005 |
+| ingestion | 9006 |
+| retrieval | 9007 |
+| retrieval-index | 9008 |
+| storage | 9009 |
+| sqlite-node | 9010 |
+| redis-status-node | 9011 |
+| memory | 9012 |
+
+`RAG_OPS_HOST`/`RAG_OPS_PORT` override defaults; `RAG_OPS_ENABLED` defaults off
+so the local runner and unit tests are unaffected. Workers shut down gracefully
+on SIGTERM/SIGINT (consumers leave their groups, producers flush, stores close),
+so orchestrators get clean exits.
+
+### 11.4 Observability
+
+- **Logs**: `RAG_LOG_FORMAT=json` (set in the compose) emits one JSON object per
+  line with `correlation_id` threaded from broker messages; `RAG_LOG_LEVEL`
+  controls verbosity.
+- **Metrics**: the compose starts Prometheus (`deployment/prometheus.yml`
+  scrapes every ops port plus the Redis exporter) at `:9090`. Key series:
+  `rag_tasks_accepted_total`, `rag_tasks_completed_total`,
+  `rag_tasks_failed_total`, `rag_broker_messages_produced_total`,
+  `rag_broker_messages_consumed_total`, `rag_http_requests_total`,
+  `rag_ops_ready`.
+- **Tracing** (optional): set `RAG_OTEL_ENDPOINT` to an OTLP/gRPC collector and
+  install the extras (`pip install "qdrant-rag-server[tracing]"`); the broker
+  publish/consume path emits spans keyed by the message correlation/task ID.
+
+### 11.5 Public-edge guards
+
+The manager gRPC API enforces a token-bucket rate limit and a per-message
+payload cap (`MANAGER_RATE_LIMIT_REQUESTS_PER_SECOND`,
+`MANAGER_RATE_LIMIT_BURST`, `MANAGER_MAX_REQUEST_BYTES`; defaults 100/200/4 MiB).
+Requests past the limit receive `RESOURCE_EXHAUSTED`; oversized messages are
+rejected at the transport. Health checks are **not** rate limited.
+
+### 11.6 Secrets
+
+The config layer resolves `<KEY>_FILE` for any secret: set
+`SERVICE_AUTH_SIGNING_KEY_FILE=/run/secrets/signing_key` and the file's content
+(trailing newline stripped) becomes the value. This is the Docker secret /
+k8s `secretKeyRef` pattern and how a secret manager materializes credentials.
+Covered secrets include `BROKER_SASL_PLAIN_PASSWORD`, `SERVICE_AUTH_SIGNING_KEY`,
+and any value the settings loaders read. Never commit `*.env` or cert material.
+
+### 11.7 Backup / restore
+
+`deployment/backup.py` snapshots every service SQLite DB under `/var/lib/rag`
+(online SQLite backup API, WAL-safe) plus Qdrant collection snapshots into a
+timestamped directory with rotation (`--keep`). Run it from the compose backup
+service:
+
+```bash
+docker compose --profile backup run --rm backup
+```
+
+Schedule it from host cron or a k8s CronJob. Restore steps are in §6; a restore
+drill (backup → restore to a scratch DB → verify) is covered by unit tests and
+the manual `container-smoke` CI job.
+
+### 11.8 CI gates
+
+`.github/workflows/ci.yml` runs, on every push/PR: ruff lint, pip-audit
+dependency scanning, and the full pytest suite with a coverage floor. Manual
+`workflow_dispatch` inputs additionally run Docker-backed live-infra tests, the
+full local smoke, a container-topology smoke (build → compose up → health
+probes → live backup → SIGTERM graceful-exit check), and image publication to
+GHCR.

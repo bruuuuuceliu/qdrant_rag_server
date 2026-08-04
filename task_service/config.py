@@ -26,7 +26,7 @@ class TaskServiceSettings:
     recovery_batch_size: int = 25
 
     @classmethod
-    def from_values(cls, values: dict[str, str]) -> "TaskServiceSettings":
+    def from_values(cls, values: dict[str, str]) -> TaskServiceSettings:
         return cls(
             service_name=values.get("TASK_SERVICE_NAME", "task_service"),
             task_request_topic=values.get("TASK_SERVICE_TASK_REQUEST_TOPIC", TOPICS.task_requests),

@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+import unittest
 from dataclasses import dataclass
 from pathlib import Path
-import unittest
 from unittest.mock import AsyncMock, patch
 
 import grpc
 
 from configs.config import AppSettings
-from configs.manager import load_manager_settings
-from configs.manager import ManagerSettings
+from configs.manager import ManagerSettings, load_manager_settings
 from manager_service import (
     DataType,
     ManagerRequestContext,
@@ -20,12 +19,10 @@ from manager_service import (
     RouteRequest,
     ServiceTarget,
 )
-from manager_service.service import ManagerService
-from manager_service.service import ManagerTaskAccepted
 from manager_service.server.grpc.server import ManagerRagServiceServicer
+from manager_service.service import ManagerService, ManagerTaskAccepted
+from shared.contracts import TOPICS, JobStatus, MessageEnvelope, MessageType, TaskStatusRecord
 from shared.transport.grpc.generated import retrieval_service_pb2
-from shared.contracts import JobStatus, MessageEnvelope, MessageType, TOPICS
-from shared.contracts import TaskStatusRecord
 
 
 class ManagerRouterTest(unittest.TestCase):

@@ -1,0 +1,17 @@
+# Smoke-test override: run the production compose without publishing
+# infrastructure host ports (avoids clashing with the local dev stack on
+# 9092/6333/6379). `!reset` clears the base file's port mappings (compose
+# concatenates list-valued keys across files). Services still talk over the
+# internal `rag-internal` network. Use deterministic embeddings so workers
+# start without loading bge.
+services:
+  redpanda:
+    ports: !reset []
+  qdrant:
+    ports: !reset []
+  prometheus:
+    ports: !reset []
+  manager:
+    ports:
+      - "50051:50051"
+      - "9001:9001"
