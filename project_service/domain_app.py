@@ -7,9 +7,9 @@ import os
 from dataclasses import dataclass, field
 
 from broker_service import BrokerSettings, create_redpanda_bus
-from configs.config import get_int_value, get_value
+from configs.config import get_int_value, get_optional_value, get_value
 from project_service.adapters import ProjectAdapterRegistry, ProjectAdapterResolver, WebsiteProjectAdapter
-from project_service.config import SQLiteProjectConfigRepository
+from project_service.config import PostgresProjectConfigRepository, SQLiteProjectConfigRepository
 from project_service.domain_handler import ProjectDomainHandler
 from project_service.gateway import AsyncConcurrencyLimiter, RagGateway
 from project_service.planning import ProjectPlanningService
@@ -102,6 +102,7 @@ class ProjectDomainSettings:
     command_topic: str = TOPICS.project_plan_requests
     result_topic: str = TOPICS.project_plan_results
     config_db_path: str = "/var/lib/rag/config.db"
+    config_db_url: str | None = None
     max_per_project: int = 20
     max_per_user: int = 5
 
@@ -120,6 +121,7 @@ class ProjectDomainSettings:
                 TOPICS.project_plan_results,
             ),
             config_db_path=get_value(values, "PROJECT_CONFIG_DB_PATH", "/var/lib/rag/config.db"),
+            config_db_url=get_optional_value(values, "PROJECT_CONFIG_DB_URL"),
             max_per_project=get_int_value(values, "PROJECT_MAX_PER_PROJECT", 20),
             max_per_user=get_int_value(values, "PROJECT_MAX_PER_USER", 5),
         )
@@ -131,7 +133,10 @@ async def create_default_domain_app(
     broker_settings: BrokerSettings | None = None,
 ) -> ProjectDomainServerContext:
     settings = settings or ProjectDomainSettings()
-    config_repo = SQLiteProjectConfigRepository(settings.config_db_path)
+    if settings.config_db_url:
+        config_repo = PostgresProjectConfigRepository(settings.config_db_url)
+    else:
+        config_repo = SQLiteProjectConfigRepository(settings.config_db_path)
     await config_repo.initialize()
     registry = ProjectAdapterRegistry()
     registry.register(WebsiteProjectAdapter(config_repo=config_repo))

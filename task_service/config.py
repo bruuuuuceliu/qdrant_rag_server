@@ -18,6 +18,7 @@ class TaskServiceSettings:
     task_result_topic: str = TOPICS.task_results
     dead_letter_topic: str = TOPICS.task_dead_letters
     state_db_path: str = "examples/local/.data/task_service_state.db"
+    state_db_url: str | None = None
     max_attempts: int = 3
     helper_lease_seconds: int = 300
     retry_backoff_seconds: int = 0
@@ -45,6 +46,7 @@ class TaskServiceSettings:
                 "TASK_SERVICE_STATE_DB_PATH",
                 str(Path(values.get("RAG_LOCAL_DATA_DIR", "examples/local/.data")) / "task_service_state.db"),
             ),
+            state_db_url=values.get("TASK_SERVICE_STATE_DB_URL") or None,
             max_attempts=int(values.get("TASK_SERVICE_MAX_ATTEMPTS", "3")),
             helper_lease_seconds=int(values.get("TASK_SERVICE_HELPER_LEASE_SECONDS", "300")),
             retry_backoff_seconds=int(values.get("TASK_SERVICE_RETRY_BACKOFF_SECONDS", "0")),

@@ -8,7 +8,11 @@ from dataclasses import dataclass
 
 from broker_service import BrokerSettings
 from configs.ingestion import IngestionSettings, load_ingestion_settings
-from ingestion_service.jobs import SQLiteIngestionJobRepository
+from ingestion_service.jobs import (
+    IngestionJobRepository,
+    PostgresIngestionJobRepository,
+    SQLiteIngestionJobRepository,
+)
 from ingestion_service.server.broker_runtime import BrokerIngestionApp
 from ingestion_service.server.helper_app import IngestionHelperServerContext, create_helper_app
 from ingestion_service.service import IngestionService
@@ -45,7 +49,10 @@ async def create_worker_server(
     broker_settings: BrokerSettings | None = None,
 ) -> IngestionWorkerServerContext:
     ingestion_settings = ingestion_settings or load_ingestion_settings(dict(os.environ))
-    jobs = SQLiteIngestionJobRepository(ingestion_settings.job_db_path)
+    if ingestion_settings.job_db_url:
+        jobs: IngestionJobRepository = PostgresIngestionJobRepository(ingestion_settings.job_db_url)
+    else:
+        jobs = SQLiteIngestionJobRepository(ingestion_settings.job_db_path)
     await jobs.initialize()
     ingestion_app = BrokerIngestionApp(
         jobs=jobs,

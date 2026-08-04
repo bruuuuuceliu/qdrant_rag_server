@@ -16,14 +16,23 @@ from configs.retrieval.config import (
 )
 from retrieval_service.embedding import EmbeddingProviderFactory
 from retrieval_service.health import MetricsCollector
-from retrieval_service.placement import PlacementStoreResolver, RetrievalShard, SQLitePlacementRegistry
+from retrieval_service.placement import (
+    PlacementStoreResolver,
+    PostgresPlacementRegistry,
+    RetrievalShard,
+    SQLitePlacementRegistry,
+)
 from retrieval_service.retrieval.app import create_app as create_retrieval_app
 from retrieval_service.retrieval.factory import ProjectRetrieverFactory
 from retrieval_service.retrieval.handler import RetrievalApiHandler
 from retrieval_service.retrieval.service import RetrievalService
 from retrieval_service.server.helper_app import RetrievalHelperServerContext, create_helper_app
 from retrieval_service.services.bm25 import BM25Retriever, QdrantSparseBM25Index
-from retrieval_service.services.cache import Tier1MemoryCache, Tier2ResponseCache
+from retrieval_service.services.cache import (
+    PostgresTier2ResponseCache,
+    Tier1MemoryCache,
+    Tier2ResponseCache,
+)
 from retrieval_service.services.entities import LocalNerExtractor, NoopNerExtractor
 from retrieval_service.services.retriever import QdrantVectorRetriever
 from retrieval_service.services.sparse_encoder import FastEmbedSparseTextEncoder
@@ -205,7 +214,10 @@ async def _build_retrieval_service(
     if settings.ner_provider == "local":
         ner_extractor = LocalNerExtractor(settings.ner_model)
         await ner_extractor.initialize()
-    tier2_cache = Tier2ResponseCache(settings.response_cache_db_path)
+    if settings.response_cache_db_url:
+        tier2_cache: Any = PostgresTier2ResponseCache(settings.response_cache_db_url)
+    else:
+        tier2_cache = Tier2ResponseCache(settings.response_cache_db_path)
     await tier2_cache.initialize()
     tier1_cache = Tier1MemoryCache()
     object_storage: Any
@@ -251,7 +263,10 @@ def _build_placement_store_resolver(
 ) -> PlacementStoreResolver:
     if not settings.retrieval_placement_enabled:
         return PlacementStoreResolver(default_store=qdrant_store)
-    registry = SQLitePlacementRegistry(settings.retrieval_placement_db_path)
+    if settings.retrieval_placement_db_url:
+        registry: Any = PostgresPlacementRegistry(settings.retrieval_placement_db_url)
+    else:
+        registry = SQLitePlacementRegistry(settings.retrieval_placement_db_path)
     registry.initialize()
     endpoint = settings.qdrant_url or f"http://{settings.qdrant_host}:{settings.qdrant_port}"
     registry.upsert(
@@ -273,6 +288,10 @@ async def _shutdown_owned(
     api_app: RetrievalHelperApiContext,
 ) -> None:
     await api_app.shutdown()
+    if owned.tier2_cache is not None:
+        close_cache = getattr(owned.tier2_cache, "close", None)
+        if close_cache is not None:
+            await close_cache()
     if owned.ner_extractor is not None:
         shutdown_ner = getattr(owned.ner_extractor, "shutdown", None)
         if shutdown_ner is not None:

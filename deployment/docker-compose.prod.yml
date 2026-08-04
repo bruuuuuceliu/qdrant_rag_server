@@ -50,6 +50,7 @@ volumes:
   qdrant-data:
   prometheus-data:
   backup-data:
+  postgres-data:
 
 x-rag-env: &rag-env
   RAG_CONFIG_PROFILE: production
@@ -97,6 +98,16 @@ x-rag-env: &rag-env
   RAG_OBJECT_STORAGE_PROVIDER: filesystem
   RAG_OBJECT_STORAGE_BASE_PATH: /var/lib/rag/raw_storage
 
+  # Opt-in Postgres backend for the durable stores. Empty (default) keeps each
+  # store on SQLite; a populated URL switches that store to Postgres.
+  MEMORY_DB_URL: "${MEMORY_DB_URL:-}"
+  TASK_SERVICE_STATE_DB_URL: "${TASK_SERVICE_STATE_DB_URL:-}"
+  PROJECT_CONFIG_DB_URL: "${PROJECT_CONFIG_DB_URL:-}"
+  WORKFLOW_LOG_DB_URL: "${WORKFLOW_LOG_DB_URL:-}"
+  INGESTION_JOB_DB_URL: "${INGESTION_JOB_DB_URL:-}"
+  RETRIEVAL_PLACEMENT_DB_URL: "${RETRIEVAL_PLACEMENT_DB_URL:-}"
+  RAG_RESPONSE_CACHE_DB_URL: "${RAG_RESPONSE_CACHE_DB_URL:-}"
+
   RAG_GENERATION_ENABLED: "false"
 
 x-rag-service: &rag-service
@@ -114,6 +125,8 @@ x-rag-service: &rag-service
       condition: service_healthy
     qdrant:
       condition: service_healthy
+    # postgres is opt-in (profile "postgres"); it is NOT a hard dependency of
+    # the base stack so SQLite-only deployments need no new secret or container.
 
 x-rag-healthcheck: &rag-healthcheck
   interval: 10s
@@ -185,6 +198,30 @@ services:
       timeout: 5s
       retries: 30
       start_period: 10s
+
+  # RAG-owned Postgres for the opt-in durable-store backend. Never on the
+  # SA-shared rag-memory-test network: postgres is a RAG-internal store, only
+  # the broker is shared with simple_agent.
+  # RAG-owned postgres, opt-in via the "postgres" profile: a SQLite-only
+  # deployment starts without it and needs no POSTGRES_PASSWORD. Bring it up
+  # with: docker compose --profile postgres up -d postgres
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-rag}"
+      # Not fail-fast: the postgres service is opt-in, so a SQLite-only stack
+      # must start without this secret. Override with a strong value in prod.
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-rag}"
+      POSTGRES_DB: "${POSTGRES_DB:-rag}"
+    networks: [rag-internal]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   # --- RAG services (same image, per-service command + ops port) -------------
 

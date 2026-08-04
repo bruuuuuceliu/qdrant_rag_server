@@ -22,6 +22,7 @@ from retrieval_service.indexing.helper_app import (
 from retrieval_service.indexing.service import IndexingService
 from retrieval_service.placement import (
     PlacementStoreResolver,
+    PostgresPlacementRegistry,
     RetrievalShard,
     SQLitePlacementRegistry,
 )
@@ -180,7 +181,10 @@ def _build_placement_store_resolver(
 ) -> PlacementStoreResolver:
     if not settings.retrieval_placement_enabled:
         return PlacementStoreResolver(default_store=qdrant_store)
-    registry = SQLitePlacementRegistry(settings.retrieval_placement_db_path)
+    if settings.retrieval_placement_db_url:
+        registry: Any = PostgresPlacementRegistry(settings.retrieval_placement_db_url)
+    else:
+        registry = SQLitePlacementRegistry(settings.retrieval_placement_db_path)
     registry.initialize()
     endpoint = settings.qdrant_url or f"http://{settings.qdrant_host}:{settings.qdrant_port}"
     registry.upsert(

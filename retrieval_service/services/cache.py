@@ -25,6 +25,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from shared.postgres import async_pool
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_RESPONSE_CACHE_DB_PATH = Path("/var/lib/rag/response_cache.db")
@@ -255,3 +257,107 @@ class Tier2ResponseCache:
                 (time.time(),),
             )
             return cursor.rowcount
+
+
+class PostgresTier2ResponseCache:
+    """Durable Postgres response cache selected via ``RAG_RESPONSE_CACHE_DB_URL``."""
+
+    def __init__(
+        self,
+        db_url: str,
+        ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS,
+    ) -> None:
+        self.db_url = db_url
+        self._ttl_seconds = ttl_seconds
+        self._pool = async_pool(db_url)
+
+    async def initialize(self) -> None:
+        await self._pool.open()
+        await self._pool.wait()
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS responses (
+                  project_id TEXT NOT NULL,
+                  user_id TEXT NOT NULL,
+                  cache_key TEXT NOT NULL,
+                  response TEXT NOT NULL,
+                  expires_at DOUBLE PRECISION NOT NULL,
+                  PRIMARY KEY (project_id, user_id, cache_key)
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_responses_expires ON responses(expires_at)"
+            )
+
+    async def close(self) -> None:
+        await self._pool.close()
+
+    async def get(
+        self, project_id: str, user_id: str, cache_key: str
+    ) -> str | None:
+        async with self._pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT response, expires_at FROM responses"
+                    " WHERE project_id = %s AND user_id = %s AND cache_key = %s",
+                    (project_id, user_id, cache_key),
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        if row["expires_at"] < time.time():
+            await self._delete(project_id, user_id, cache_key)
+            return None
+        return row["response"]
+
+    async def set(
+        self,
+        project_id: str,
+        user_id: str,
+        cache_key: str,
+        response: str,
+    ) -> None:
+        expires_at = time.time() + self._ttl_seconds
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO responses (project_id, user_id, cache_key, response, expires_at)"
+                " VALUES (%s, %s, %s, %s, %s)"
+                " ON CONFLICT(project_id, user_id, cache_key) DO UPDATE SET"
+                "   response = EXCLUDED.response,"
+                "   expires_at = EXCLUDED.expires_at",
+                (project_id, user_id, cache_key, response, expires_at),
+            )
+
+    async def invalidate_project(self, project_id: str) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM responses WHERE project_id = %s", (project_id,)
+            )
+        logger.debug("tier2: invalidated project %s", project_id)
+
+    async def invalidate_user(self, project_id: str, user_id: str) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM responses WHERE project_id = %s AND user_id = %s",
+                (project_id, user_id),
+            )
+        logger.debug("tier2: invalidated user %s/%s", project_id, user_id)
+
+    async def clear_expired(self) -> int:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM responses WHERE expires_at < %s", (time.time(),)
+            )
+        return cursor.rowcount
+
+    async def _delete(
+        self, project_id: str, user_id: str, cache_key: str
+    ) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM responses"
+                " WHERE project_id = %s AND user_id = %s AND cache_key = %s",
+                (project_id, user_id, cache_key),
+            )

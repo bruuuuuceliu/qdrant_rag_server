@@ -2,6 +2,7 @@
 
 from project_service.config import (
     DEFAULT_CONFIG_DB_PATH,
+    PostgresProjectConfigRepository,
     ProjectConfigNotFoundError,
     ProjectConfigRecord,
     SQLiteProjectConfigRepository,
@@ -9,6 +10,7 @@ from project_service.config import (
 
 __all__ = [
     "DEFAULT_CONFIG_DB_PATH",
+    "PostgresProjectConfigRepository",
     "ProjectConfigNotFoundError",
     "ProjectConfigRecord",
     "SQLiteProjectConfigRepository",

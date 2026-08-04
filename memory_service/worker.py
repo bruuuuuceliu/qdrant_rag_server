@@ -30,6 +30,10 @@ class MemoryWorkerContext:
 
     async def shutdown(self) -> None:
         await self.domain_app.stop()
+        repository = getattr(self.domain_app.handler, "_repository", None)
+        close = getattr(repository, "close", None)
+        if close is not None:
+            await close()
 
     async def health(self) -> RuntimeHealth:
         return RuntimeHealth(

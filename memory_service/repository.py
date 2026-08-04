@@ -1,10 +1,11 @@
 """Memory service repositories.
 
-``MemoryRepository`` is the port the domain handler depends on. Two
-implementations exist: ``MemoryInMemoryRepository`` for tests/local and
-``SQLiteMemoryRepository`` for the durable store. Mutations and idempotency
-writes commit in a single ``BEGIN IMMEDIATE`` transaction exposed through the
-``transaction()`` context manager (requirements §9).
+``MemoryRepository`` is the port the domain handler depends on. Three
+implementations exist: ``MemoryInMemoryRepository`` for tests/local,
+``SQLiteMemoryRepository`` for the default durable store, and
+``PostgresMemoryRepository`` for the opt-in Postgres backend. Mutations and
+idempotency writes commit in a single transaction exposed through the
+``transaction()`` context manager.
 """
 
 from __future__ import annotations
@@ -16,6 +17,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Protocol
 
+import psycopg
+from psycopg.rows import dict_row
+
 from memory_service.models import (
     IdempotencyRecord,
     MemoryMessage,
@@ -24,6 +28,7 @@ from memory_service.models import (
     UserFact,
     UserProfile,
 )
+from shared.postgres import async_pool
 
 
 class MemoryNotFoundError(KeyError):
@@ -1174,6 +1179,665 @@ class SQLiteMemoryRepository:
         conn = sqlite3.connect(str(self.db_path), isolation_level=None)
         conn.row_factory = sqlite3.Row
         return conn
+
+
+# The three SQLite memory_records migrations (document kind widening,
+# collection_name/metadata_json columns, indexed column) fold into the base
+# CREATE TABLE below: a fresh Postgres schema gets all of them up front.
+# The SQLite memory store never enables PRAGMA foreign_keys, so the FK columns
+# stay unconstrained here to match that runtime behavior (facts are written
+# before a user profile may exist).
+_MEMORY_POSTGRES_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS sessions (
+        session_id        TEXT PRIMARY KEY,
+        owner_user_id     TEXT NOT NULL,
+        agent_id          TEXT NOT NULL,
+        status            TEXT NOT NULL CHECK (status IN ('active', 'closed')),
+        started_at        TEXT NOT NULL,
+        closed_at         TEXT,
+        metadata_json     TEXT NOT NULL DEFAULT '{}',
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_sessions_owner_agent
+        ON sessions(owner_user_id, agent_id, started_at DESC);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_sessions_owner_status
+        ON sessions(owner_user_id, status);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS messages (
+        message_id        TEXT PRIMARY KEY,
+        session_id        TEXT NOT NULL,
+        owner_user_id     TEXT NOT NULL,
+        agent_id          TEXT NOT NULL,
+        role              TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        sequence_number   BIGINT NOT NULL CHECK (sequence_number >= 1),
+        content           TEXT NOT NULL,
+        created_at        TEXT NOT NULL,
+        metadata_json     TEXT NOT NULL DEFAULT '{}',
+        UNIQUE (session_id, sequence_number)
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_messages_owner_agent
+        ON messages(owner_user_id, agent_id, created_at DESC);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_messages_session_order
+        ON messages(session_id, sequence_number);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS memory_records (
+        memory_id         TEXT PRIMARY KEY,
+        session_id        TEXT,
+        owner_user_id     TEXT NOT NULL,
+        agent_id          TEXT NOT NULL,
+        kind              TEXT NOT NULL CHECK (kind IN ('message', 'compression_summary', 'fact', 'document')),
+        content           TEXT NOT NULL,
+        covered_from      BIGINT,
+        covered_to        BIGINT,
+        collection_name   TEXT NOT NULL DEFAULT '',
+        metadata_json     TEXT NOT NULL DEFAULT '{}',
+        created_at        TEXT NOT NULL,
+        indexed           INTEGER NOT NULL DEFAULT 0
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_memory_owner_agent
+        ON memory_records(owner_user_id, agent_id);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_memory_session_span
+        ON memory_records(session_id, covered_from, covered_to);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_memory_pending_index
+        ON memory_records(indexed, created_at);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_profiles (
+        user_id           TEXT PRIMARY KEY,
+        basic_info_json   TEXT NOT NULL DEFAULT '{}',
+        identity_revision INTEGER NOT NULL DEFAULT 0,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_facts (
+        fact_id           TEXT PRIMARY KEY,
+        user_id           TEXT NOT NULL,
+        fact_type         TEXT NOT NULL,
+        subject           TEXT NOT NULL DEFAULT '',
+        text              TEXT NOT NULL,
+        status            TEXT NOT NULL CHECK (status IN ('active', 'inactive')),
+        version           INTEGER NOT NULL CHECK (version >= 1),
+        superseded_by     TEXT,
+        updated_by        TEXT NOT NULL,
+        source_message_id TEXT,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_user_facts_one_active
+        ON user_facts(user_id, fact_type, subject)
+        WHERE status = 'active';
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_user_facts_user_type_version
+        ON user_facts(user_id, fact_type, version);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS idempotency_records (
+        owner_user_id     TEXT NOT NULL,
+        idempotency_key   TEXT NOT NULL,
+        operation         TEXT NOT NULL,
+        request_hash      TEXT NOT NULL,
+        result_json       TEXT NOT NULL,
+        created_at        TEXT NOT NULL,
+        PRIMARY KEY (owner_user_id, idempotency_key)
+    );
+    """,
+)
+
+
+class PostgresMemoryTransaction:
+    """Postgres-backed write-scoped operations over one sync connection.
+
+    The transaction protocol methods are synchronous, so the write transaction
+    uses a short-lived sync connection (the SQLite implementation is sync too);
+    the async pool serves the repository's read methods.
+    """
+
+    def __init__(self, conn: psycopg.Connection) -> None:
+        self._conn = conn
+
+    def get_idempotent(
+        self, idempotency_key: str, *, owner_user_id: str = ""
+    ) -> IdempotencyRecord | None:
+        row = self._conn.execute(
+            "SELECT owner_user_id, idempotency_key, operation, request_hash, result_json, created_at"
+            "  FROM idempotency_records WHERE owner_user_id = %s AND idempotency_key = %s",
+            (owner_user_id, idempotency_key),
+        ).fetchone()
+        return _idempotency_from_row(row) if row is not None else None
+
+    def store_idempotent(self, record: IdempotencyRecord) -> None:
+        self._conn.execute(
+            "INSERT INTO idempotency_records"
+            " (owner_user_id, idempotency_key, operation, request_hash, result_json, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s)",
+            (
+                record.owner_user_id,
+                record.idempotency_key,
+                record.operation,
+                record.request_hash,
+                json.dumps(record.result, sort_keys=True),
+                record.created_at,
+            ),
+        )
+
+    def upsert_session(self, session: MemorySession) -> bool:
+        cursor = self._conn.execute(
+            "INSERT INTO sessions"
+            " (session_id, owner_user_id, agent_id, status, started_at, closed_at,"
+            "  metadata_json, created_at, updated_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT(session_id) DO NOTHING",
+            (
+                session.session_id,
+                session.owner_user_id,
+                session.agent_id,
+                session.status,
+                session.started_at,
+                session.closed_at,
+                json.dumps(session.metadata, sort_keys=True),
+                session.created_at,
+                session.updated_at,
+            ),
+        )
+        return cursor.rowcount > 0
+
+    def close_session(
+        self,
+        *,
+        owner_user_id: str,
+        session_id: str,
+        closed_at: str,
+    ) -> tuple[MemorySession, bool]:
+        row = self._conn.execute(
+            "SELECT session_id, owner_user_id, agent_id, status, started_at, closed_at,"
+            "       metadata_json, created_at, updated_at"
+            "  FROM sessions WHERE session_id = %s",
+            (session_id,),
+        ).fetchone()
+        if row is None or row["owner_user_id"] != owner_user_id:
+            raise MemoryNotFoundError(f"session not found: {session_id}")
+        if row["status"] == "closed":
+            return _session_from_row(row), False
+        self._conn.execute(
+            "UPDATE sessions SET status = 'closed', closed_at = %s, updated_at = %s"
+            " WHERE session_id = %s",
+            (closed_at, closed_at, session_id),
+        )
+        updated = _session_from_row(row)
+        updated = MemorySession(
+            session_id=updated.session_id,
+            owner_user_id=updated.owner_user_id,
+            agent_id=updated.agent_id,
+            status="closed",
+            started_at=updated.started_at,
+            closed_at=closed_at,
+            metadata=updated.metadata,
+            created_at=updated.created_at,
+            updated_at=closed_at,
+        )
+        return updated, True
+
+    def insert_message(self, message: MemoryMessage) -> bool:
+        # A Postgres statement failure aborts the whole transaction (unlike
+        # SQLite), so the soft-fail insert is savepoint-scoped: callers rely on
+        # continuing the transaction after a duplicate returns False.
+        try:
+            self._conn.execute("SAVEPOINT insert_message")
+            cursor = self._conn.execute(
+                "INSERT INTO messages"
+                " (message_id, session_id, owner_user_id, agent_id, role,"
+                "  sequence_number, content, created_at, metadata_json)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    message.message_id,
+                    message.session_id,
+                    message.owner_user_id,
+                    message.agent_id,
+                    message.role,
+                    message.sequence_number,
+                    message.content,
+                    message.created_at,
+                    json.dumps(message.metadata, sort_keys=True),
+                ),
+            )
+            self._conn.execute("RELEASE SAVEPOINT insert_message")
+            return cursor.rowcount > 0
+        except psycopg.errors.IntegrityError:
+            self._conn.execute("ROLLBACK TO SAVEPOINT insert_message")
+            return False
+
+    def insert_memory_record(self, record: MemoryRecord) -> bool:
+        try:
+            self._conn.execute("SAVEPOINT insert_memory_record")
+            cursor = self._conn.execute(
+                "INSERT INTO memory_records"
+                " (memory_id, session_id, owner_user_id, agent_id, kind, content,"
+                "  covered_from, covered_to, collection_name, metadata_json, created_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    record.memory_id,
+                    record.session_id or None,
+                    record.owner_user_id,
+                    record.agent_id,
+                    record.kind,
+                    record.content,
+                    record.covered_from,
+                    record.covered_to,
+                    record.collection_name,
+                    json.dumps(record.metadata, sort_keys=True),
+                    record.created_at,
+                ),
+            )
+            self._conn.execute("RELEASE SAVEPOINT insert_memory_record")
+            return cursor.rowcount > 0
+        except psycopg.errors.IntegrityError:
+            self._conn.execute("ROLLBACK TO SAVEPOINT insert_memory_record")
+            return False
+
+    def upsert_profile(self, profile: UserProfile) -> bool:
+        cursor = self._conn.execute(
+            "INSERT INTO user_profiles"
+            " (user_id, basic_info_json, identity_revision, created_at, updated_at)"
+            " VALUES (%s, %s, %s, %s, %s)"
+            " ON CONFLICT(user_id) DO UPDATE SET"
+            " basic_info_json = EXCLUDED.basic_info_json,"
+            " identity_revision = EXCLUDED.identity_revision,"
+            " updated_at = EXCLUDED.updated_at",
+            (
+                profile.user_id,
+                json.dumps(profile.basic_info, sort_keys=True),
+                profile.identity_revision,
+                profile.created_at,
+                profile.updated_at,
+            ),
+        )
+        return cursor.rowcount > 0
+
+    def insert_fact(self, fact: UserFact) -> None:
+        self._conn.execute(
+            "INSERT INTO user_facts"
+            " (fact_id, user_id, fact_type, subject, text, status, version,"
+            "  superseded_by, updated_by, source_message_id, created_at, updated_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                fact.fact_id,
+                fact.user_id,
+                fact.fact_type,
+                fact.subject,
+                fact.text,
+                fact.status,
+                fact.version,
+                fact.superseded_by,
+                fact.updated_by,
+                fact.source_message_id or None,
+                fact.created_at,
+                fact.updated_at,
+            ),
+        )
+
+    def supersede_fact(
+        self,
+        *,
+        user_id: str,
+        fact_type: str,
+        subject: str,
+        new_fact: UserFact,
+    ) -> tuple[list[UserFact], UserFact]:
+        # Postgres locks the active rows for the transaction instead of relying
+        # on the SQLite write lock; a concurrent supersession then trips the
+        # partial unique index on insert.
+        rows = self._conn.execute(
+            "SELECT fact_id, user_id, fact_type, subject, text, status, version,"
+            "       superseded_by, updated_by, source_message_id, created_at, updated_at"
+            "  FROM user_facts"
+            " WHERE user_id = %s AND fact_type = %s AND subject = %s AND status = 'active'"
+            " FOR UPDATE",
+            (user_id, fact_type, subject),
+        ).fetchall()
+        superseded: list[UserFact] = []
+        for row in rows:
+            fact = _fact_from_row(row)
+            self._conn.execute(
+                "UPDATE user_facts SET status = 'inactive', superseded_by = %s, updated_at = %s"
+                " WHERE fact_id = %s",
+                (new_fact.fact_id, new_fact.updated_at, fact.fact_id),
+            )
+            superseded.append(fact)
+        max_version = self._conn.execute(
+            "SELECT COALESCE(MAX(version), 0) AS version FROM user_facts"
+            " WHERE user_id = %s AND fact_type = %s AND subject = %s",
+            (user_id, fact_type, subject),
+        ).fetchone()["version"]
+        inserted = UserFact(
+            fact_id=new_fact.fact_id,
+            user_id=new_fact.user_id,
+            fact_type=new_fact.fact_type,
+            subject=new_fact.subject,
+            text=new_fact.text,
+            status="active",
+            version=int(max_version) + 1,
+            superseded_by=None,
+            updated_by=new_fact.updated_by,
+            source_message_id=new_fact.source_message_id,
+            created_at=new_fact.created_at,
+            updated_at=new_fact.updated_at,
+        )
+        try:
+            self.insert_fact(inserted)
+        except psycopg.errors.UniqueViolation as exc:
+            raise FactSupersessionConflict(
+                "concurrent fact supersession for "
+                f"({user_id}, {fact_type}, {subject})"
+            ) from exc
+        return superseded, inserted
+
+
+class PostgresMemoryRepository:
+    """Postgres-backed memory repository selected via ``MEMORY_DB_URL``.
+
+    Reads run over an async pool; the sync ``transaction()`` seam opens a
+    short-lived sync connection per write transaction.
+    """
+
+    def __init__(self, db_url: str) -> None:
+        self.db_url = db_url
+        self._pool = async_pool(db_url)
+
+    async def initialize(self) -> None:
+        await self._pool.open()
+        await self._pool.wait()
+        async with self._pool.connection() as conn:
+            for statement in _MEMORY_POSTGRES_DDL:
+                await conn.execute(statement)
+
+    async def close(self) -> None:
+        await self._pool.close()
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[MemoryTransaction]:
+        conn = psycopg.connect(self.db_url, row_factory=dict_row)
+        try:
+            yield PostgresMemoryTransaction(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    async def get_session(self, owner_user_id: str, session_id: str) -> MemorySession | None:
+        async with self._pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT session_id, owner_user_id, agent_id, status, started_at, closed_at,"
+                    "       metadata_json, created_at, updated_at"
+                    "  FROM sessions WHERE session_id = %s",
+                    (session_id,),
+                )
+            ).fetchone()
+        if row is None or row["owner_user_id"] != owner_user_id:
+            return None
+        return _session_from_row(row)
+
+    async def session_owner(self, session_id: str) -> str | None:
+        async with self._pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT owner_user_id FROM sessions WHERE session_id = %s",
+                    (session_id,),
+                )
+            ).fetchone()
+        return str(row["owner_user_id"]) if row is not None else None
+
+    async def get_message(self, owner_user_id: str, message_id: str) -> MemoryMessage | None:
+        async with self._pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT message_id, session_id, owner_user_id, agent_id, role,"
+                    "       sequence_number, content, created_at, metadata_json"
+                    "  FROM messages WHERE message_id = %s",
+                    (message_id,),
+                )
+            ).fetchone()
+        if row is None or row["owner_user_id"] != owner_user_id:
+            return None
+        return _message_from_row(row)
+
+    async def list_session_messages(
+        self, owner_user_id: str, session_id: str
+    ) -> list[MemoryMessage]:
+        async with self._pool.connection() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT message_id, session_id, owner_user_id, agent_id, role,"
+                    "       sequence_number, content, created_at, metadata_json"
+                    "  FROM messages WHERE session_id = %s AND owner_user_id = %s"
+                    " ORDER BY sequence_number ASC",
+                    (session_id, owner_user_id),
+                )
+            ).fetchall()
+        return [_message_from_row(row) for row in rows]
+
+    async def list_messages(
+        self, owner_user_id: str, agent_id: str
+    ) -> list[MemoryMessage]:
+        async with self._pool.connection() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT message_id, session_id, owner_user_id, agent_id, role,"
+                    "       sequence_number, content, created_at, metadata_json"
+                    "  FROM messages WHERE owner_user_id = %s AND agent_id = %s"
+                    " ORDER BY created_at ASC, sequence_number ASC",
+                    (owner_user_id, agent_id),
+                )
+            ).fetchall()
+        return [_message_from_row(row) for row in rows]
+
+    async def count_messages(self, owner_user_id: str, agent_id: str) -> int:
+        async with self._pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT COUNT(*) AS count FROM messages WHERE owner_user_id = %s AND agent_id = %s",
+                    (owner_user_id, agent_id),
+                )
+            ).fetchone()
+        return int(row["count"])
+
+    async def get_memory_record(
+        self, owner_user_id: str, memory_id: str
+    ) -> MemoryRecord | None:
+        async with self._pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT memory_id, session_id, owner_user_id, agent_id, kind, content,"
+                    "       covered_from, covered_to, collection_name, metadata_json, created_at"
+                    "  FROM memory_records WHERE memory_id = %s",
+                    (memory_id,),
+                )
+            ).fetchone()
+        if row is None or row["owner_user_id"] != owner_user_id:
+            return None
+        return _memory_record_from_row(row)
+
+    async def list_session_summaries(
+        self, owner_user_id: str, session_id: str
+    ) -> list[MemoryRecord]:
+        async with self._pool.connection() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT memory_id, session_id, owner_user_id, agent_id, kind, content,"
+                    "       covered_from, covered_to, collection_name, metadata_json, created_at"
+                    "  FROM memory_records"
+                    " WHERE owner_user_id = %s AND session_id = %s AND kind = 'compression_summary'"
+                    " ORDER BY covered_from ASC, memory_id ASC",
+                    (owner_user_id, session_id),
+                )
+            ).fetchall()
+        return [_memory_record_from_row(row) for row in rows]
+
+    async def list_memory_records(
+        self, owner_user_id: str, agent_id: str
+    ) -> list[MemoryRecord]:
+        async with self._pool.connection() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT memory_id, session_id, owner_user_id, agent_id, kind, content,"
+                    "       covered_from, covered_to, collection_name, metadata_json, created_at"
+                    "  FROM memory_records WHERE owner_user_id = %s AND agent_id = %s"
+                    " ORDER BY created_at ASC, memory_id ASC",
+                    (owner_user_id, agent_id),
+                )
+            ).fetchall()
+        return [_memory_record_from_row(row) for row in rows]
+
+    async def count_memory_records(
+        self, owner_user_id: str, agent_id: str, kind: str
+    ) -> int:
+        async with self._pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT COUNT(*) AS count FROM memory_records"
+                    " WHERE owner_user_id = %s AND agent_id = %s AND kind = %s",
+                    (owner_user_id, agent_id, kind),
+                )
+            ).fetchone()
+        return int(row["count"])
+
+    async def list_memory_records_pending_index(self) -> list[MemoryRecord]:
+        async with self._pool.connection() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT memory_id, session_id, owner_user_id, agent_id, kind, content,"
+                    "       covered_from, covered_to, collection_name, metadata_json, created_at"
+                    "  FROM memory_records WHERE indexed = 0"
+                    " ORDER BY created_at ASC, memory_id ASC",
+                )
+            ).fetchall()
+        return [_memory_record_from_row(row) for row in rows]
+
+    async def mark_memory_records_indexed(self, memory_ids: list[str]) -> int:
+        if not memory_ids:
+            return 0
+        placeholders = ",".join(["%s"] * len(memory_ids))
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE memory_records SET indexed = 1"
+                f" WHERE memory_id IN ({placeholders})",
+                list(memory_ids),
+            )
+        return cursor.rowcount
+
+    async def list_document_collections(
+        self, owner_user_id: str, agent_id: str
+    ) -> tuple[str, ...]:
+        async with self._pool.connection() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT DISTINCT collection_name FROM memory_records"
+                    " WHERE owner_user_id = %s AND agent_id = %s AND kind = 'document'"
+                    "   AND collection_name != ''"
+                    " ORDER BY collection_name ASC",
+                    (owner_user_id, agent_id),
+                )
+            ).fetchall()
+        return tuple(str(row["collection_name"]) for row in rows)
+
+    async def get_profile(self, user_id: str) -> UserProfile | None:
+        async with self._pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT user_id, basic_info_json, identity_revision, created_at, updated_at"
+                    "  FROM user_profiles WHERE user_id = %s",
+                    (user_id,),
+                )
+            ).fetchone()
+        return _profile_from_row(row) if row is not None else None
+
+    async def get_fact(self, user_id: str, fact_id: str) -> UserFact | None:
+        async with self._pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT fact_id, user_id, fact_type, subject, text, status, version,"
+                    "       superseded_by, updated_by, source_message_id, created_at, updated_at"
+                    "  FROM user_facts WHERE fact_id = %s",
+                    (fact_id,),
+                )
+            ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        return _fact_from_row(row)
+
+    async def list_active_facts(self, user_id: str) -> list[UserFact]:
+        async with self._pool.connection() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT fact_id, user_id, fact_type, subject, text, status, version,"
+                    "       superseded_by, updated_by, source_message_id, created_at, updated_at"
+                    "  FROM user_facts WHERE user_id = %s AND status = 'active'"
+                    " ORDER BY fact_type ASC, subject ASC, version ASC",
+                    (user_id,),
+                )
+            ).fetchall()
+        return [_fact_from_row(row) for row in rows]
+
+    async def list_facts(
+        self, user_id: str, *, include_inactive: bool = False
+    ) -> list[UserFact]:
+        async with self._pool.connection() as conn:
+            if include_inactive:
+                rows = await (
+                    await conn.execute(
+                        "SELECT fact_id, user_id, fact_type, subject, text, status, version,"
+                        "       superseded_by, updated_by, source_message_id, created_at, updated_at"
+                        "  FROM user_facts WHERE user_id = %s"
+                        " ORDER BY fact_type ASC, subject ASC, version ASC",
+                        (user_id,),
+                    )
+                ).fetchall()
+            else:
+                rows = await (
+                    await conn.execute(
+                        "SELECT fact_id, user_id, fact_type, subject, text, status, version,"
+                        "       superseded_by, updated_by, source_message_id, created_at, updated_at"
+                        "  FROM user_facts WHERE user_id = %s AND status = 'active'"
+                        " ORDER BY fact_type ASC, subject ASC, version ASC",
+                        (user_id,),
+                    )
+                ).fetchall()
+        return [_fact_from_row(row) for row in rows]
+
+    async def count_active_facts(self, user_id: str) -> int:
+        async with self._pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT COUNT(*) AS count FROM user_facts WHERE user_id = %s AND status = 'active'",
+                    (user_id,),
+                )
+            ).fetchone()
+        return int(row["count"])
 
 
 def _session_from_row(row: sqlite3.Row) -> MemorySession:

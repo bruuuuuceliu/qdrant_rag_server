@@ -19,7 +19,7 @@ from memory_service.config import MemoryServiceSettings
 from memory_service.domain_handler import MemoryDomainHandler
 from memory_service.identity import BrokerIdentitySource, FakeIdentitySource
 from memory_service.indexer import BrokerMemoryIndexer, FakeMemoryIndexer
-from memory_service.repository import SQLiteMemoryRepository
+from memory_service.repository import MemoryRepository, PostgresMemoryRepository, SQLiteMemoryRepository
 from memory_service.searcher import BrokerMemorySearcher, FakeMemorySearcher
 from shared.contracts import TOPICS, MessageConsumer, MessageProducer
 
@@ -206,7 +206,10 @@ async def create_default_domain_app(
 ) -> MemoryDomainServerContext:
     """Build the runtime composition root from settings (fake modes for local)."""
     settings = settings or MemoryServiceSettings()
-    repository = SQLiteMemoryRepository(settings.db_path)
+    if settings.db_url:
+        repository: MemoryRepository = PostgresMemoryRepository(settings.db_url)
+    else:
+        repository = SQLiteMemoryRepository(settings.db_path)
     await repository.initialize()
 
     producer = (

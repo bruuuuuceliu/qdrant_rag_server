@@ -8,10 +8,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from broker_service import BrokerSettings, create_redpanda_bus
-from configs.config import get_value
+from configs.config import get_optional_value, get_value
 from shared.contracts import TOPICS, MessageConsumer, MessageProducer
 from workflow_log_service.domain_handler import WorkflowLogDomainHandler
-from workflow_log_service.repository import SQLiteWorkflowLogRepository
+from workflow_log_service.repository import (
+    PostgresWorkflowLogRepository,
+    SQLiteWorkflowLogRepository,
+    WorkflowLogRepository,
+)
 
 
 @dataclass(slots=True)
@@ -129,6 +133,7 @@ class WorkflowLogDomainSettings:
     command_topic: str = TOPICS.domain_workflow_log_commands
     audit_topic: str = TOPICS.audit_events
     db_path: Path = Path("/var/lib/rag/workflow_log.db")
+    db_url: str | None = None
 
     @classmethod
     def from_values(cls, values: dict[str, str]) -> WorkflowLogDomainSettings:
@@ -147,6 +152,7 @@ class WorkflowLogDomainSettings:
             db_path=Path(
                 get_value(values, "WORKFLOW_LOG_DB_PATH", "/var/lib/rag/workflow_log.db")
             ),
+            db_url=get_optional_value(values, "WORKFLOW_LOG_DB_URL"),
         )
 
 
@@ -156,7 +162,10 @@ async def create_default_domain_app(
     broker_settings: BrokerSettings | None = None,
 ) -> WorkflowLogDomainServerContext:
     settings = settings or WorkflowLogDomainSettings()
-    repository = SQLiteWorkflowLogRepository(settings.db_path)
+    if settings.db_url:
+        repository: WorkflowLogRepository = PostgresWorkflowLogRepository(settings.db_url)
+    else:
+        repository = SQLiteWorkflowLogRepository(settings.db_path)
     await repository.initialize()
     return create_domain_app(
         repository=repository,

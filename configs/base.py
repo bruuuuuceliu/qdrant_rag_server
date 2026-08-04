@@ -58,6 +58,8 @@ class AppSettings:
     retrieval_placement_replication_factor: int = 1
     retrieval_placement_shard_id: str = "local-qdrant"
     retrieval_placement_cluster_id: str = "local"
+    response_cache_db_url: str | None = None
+    retrieval_placement_db_url: str | None = None
 
     @classmethod
     def from_env(
@@ -190,6 +192,11 @@ def load_settings_from_defaults(
             values,
             "RETRIEVAL_PLACEMENT_CLUSTER_ID",
             "local",
+        ),
+        response_cache_db_url=get_optional_value(values, "RAG_RESPONSE_CACHE_DB_URL"),
+        retrieval_placement_db_url=get_optional_value(
+            values,
+            "RETRIEVAL_PLACEMENT_DB_URL",
         ),
     )
 

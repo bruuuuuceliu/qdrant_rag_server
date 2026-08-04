@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from retrieval_service.placement.models import (
     PlacementRecord,
     RetrievalShard,
     RoutingPolicy,
 )
+from shared.postgres import connect
 
 
 class RetrievalShardRepository(Protocol):
@@ -394,6 +395,239 @@ class SQLitePlacementRegistry:
     def _connect(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         return sqlite3.connect(self.db_path)
+
+
+_PLACEMENT_POSTGRES_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS retrieval_shards (
+        shard_id TEXT PRIMARY KEY,
+        cluster_id TEXT NOT NULL,
+        qdrant_endpoint TEXT NOT NULL,
+        weight INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        qps DOUBLE PRECISION NOT NULL,
+        queue_depth INTEGER NOT NULL,
+        cpu DOUBLE PRECISION NOT NULL,
+        memory DOUBLE PRECISION NOT NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_retrieval_shards_state
+        ON retrieval_shards(state);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS retrieval_placements (
+        placement_id TEXT NOT NULL,
+        routing_key TEXT NOT NULL,
+        collection_name TEXT NOT NULL,
+        placement_version INTEGER NOT NULL,
+        primary_shard_id TEXT NOT NULL,
+        replica_shard_ids_json TEXT NOT NULL,
+        state TEXT NOT NULL,
+        PRIMARY KEY (placement_id)
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_retrieval_placements_key_state
+        ON retrieval_placements(routing_key, collection_name, state);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_retrieval_placements_state
+        ON retrieval_placements(state);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS retrieval_routing_policies (
+        project_id TEXT PRIMARY KEY,
+        routing_mode TEXT NOT NULL,
+        bucket_count INTEGER NOT NULL,
+        replication_factor INTEGER NOT NULL,
+        read_fanout TEXT NOT NULL,
+        cache_affinity INTEGER NOT NULL
+    );
+    """,
+)
+
+
+class PostgresPlacementRegistry:
+    """Postgres-backed shard and placement registry.
+
+    The placement protocols are synchronous, so each call uses a short-lived
+    sync connection (no pool).
+    """
+
+    def __init__(self, db_url: str) -> None:
+        self.db_url = db_url
+
+    def initialize(self) -> None:
+        with self._connect() as conn:
+            for statement in _PLACEMENT_POSTGRES_DDL:
+                conn.execute(statement)
+
+    def list_active(self) -> list[RetrievalShard]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT shard_id, cluster_id, qdrant_endpoint, weight, state,"
+                "       qps, queue_depth, cpu, memory"
+                "  FROM retrieval_shards WHERE state = 'active' ORDER BY shard_id"
+            ).fetchall()
+        return [_shard_from_row(row) for row in rows]
+
+    def upsert(self, shard: RetrievalShard) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO retrieval_shards ("
+                " shard_id, cluster_id, qdrant_endpoint, weight, state,"
+                " qps, queue_depth, cpu, memory"
+                ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                " ON CONFLICT(shard_id) DO UPDATE SET"
+                "   cluster_id = EXCLUDED.cluster_id,"
+                "   qdrant_endpoint = EXCLUDED.qdrant_endpoint,"
+                "   weight = EXCLUDED.weight,"
+                "   state = EXCLUDED.state,"
+                "   qps = EXCLUDED.qps,"
+                "   queue_depth = EXCLUDED.queue_depth,"
+                "   cpu = EXCLUDED.cpu,"
+                "   memory = EXCLUDED.memory",
+                (
+                    shard.shard_id,
+                    shard.cluster_id,
+                    shard.qdrant_endpoint,
+                    shard.weight,
+                    shard.state,
+                    shard.qps,
+                    shard.queue_depth,
+                    shard.cpu,
+                    shard.memory,
+                ),
+            )
+
+    def get(self, shard_id: str) -> RetrievalShard | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT shard_id, cluster_id, qdrant_endpoint, weight, state,"
+                "       qps, queue_depth, cpu, memory"
+                "  FROM retrieval_shards WHERE shard_id = %s",
+                (shard_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _shard_from_row(row)
+
+    def get_active(
+        self,
+        routing_key: str,
+        collection_name: str,
+    ) -> PlacementRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT placement_id, placement_version, routing_key,"
+                "       primary_shard_id, replica_shard_ids_json,"
+                "       collection_name, state"
+                "  FROM retrieval_placements"
+                " WHERE routing_key = %s AND collection_name = %s AND state = 'active'",
+                (routing_key, collection_name),
+            ).fetchone()
+        if row is None:
+            return None
+        return _placement_from_row(row)
+
+    def list_by_collection(self, collection_name: str) -> list[PlacementRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT placement_id, placement_version, routing_key,"
+                "       primary_shard_id, replica_shard_ids_json,"
+                "       collection_name, state"
+                "  FROM retrieval_placements"
+                " WHERE collection_name = %s"
+                " ORDER BY routing_key, placement_version",
+                (collection_name,),
+            ).fetchall()
+        return [_placement_from_row(row) for row in rows]
+
+    def save(self, record: PlacementRecord) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO retrieval_placements ("
+                " placement_id, routing_key, collection_name,"
+                " placement_version, primary_shard_id,"
+                " replica_shard_ids_json, state"
+                ") VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                " ON CONFLICT(placement_id) DO UPDATE SET"
+                "   routing_key = EXCLUDED.routing_key,"
+                "   collection_name = EXCLUDED.collection_name,"
+                "   placement_version = EXCLUDED.placement_version,"
+                "   primary_shard_id = EXCLUDED.primary_shard_id,"
+                "   replica_shard_ids_json = EXCLUDED.replica_shard_ids_json,"
+                "   state = EXCLUDED.state",
+                (
+                    record.placement_id,
+                    record.routing_key,
+                    record.collection_name,
+                    record.placement_version,
+                    record.primary_shard_id,
+                    json.dumps(list(record.replica_shard_ids)),
+                    record.state,
+                ),
+            )
+
+    def mark_state(self, placement_id: str, state: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE retrieval_placements SET state = %s WHERE placement_id = %s",
+                (state, placement_id),
+            )
+
+    def next_version(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(placement_version), 0) + 1 AS version"
+                " FROM retrieval_placements"
+            ).fetchone()
+        return int(row["version"])
+
+    def get_policy(self, project_id: str) -> RoutingPolicy | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT project_id, routing_mode, bucket_count,"
+                "       replication_factor, read_fanout, cache_affinity"
+                "  FROM retrieval_routing_policies WHERE project_id = %s",
+                (project_id,),
+            ).fetchone()
+            if row is None and project_id != "*":
+                row = conn.execute(
+                    "SELECT project_id, routing_mode, bucket_count,"
+                    "       replication_factor, read_fanout, cache_affinity"
+                    "  FROM retrieval_routing_policies WHERE project_id = '*'"
+                ).fetchone()
+        if row is None:
+            return None
+        return _policy_from_row(row)
+
+    def save_policy(self, policy: RoutingPolicy) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO retrieval_routing_policies ("
+                " project_id, routing_mode, bucket_count, replication_factor,"
+                " read_fanout, cache_affinity"
+                ") VALUES (%s, %s, %s, %s, %s, %s)"
+                " ON CONFLICT(project_id) DO UPDATE SET"
+                "   routing_mode = EXCLUDED.routing_mode,"
+                "   bucket_count = EXCLUDED.bucket_count,"
+                "   replication_factor = EXCLUDED.replication_factor,"
+                "   read_fanout = EXCLUDED.read_fanout,"
+                "   cache_affinity = EXCLUDED.cache_affinity",
+                (
+                    policy.project_id,
+                    policy.routing_mode,
+                    policy.bucket_count,
+                    policy.replication_factor,
+                    policy.read_fanout,
+                    1 if policy.cache_affinity else 0,
+                ),
+            )
+
+    def _connect(self) -> Any:
+        return connect(self.db_url)
 
 
 def _shard_from_row(row: sqlite3.Row) -> RetrievalShard:
