@@ -66,8 +66,8 @@ RAG_EMBEDDING_DIMENSION=768
 ```
 
 Secrets (see §3): `SERVICE_AUTH_SIGNING_KEY` **must equal** Simple Agent's
-signing key. Issuer/audience/TTL must match Simple Agent
-(`simple-agent-local` / `simple-agent-internal` / `300`).
+signing key. Issuer/audience/TTL must match Simple Agent's `x-service-auth`
+(`simple-agent-local` / `simple-agent-internal` / `300` — §3.1, §11.9).
 
 ### 1.2 Local parity with the run-all helper
 
@@ -221,11 +221,11 @@ The whole memory surface is authenticated by **one shared HS256 signing key**:
 `SERVICE_AUTH_SIGNING_KEY` **must equal** Simple Agent's
 `SIMPLE_AGENT_SERVICE_AUTH_SIGNING_KEY`. Drift breaks every token verification:
 conversation-server tokens will not verify → `401`/`403` on every memory
-command (see §7). Issuer/audience/TTL must also match:
-`SERVICE_AUTH_TOKEN_ISSUER=simple-agent-local`,
-`SERVICE_AUTH_TOKEN_AUDIENCE=simple-agent-internal`,
-`SERVICE_AUTH_TOKEN_TTL_SECONDS=300`. `MEMORY_ALLOWED_SERVICES` must include
-`conversation-server`.
+command (see §7). Issuer/audience/TTL must also match. Both production composes
+and local `run-all.sh --memory` pair on `simple-agent-local` /
+`simple-agent-internal` / `300` (SA compose.production.yaml `x-service-auth`,
+line 64; RAG compose default — see §11.9).
+`MEMORY_ALLOWED_SERVICES` must include `conversation-server`.
 
 ### 3.2 The B3 broker-mode guard
 
@@ -648,3 +648,75 @@ dependency scanning, and the full pytest suite with a coverage floor. Manual
 full local smoke, a container-topology smoke (build → compose up → health
 probes → live backup → SIGTERM graceful-exit check), and image publication to
 GHCR.
+
+### 11.9 Integrated Simple Agent deployment (shared `rag-memory-test` network)
+
+Simple Agent's production compose participates in the broker-first memory stack
+over **one shared private Docker network** (`rag-memory-test`) and **one shared
+Redpanda broker** (INTERNAL listener `redpanda-rag-local:19092`). This compose
+**creates** the network and the broker; SA's compose declares the network
+`external: true` and only joins. Design: `docs/design/sa-integration-topology.md`;
+acceptance list: `docs/design/sa-integration-spec.md` §8.
+
+**Bring-up order (exact):**
+
+1. **RAG stack first** — creates `rag-memory-test` and starts Redpanda:
+   ```bash
+   cd deployment
+   cp compose.prod.env.example .env   # fill REDIS_PASSWORD + SERVICE_AUTH_SIGNING_KEY
+   docker compose -f docker-compose.prod.yml up -d
+   docker network ls | grep rag-memory-test      # created by this stack
+   docker compose -f docker-compose.prod.yml ps  # every RAG service healthy
+   ```
+2. **Confirm the network before SA comes up** (SA `up` fails if the external
+   network is missing):
+   ```bash
+   docker network inspect rag-memory-test   # lists redpanda at this point
+   ```
+3. **SA stack second** (in `simple_agent`):
+   ```bash
+   docker compose -f infra/docker/compose.production.yaml up -d
+   docker network inspect rag-memory-test   # now also lists conversation-server-* + identity-server-worker
+   ```
+
+The network is idempotent: compose reuses it if it already exists. Caveat: this
+applies to a network **compose created**. A `rag-memory-test` pre-created with
+`docker network create` (e.g. by a prior `run-all.sh --memory` on the same host)
+lacks the compose ownership label; `up` warns and will not attach Redpanda to it.
+Before production bring-up on such a host, stop the local stack and remove that
+network (`docker network rm rag-memory-test`), or pre-create it with
+`docker network create rag-memory-test --internal` and accept the warning.
+
+**Shared-secret requirement.** One shared HS256 key: RAG `SERVICE_AUTH_SIGNING_KEY`
+**must equal** SA's `SIMPLE_AGENT_SERVICE_AUTH_SIGNING_KEY` (same value via a
+secret manager or `*_FILE`; never committed — §3.1). Issuer/audience/TTL must
+match SA's `x-service-auth`: `simple-agent-local` / `simple-agent-internal`
+/ `300` in both the RAG and SA production composes (same as local
+`run-all.sh --memory`). `MEMORY_ALLOWED_SERVICES` includes `conversation-server`.
+Drift ⇒ `401`/`403` on every memory command.
+
+**Topology and trust surface.**
+
+- Redpanda joins **both** `rag-internal` and `rag-memory-test` with the alias
+  `redpanda-rag-local`; all RAG workers and the SA conversation/identity
+  services use `redpanda-rag-local:19092` (the INTERNAL listener, `§1.1`).
+  `BROKER_TOPIC_PREFIX` is empty (bare topics shared with SA).
+- SA joins **only** `rag-memory-test`: reachable members are the broker's
+  INTERNAL listener and the RAG memory/retrieval workers. qdrant/redis and the
+  worker ops ports stay on `rag-internal`, unreachable from SA (network-isolation
+  auth boundary, §8).
+- The INTERNAL listener is **not** host-published by either compose. For
+  host-run SA broker-mode clients/tests, bring the RAG stack up with the interop
+  override, which publishes `127.0.0.1:19092` (host-local only):
+  ```bash
+  REDIS_PASSWORD=x SERVICE_AUTH_SIGNING_KEY=y \
+  RAG_EMBEDDING_PROVIDER=deterministic RAG_EMBEDDING_MODEL=deterministic-hash RAG_EMBEDDING_DIMENSION=384 \
+  docker compose -f docker-compose.prod.yml -f docker-compose.prod.override.interop.yml up -d
+  ```
+  Host-run tests then connect with `REDPANDA_BOOTSTRAP_SERVERS=127.0.0.1:19092`.
+
+**Verify end-to-end:** run the readiness report (§2), confirm
+`docker network inspect rag-memory-test` lists containers from **both** stacks,
+then drive a chat (`session.start`/`message.record` → SQLite rows, `memory.lookup`
+returns per-source results) and register a user (`identity.user.registered` →
+`user_profiles` row).

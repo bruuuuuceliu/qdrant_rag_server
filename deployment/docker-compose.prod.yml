@@ -16,12 +16,32 @@
 # Broker security: the internal listener is PLAINTEXT here. To enable
 # SASL/SCRAM + TLS (operations.md §4), uncomment the BROKER_SECURITY_* / SASL_*
 # env under `x-rag-service` and configure Redpanda accordingly.
+#
+# Shared Simple Agent integration: this compose CREATES the private
+# `rag-memory-test` network and attaches Redpanda (alias `redpanda-rag-local`)
+# with the INTERNAL listener at redpanda-rag-local:19092. simple_agent's compose
+# declares `rag-memory-test` external:true and joins it. Bring the RAG stack up
+# FIRST (creates network + broker), then the SA stack. SA reaches ONLY
+# rag-memory-test; qdrant/redis/worker ops stay on rag-internal. For host-local
+# access to the INTERNAL listener (SA broker-mode clients/tests), add the interop
+# override: -f docker-compose.prod.override.interop.yml (127.0.0.1:19092 only).
+# Full design: docs/design/sa-integration-topology.md.
 name: qdrant-rag
 
 networks:
   # Normal bridge so workers can reach S3/OpenRouter/HuggingFace when enabled.
   # Harden at the host/cloud firewall; the RAG stack is never publicly exposed.
   rag-internal:
+  # Shared memory-path trust network with simple_agent. RAG CREATES it; SA's
+  # compose declares it `external: true` and only joins. The exact global name is
+  # pinned with `name:` so the qdrant-rag project does not prefix it (else SA's
+  # external declaration could not resolve it). `internal: true` removes the
+  # default route. SA can reach ONLY this network -- never place qdrant/redis/
+  # worker ops on it. Redpanda joins both networks (the one shared component)
+  # with the `redpanda-rag-local` alias (design §h "keep both").
+  rag-memory-test:
+    name: rag-memory-test
+    internal: true
 
 volumes:
   rag-data:
@@ -37,9 +57,13 @@ x-rag-env: &rag-env
   RAG_LOG_LEVEL: ${RAG_LOG_LEVEL:-INFO}
   RAG_OPS_ENABLED: "true"
 
-  # Broker: internal listener on the private network (bare topics so the
-  # simple_agent memory path shares names).
-  BROKER_BOOTSTRAP_SERVERS: redpanda:19092
+  # Broker: INTERNAL listener on the private shared network (bare topics so the
+  # simple_agent memory path shares names). Same contract as
+  # examples/local/run-all.sh --memory (redpanda-rag-local:19092); production
+  # clients reach the internal listener only (operations.md §1.1).
+  BROKER_BOOTSTRAP_SERVERS: redpanda-rag-local:19092
+  # Empty prefix = bare topics shared with simple_agent (domain.memory.commands,
+  # domain.memory.results, identity.user.events).
   BROKER_TOPIC_PREFIX: "${BROKER_TOPIC_PREFIX:-}"
   # --- SASL/TLS hardening (uncomment to enable) ---
   # BROKER_SECURITY_PROTOCOL: SASL_SSL
@@ -106,13 +130,22 @@ services:
       redpanda start --overprovisioned --smp 1 --memory 1G --reserve-memory 0M
       --node-id 0 --check=false
       --kafka-addr PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:19092
-      --advertise-kafka-addr PLAINTEXT://localhost:9092,INTERNAL://redpanda:19092
+      --advertise-kafka-addr PLAINTEXT://localhost:9092,INTERNAL://redpanda-rag-local:19092
       --rpc-addr 0.0.0.0:33145 --advertise-rpc-addr redpanda:33145
     ports:
-      - "9092:9092"   # host dev listener (PLAINTEXT, dev-only)
-      - "9644:9644"   # admin API
-      - "19092:19092" # internal listener for the RAG mesh
-    networks: [rag-internal]
+      - "127.0.0.1:9092:9092" # PLAINTEXT dev listener -- host-local ONLY (dev convenience)
+      - "127.0.0.1:9644:9644" # admin API -- host-local only (healthcheck curls in-container)
+      # 19092 (INTERNAL listener) is NOT host-published: reachable only by
+      # containers on rag-internal / rag-memory-test. Never bind it to a public
+      # interface. Host-local interop access is opt-in via
+      # docker-compose.prod.override.interop.yml (127.0.0.1:19092).
+    networks:
+      rag-internal:
+        aliases:
+          - redpanda-rag-local
+      rag-memory-test:
+        aliases:
+          - redpanda-rag-local
     volumes:
       - redpanda-data:/var/lib/redpanda/data
     healthcheck:
@@ -139,8 +172,8 @@ services:
   qdrant:
     image: qdrant/qdrant:${QDRANT_TAG:-v1.9.7}
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333" # vector memory store -- host-local ONLY (never public)
+      - "127.0.0.1:6334:6334"
     networks: [rag-internal]
     volumes:
       - qdrant-data:/qdrant/storage
@@ -166,8 +199,8 @@ services:
       MANAGER_RATE_LIMIT_BURST: ${MANAGER_RATE_LIMIT_BURST:-200}
       MANAGER_MAX_REQUEST_BYTES: ${MANAGER_MAX_REQUEST_BYTES:-4194304}
     ports:
-      - "50051:50051"
-      - "9001:9001"
+      - "50051:50051" # public manager gRPC API (the SA gateway's entry to RAG)
+      - "127.0.0.1:9001:9001" # ops surface -- host-local only
     healthcheck:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9001/readyz"]
@@ -178,7 +211,7 @@ services:
     environment:
       <<: *rag-env
       RAG_OPS_PORT: "9011"
-    ports: ["9011:9011"]
+    ports: ["127.0.0.1:9011:9011"]
     healthcheck:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9011/readyz"]
@@ -190,7 +223,7 @@ services:
       <<: *rag-env
       RAG_OPS_PORT: "9010"
       SQLITE_NODE_DATABASE_ROOT: /var/lib/rag/sqlite_node
-    ports: ["9010:9010"]
+    ports: ["127.0.0.1:9010:9010"]
     healthcheck:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9010/readyz"]
@@ -202,7 +235,7 @@ services:
       <<: *rag-env
       RAG_OPS_PORT: "9009"
       STORAGE_NODE_ROOT: /var/lib/rag/raw_storage
-    ports: ["9009:9009"]
+    ports: ["127.0.0.1:9009:9009"]
     healthcheck:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9009/readyz"]
@@ -213,7 +246,7 @@ services:
     environment:
       <<: *rag-env
       RAG_OPS_PORT: "9002"
-    ports: ["9002:9002"]
+    ports: ["127.0.0.1:9002:9002"]
     healthcheck:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9002/readyz"]
@@ -226,7 +259,7 @@ services:
       RAG_OPS_PORT: "9003"
       TASK_SERVICE_STATE_DB_PATH: /var/lib/rag/task_service.db
       RAG_LOCAL_DATA_DIR: /var/lib/rag/task_service
-    ports: ["9003:9003"]
+    ports: ["127.0.0.1:9003:9003"]
     healthcheck:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9003/readyz"]
@@ -238,7 +271,7 @@ services:
       <<: *rag-env
       RAG_OPS_PORT: "9004"
       PROJECT_CONFIG_DB_PATH: /var/lib/rag/config.db
-    ports: ["9004:9004"]
+    ports: ["127.0.0.1:9004:9004"]
     healthcheck:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9004/readyz"]
@@ -250,7 +283,7 @@ services:
       <<: *rag-env
       RAG_OPS_PORT: "9005"
       WORKFLOW_LOG_DB_PATH: /var/lib/rag/workflow_log.db
-    ports: ["9005:9005"]
+    ports: ["127.0.0.1:9005:9005"]
     healthcheck:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9005/readyz"]
@@ -262,7 +295,7 @@ services:
       <<: *rag-env
       RAG_OPS_PORT: "9006"
       INGESTION_JOB_DB_PATH: /var/lib/rag/ingestion_jobs.db
-    ports: ["9006:9006"]
+    ports: ["127.0.0.1:9006:9006"]
     healthcheck:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9006/readyz"]
@@ -273,7 +306,9 @@ services:
     environment:
       <<: *rag-env
       RAG_OPS_PORT: "9007"
-    ports: ["9007:9007"]
+    networks: [rag-internal, rag-memory-test]
+    # Ops surface is host-local only; memory path is never public.
+    ports: ["127.0.0.1:9007:9007"]
     healthcheck:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9007/readyz"]
@@ -284,7 +319,9 @@ services:
     environment:
       <<: *rag-env
       RAG_OPS_PORT: "9008"
-    ports: ["9008:9008"]
+    networks: [rag-internal, rag-memory-test]
+    # Ops surface is host-local only; memory path is never public.
+    ports: ["127.0.0.1:9008:9008"]
     healthcheck:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9008/readyz"]
@@ -304,10 +341,15 @@ services:
       MEMORY_DOCUMENTS_COLLECTION: ${MEMORY_DOCUMENTS_COLLECTION:-agent_documents}
       # Single signing-key contract with simple_agent (operations.md §3).
       SERVICE_AUTH_SIGNING_KEY: "${SERVICE_AUTH_SIGNING_KEY:?SERVICE_AUTH_SIGNING_KEY is required}"
+      # Issuer MUST equal simple_agent's x-service-auth issuer
+      # (simple-agent-local, SA compose.production.yaml line 64) or every
+      # conversation-server token fails iss verification.
       SERVICE_AUTH_TOKEN_ISSUER: ${SERVICE_AUTH_TOKEN_ISSUER:-simple-agent-local}
       SERVICE_AUTH_TOKEN_AUDIENCE: ${SERVICE_AUTH_TOKEN_AUDIENCE:-simple-agent-internal}
       SERVICE_AUTH_TOKEN_TTL_SECONDS: ${SERVICE_AUTH_TOKEN_TTL_SECONDS:-300}
-    ports: ["9012:9012"]
+    networks: [rag-internal, rag-memory-test]
+    # Ops surface is host-local only; memory path is never public.
+    ports: ["127.0.0.1:9012:9012"]
     healthcheck:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9012/readyz"]
@@ -323,7 +365,7 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     networks: [rag-internal]
     depends_on:
       manager:

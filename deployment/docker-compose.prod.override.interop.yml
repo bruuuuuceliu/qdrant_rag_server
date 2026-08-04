@@ -1,0 +1,48 @@
+# Interop override: run the production compose with HOST access to Redpanda's
+# INTERNAL listener (127.0.0.1:19092) so host-run Simple Agent broker-mode
+# clients / integration tests can reach the shared memory broker exactly as SA
+# containers do over `rag-memory-test` (redpanda-rag-local:19092).
+#
+# The production compose deliberately does NOT host-publish 19092 (the internal
+# listener is private-network-only; see docker-compose.prod.yml). This override
+# adds a host-LOCAL (127.0.0.1-only) mapping for interop tests. Never bind it to
+# a public interface (security: no `*:19092` anywhere; operations.md §8).
+#
+# Usage (RAG stack first -- it CREATES the rag-memory-test network and the
+# broker -- then the Simple Agent stack):
+#   cd deployment
+#   REDIS_PASSWORD=x SERVICE_AUTH_SIGNING_KEY=y \
+#   RAG_EMBEDDING_PROVIDER=deterministic RAG_EMBEDDING_MODEL=deterministic-hash RAG_EMBEDDING_DIMENSION=384 \
+#   docker compose -f docker-compose.prod.yml -f docker-compose.prod.override.interop.yml up -d
+#
+# From the host, SA broker-mode tests then connect with
+# REDPANDA_BOOTSTRAP_SERVERS=127.0.0.1:19092 (the host mapping); SA containers
+# reach the same listener as redpanda-rag-local:19092 over the shared network.
+#
+# Host-port conflicts: like the smoke override, `!reset` clears the base file's
+# host-published infra ports that a running local dev stack occupies
+# (run-all.sh publishes 9092/9644/6333/6334/6379). compose's `!reset` empties a
+# list entirely (any value after it is ignored), so the redpanda override adds
+# the 19092 mapping as a plain (concatenated) list instead of `!reset [...]` --
+# compose concatenates list values across files.
+#   * STANDALONE use assumes the local dev stack is STOPPED: the base compose's
+#     127.0.0.1:9092/9644 (host-local, dev-only) stay published and would clash
+#     with a running run-all.sh broker.
+#   * To run alongside a local dev stack, combine with the smoke override and
+#     put interop AFTER smoke: smoke's `!reset []` clears the 9092/9644/6333/6334
+#     mappings, then interop's plain list yields just 127.0.0.1:19092.
+services:
+  redpanda:
+    # Keep ONLY host access to the INTERNAL listener. In the base compose the
+    # 127.0.0.1:9092/9644 mappings are already host-local; when this override is
+    # combined with the smoke override those are `!reset` away first and this
+    # list yields just 127.0.0.1:19092.
+    ports:
+      - "127.0.0.1:19092:19092"
+  qdrant:
+    ports: !reset []
+  prometheus:
+    ports: !reset []
+  # NOTE: no manager override. The SA<->RAG memory interop path never touches the
+  # manager gRPC API, and re-publishing it would re-expose it on 0.0.0.0. The base
+  # compose already publishes 50051 (public) + 127.0.0.1:9001 (ops).
