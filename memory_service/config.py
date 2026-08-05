@@ -8,7 +8,6 @@ service-auth and hand-off mode switches used by the domain app composition root
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from configs.base import get_bool_value, get_int_value, get_optional_value, get_value
 from shared.contracts import TOPICS
@@ -26,7 +25,6 @@ class MemoryServiceSettings:
     retrieval_index_commands_topic: str = TOPICS.helper_retrieval_index_commands
     retrieval_commands_topic: str = TOPICS.helper_retrieval_commands
     retrieval_results_topic: str = TOPICS.helper_retrieval_results
-    db_path: Path = Path("/var/lib/rag/agent_memory.db")
     db_url: str | None = None
     identity_mode: str = "broker"  # broker | fake
     index_mode: str = "broker"     # broker | fake
@@ -122,9 +120,6 @@ class MemoryServiceSettings:
                 values,
                 "MEMORY_RETRIEVAL_RESULTS_TOPIC",
                 TOPICS.helper_retrieval_results,
-            ),
-            db_path=Path(
-                get_value(values, "MEMORY_DB_PATH", "/var/lib/rag/agent_memory.db")
             ),
             db_url=get_optional_value(values, "MEMORY_DB_URL"),
             identity_mode=identity_mode,

@@ -1,32 +1,19 @@
-"""Postgres ingestion job repository tests.
-
-Run against the compose ``postgres`` service by setting ``INGESTION_TEST_DB_URL``
-(e.g. ``postgresql://rag:...@postgres:5432/rag``); skipped when unset.
-"""
+"""Postgres ingestion job repository tests (run against the shared Postgres)."""
 
 from __future__ import annotations
 
-import os
 import time
 
 import pytest
 
-from ingestion_service.jobs.sqlite import PostgresIngestionJobRepository
+from ingestion_service.jobs.postgres import PostgresIngestionJobRepository
 from ingestion_service.schemas import IngestionJob
 from shared.contracts import JobStatus
 
-TEST_DB_URL = os.environ.get("INGESTION_TEST_DB_URL") or os.environ.get("INGESTION_JOB_DB_URL")
-
-
-def _dsn() -> str:
-    if not TEST_DB_URL:
-        pytest.skip("INGESTION_TEST_DB_URL is not set; skipping Postgres ingestion tests")
-    return TEST_DB_URL
-
 
 @pytest.fixture
-async def repo() -> PostgresIngestionJobRepository:
-    repository = PostgresIngestionJobRepository(_dsn())
+async def repo(pg_dsn: str) -> PostgresIngestionJobRepository:
+    repository = PostgresIngestionJobRepository(pg_dsn)
     await repository.initialize()
     async with repository._pool.connection() as conn:
         await conn.execute("DROP TABLE IF EXISTS ingestion_jobs CASCADE")

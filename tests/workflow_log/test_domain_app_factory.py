@@ -6,6 +6,7 @@ import pytest
 
 import workflow_log_service.domain_app as domain_app
 from broker_service import BrokerSettings
+from workflow_log_service.repository import MemoryWorkflowLogRepository
 
 
 class FakeBus:
@@ -26,20 +27,19 @@ def test_workflow_log_domain_settings_loads_owned_config_values() -> None:
             "WORKFLOW_LOG_SERVICE_NAME": "workflow-a",
             "WORKFLOW_LOG_DOMAIN_COMMAND_TOPIC": "workflow.commands",
             "WORKFLOW_LOG_AUDIT_TOPIC": "audit.custom",
-            "WORKFLOW_LOG_DB_PATH": "/data/workflow.db",
+            "WORKFLOW_LOG_DB_URL": "postgresql://rag:rag@localhost:5432/rag",
         }
     )
 
     assert settings.service_name == "workflow-a"
     assert settings.command_topic == "workflow.commands"
     assert settings.audit_topic == "audit.custom"
-    assert str(settings.db_path) == "/data/workflow.db"
+    assert settings.db_url == "postgresql://rag:rag@localhost:5432/rag"
 
 
 @pytest.mark.asyncio
 async def test_create_default_workflow_log_domain_app_builds_repository(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
 ) -> None:
     calls: list[tuple[str | None, str | None]] = []
 
@@ -52,12 +52,12 @@ async def test_create_default_workflow_log_domain_app_builds_repository(
         service_name="workflow-a",
         command_topic="workflow.commands",
         audit_topic="audit.events.custom",
-        db_path=tmp_path / "workflow.db",
     )
 
     context = await domain_app.create_default_domain_app(
         settings=settings,
         broker_settings=BrokerSettings(client_id="workflow-test"),
+        repository=MemoryWorkflowLogRepository(),
     )
 
     assert context.command_topic == "workflow.commands"

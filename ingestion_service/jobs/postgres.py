@@ -1,0 +1,173 @@
+"""Durable ingestion job storage (Postgres-backed)."""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any
+
+from ingestion_service.schemas import IngestionJob
+from shared.contracts import JobStatus
+from shared.postgres import async_pool
+
+_INGESTION_JOBS_POSTGRES_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS ingestion_jobs (
+        job_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        kb_id TEXT NOT NULL,
+        doc_id TEXT NOT NULL,
+        source_uri TEXT NOT NULL,
+        data_type TEXT NOT NULL DEFAULT 'project_document',
+        status TEXT NOT NULL,
+        error TEXT,
+        content_hash TEXT,
+        metadata_json TEXT NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_project_user
+        ON ingestion_jobs(project_id, user_id);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_doc
+        ON ingestion_jobs(project_id, kb_id, doc_id);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status
+        ON ingestion_jobs(status);
+    """,
+)
+
+_INGESTION_JOB_SELECT = """
+SELECT job_id, source_uri, doc_id, status, error, metadata_json,
+       created_at, updated_at
+  FROM ingestion_jobs
+ WHERE job_id = %s
+"""
+
+
+class PostgresIngestionJobRepository:
+    """Postgres-backed ingestion job repository selected via ``INGESTION_JOB_DB_URL``."""
+
+    def __init__(self, db_url: str) -> None:
+        self.db_url = db_url
+        self._pool = async_pool(db_url)
+
+    async def initialize(self) -> None:
+        await self._pool.open()
+        await self._pool.wait()
+        async with self._pool.connection() as conn:
+            for statement in _INGESTION_JOBS_POSTGRES_DDL:
+                await conn.execute(statement)
+
+    async def close(self) -> None:
+        await self._pool.close()
+
+    async def create(self, job: IngestionJob) -> None:
+        metadata = dict(job.metadata)
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO ingestion_jobs ("
+                " job_id, project_id, user_id, kb_id, doc_id, source_uri,"
+                " data_type, status, error, content_hash, metadata_json,"
+                " created_at, updated_at"
+                ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                " ON CONFLICT(job_id) DO UPDATE SET"
+                "   project_id = EXCLUDED.project_id,"
+                "   user_id = EXCLUDED.user_id,"
+                "   kb_id = EXCLUDED.kb_id,"
+                "   doc_id = EXCLUDED.doc_id,"
+                "   source_uri = EXCLUDED.source_uri,"
+                "   data_type = EXCLUDED.data_type,"
+                "   status = EXCLUDED.status,"
+                "   error = EXCLUDED.error,"
+                "   content_hash = EXCLUDED.content_hash,"
+                "   metadata_json = EXCLUDED.metadata_json,"
+                "   updated_at = EXCLUDED.updated_at",
+                (
+                    job.job_id,
+                    str(metadata.get("project_id", "")),
+                    str(metadata.get("user_id", "")),
+                    str(metadata.get("kb_id", "")),
+                    str(metadata.get("doc_id", job.document_id)),
+                    job.source_uri,
+                    str(metadata.get("data_type", "project_document")),
+                    str(job.status),
+                    job.error,
+                    str(metadata.get("content_hash", "")),
+                    json.dumps(metadata, sort_keys=True),
+                    job.created_at,
+                    job.updated_at,
+                ),
+            )
+
+    async def get(self, job_id: str) -> IngestionJob | None:
+        async with self._pool.connection() as conn:
+            row = await (await conn.execute(_INGESTION_JOB_SELECT, (job_id,))).fetchone()
+        if row is None:
+            return None
+        metadata = json.loads(row["metadata_json"])
+        return IngestionJob(
+            job_id=row["job_id"],
+            source_uri=row["source_uri"],
+            document_id=row["doc_id"],
+            status=JobStatus(row["status"]),
+            error=row["error"],
+            metadata=metadata,
+            created_at=float(row["created_at"]),
+            updated_at=float(row["updated_at"]),
+        )
+
+    async def update_status(
+        self,
+        job_id: str,
+        status: JobStatus,
+        *,
+        error: str | None = None,
+    ) -> IngestionJob | None:
+        updated_at = time.time()
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "UPDATE ingestion_jobs SET status = %s, error = %s, updated_at = %s"
+                " WHERE job_id = %s",
+                (str(status), error, updated_at, job_id),
+            )
+        return await self.get(job_id)
+
+    async def update_metadata(
+        self,
+        job_id: str,
+        metadata: dict[str, object],
+    ) -> IngestionJob | None:
+        existing = await self.get(job_id)
+        if existing is None:
+            return None
+        updated_metadata = dict(existing.metadata)
+        updated_metadata.update(metadata)
+        updated_at = time.time()
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "UPDATE ingestion_jobs"
+                "   SET data_type = %s, content_hash = %s, metadata_json = %s, updated_at = %s"
+                " WHERE job_id = %s",
+                (
+                    str(updated_metadata.get("data_type", "project_document")),
+                    str(updated_metadata.get("content_hash", "")),
+                    json.dumps(updated_metadata, sort_keys=True),
+                    updated_at,
+                    job_id,
+                ),
+            )
+        return await self.get(job_id)
+
+
+def content_hash_from_metadata(metadata: dict[str, Any]) -> str:
+    for key in ("content_hash", "checksum", "sha256"):
+        value = metadata.get(key)
+        if value:
+            return str(value)
+    return ""

@@ -36,7 +36,7 @@ from memory_service.compression import CondenseV1Policy
 from memory_service.domain_handler import MemoryDomainHandler
 from memory_service.identity import FakeIdentitySource
 from memory_service.indexer import FakeMemoryIndexer
-from memory_service.repository import SQLiteMemoryRepository
+from memory_service.repository import MemoryInMemoryRepository
 from memory_service.searcher import FakeMemorySearcher
 from shared.contracts import TOPICS, MessageType
 from shared.service_auth import ServiceAuthSettings
@@ -63,9 +63,7 @@ def _live_broker_settings() -> BrokerSettings:
 
 
 @pytest.mark.asyncio
-async def test_live_memory_session_command_roundtrip_via_broker(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> None:
+async def test_live_memory_session_command_roundtrip_via_broker() -> None:
     _require_live_infra()
     broker_settings = _live_broker_settings()
     admin = create_redpanda_admin(broker_settings)
@@ -89,8 +87,7 @@ async def test_live_memory_session_command_roundtrip_via_broker(
         await command_consumer.start()
         await result_consumer.start()
 
-        db_path = tmp_path_factory.mktemp("memory_live") / "agent_memory.db"
-        repository = SQLiteMemoryRepository(db_path)
+        repository = MemoryInMemoryRepository()
         await repository.initialize()
         handler = MemoryDomainHandler(
             repository=repository,

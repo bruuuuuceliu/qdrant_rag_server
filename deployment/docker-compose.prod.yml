@@ -89,24 +89,16 @@ x-rag-env: &rag-env
   RAG_EMBEDDING_DIMENSION: ${RAG_EMBEDDING_DIMENSION:-768}
   RAG_EMBEDDING_DEVICE: ${RAG_EMBEDDING_DEVICE:-cpu}
 
-  # Durable retrieval state lives on the shared rag-data volume.
-  RAG_RESPONSE_CACHE_DB_PATH: /var/lib/rag/response_cache.db
+  # Durable retrieval state lives in the shared Postgres database.
   RETRIEVAL_PLACEMENT_ENABLED: "true"
-  RETRIEVAL_PLACEMENT_DB_PATH: /var/lib/rag/placement.db
   RETRIEVAL_PLACEMENT_SHARD_ID: retrieval-primary
   RETRIEVAL_PLACEMENT_CLUSTER_ID: retrieval-cluster
   RAG_OBJECT_STORAGE_PROVIDER: filesystem
   RAG_OBJECT_STORAGE_BASE_PATH: /var/lib/rag/raw_storage
 
-  # Opt-in Postgres backend for the durable stores. Empty (default) keeps each
-  # store on SQLite; a populated URL switches that store to Postgres.
-  MEMORY_DB_URL: "${MEMORY_DB_URL:-}"
-  TASK_SERVICE_STATE_DB_URL: "${TASK_SERVICE_STATE_DB_URL:-}"
-  PROJECT_CONFIG_DB_URL: "${PROJECT_CONFIG_DB_URL:-}"
-  WORKFLOW_LOG_DB_URL: "${WORKFLOW_LOG_DB_URL:-}"
-  INGESTION_JOB_DB_URL: "${INGESTION_JOB_DB_URL:-}"
-  RETRIEVAL_PLACEMENT_DB_URL: "${RETRIEVAL_PLACEMENT_DB_URL:-}"
-  RAG_RESPONSE_CACHE_DB_URL: "${RAG_RESPONSE_CACHE_DB_URL:-}"
+  # Postgres-always backend for the durable stores. Every store resolves its DSN
+  # from this shared URL (or a per-store *_DB_URL override).
+  RAG_POSTGRES_URL: "postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rag}"
 
   RAG_GENERATION_ENABLED: "false"
 
@@ -125,8 +117,8 @@ x-rag-service: &rag-service
       condition: service_healthy
     qdrant:
       condition: service_healthy
-    # postgres is opt-in (profile "postgres"); it is NOT a hard dependency of
-    # the base stack so SQLite-only deployments need no new secret or container.
+    postgres:
+      condition: service_healthy
 
 x-rag-healthcheck: &rag-healthcheck
   interval: 10s
@@ -199,21 +191,18 @@ services:
       retries: 30
       start_period: 10s
 
-  # RAG-owned Postgres for the opt-in durable-store backend. Never on the
-  # SA-shared rag-memory-test network: postgres is a RAG-internal store, only
-  # the broker is shared with simple_agent.
-  # RAG-owned postgres, opt-in via the "postgres" profile: a SQLite-only
-  # deployment starts without it and needs no POSTGRES_PASSWORD. Bring it up
-  # with: docker compose --profile postgres up -d postgres
+  # RAG-owned Postgres — the durable store backend for every non-vector store.
+  # Never on the SA-shared rag-memory-test network: postgres is a RAG-internal
+  # store, only the broker is shared with simple_agent.
   postgres:
     image: postgres:16-alpine
-    profiles: ["postgres"]
     environment:
       POSTGRES_USER: "${POSTGRES_USER:-rag}"
-      # Not fail-fast: the postgres service is opt-in, so a SQLite-only stack
-      # must start without this secret. Override with a strong value in prod.
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-rag}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
       POSTGRES_DB: "${POSTGRES_DB:-rag}"
+    # Host-local port so local service runs and tests can reach Postgres.
+    ports:
+      - "127.0.0.1:5432:5432"
     networks: [rag-internal]
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -253,13 +242,12 @@ services:
       <<: *rag-healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9011/readyz"]
 
-  sqlite-node:
+  db-node:
     <<: *rag-service
-    command: ["python", "-m", "sqlite_node.worker"]
+    command: ["python", "-m", "db_node.worker"]
     environment:
       <<: *rag-env
       RAG_OPS_PORT: "9010"
-      SQLITE_NODE_DATABASE_ROOT: /var/lib/rag/sqlite_node
     ports: ["127.0.0.1:9010:9010"]
     healthcheck:
       <<: *rag-healthcheck
@@ -294,8 +282,6 @@ services:
     environment:
       <<: *rag-env
       RAG_OPS_PORT: "9003"
-      TASK_SERVICE_STATE_DB_PATH: /var/lib/rag/task_service.db
-      RAG_LOCAL_DATA_DIR: /var/lib/rag/task_service
     ports: ["127.0.0.1:9003:9003"]
     healthcheck:
       <<: *rag-healthcheck
@@ -307,7 +293,6 @@ services:
     environment:
       <<: *rag-env
       RAG_OPS_PORT: "9004"
-      PROJECT_CONFIG_DB_PATH: /var/lib/rag/config.db
     ports: ["127.0.0.1:9004:9004"]
     healthcheck:
       <<: *rag-healthcheck
@@ -319,7 +304,6 @@ services:
     environment:
       <<: *rag-env
       RAG_OPS_PORT: "9005"
-      WORKFLOW_LOG_DB_PATH: /var/lib/rag/workflow_log.db
     ports: ["127.0.0.1:9005:9005"]
     healthcheck:
       <<: *rag-healthcheck
@@ -331,7 +315,6 @@ services:
     environment:
       <<: *rag-env
       RAG_OPS_PORT: "9006"
-      INGESTION_JOB_DB_PATH: /var/lib/rag/ingestion_jobs.db
     ports: ["127.0.0.1:9006:9006"]
     healthcheck:
       <<: *rag-healthcheck
@@ -369,7 +352,6 @@ services:
     environment:
       <<: *rag-env
       RAG_OPS_PORT: "9012"
-      MEMORY_DB_PATH: /var/lib/rag/agent_memory.db
       MEMORY_IDENTITY_MODE: broker
       MEMORY_INDEX_MODE: broker
       MEMORY_SEARCH_MODE: broker
@@ -418,8 +400,8 @@ services:
       redis:
         condition: service_healthy
 
-  # Manual/scheduled backup (deployment/backup.py): snapshots every service
-  # SQLite DB under /var/lib/rag plus Qdrant collections, then rotates.
+  # Manual/scheduled backup (deployment/backup.py): pg_dump of the Postgres
+  # durable stores plus Qdrant collection snapshots, then rotates.
   #   docker compose --profile backup run --rm backup
   # Schedule via host cron or a k8s CronJob (docs/operations.md §6).
   backup:
@@ -430,8 +412,8 @@ services:
       - deployment.backup
       - --root
       - /backup/rag
-      - --sqlite-root
-      - /var/lib/rag
+      - --pg-url
+      - postgresql://rag:${POSTGRES_PASSWORD}@postgres:5432/rag
       - --qdrant-url
       - http://qdrant:6333
       - --keep
@@ -439,8 +421,9 @@ services:
     profiles: ["backup"]
     networks: [rag-internal]
     volumes:
-      - rag-data:/var/lib/rag
       - backup-data:/backup/rag
     depends_on:
+      postgres:
+        condition: service_healthy
       qdrant:
         condition: service_healthy

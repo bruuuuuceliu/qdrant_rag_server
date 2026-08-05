@@ -16,13 +16,14 @@ RETRIEVAL_INDEX_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-index-worker.pid"
 RETRIEVAL_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-worker.pid"
 MEMORY_PID_FILE="${RUNTIME_DIR}/memory-worker.pid"
 STORAGE_NODE_PID_FILE="${RUNTIME_DIR}/storage-node.pid"
-SQLITE_NODE_PID_FILE="${RUNTIME_DIR}/sqlite-node.pid"
+DB_NODE_PID_FILE="${RUNTIME_DIR}/db-node.pid"
 REDIS_STATUS_PID_FILE="${RUNTIME_DIR}/redis-status.pid"
 QDRANT_CID_FILE="${RUNTIME_DIR}/qdrant.cid"
 QDRANT_LOG_PID_FILE="${RUNTIME_DIR}/qdrant-log.pid"
 REDPANDA_CID_FILE="${RUNTIME_DIR}/redpanda.cid"
 KAFKA_CID_FILE="${RUNTIME_DIR}/kafka.cid"
 REDIS_CID_FILE="${RUNTIME_DIR}/redis.cid"
+POSTGRES_CID_FILE="${RUNTIME_DIR}/postgres.cid"
 REDPANDA_CONSOLE_CID_FILE="${RUNTIME_DIR}/redpanda-console.cid"
 REDIS_INSIGHT_CID_FILE="${RUNTIME_DIR}/redis-insight.cid"
 MEMORY_NETWORK="rag-memory-test"
@@ -48,6 +49,8 @@ QDRANT_VOLUME="${RAG_QDRANT_VOLUME:-qdrant-rag-local-data}"
 REDPANDA_CONTAINER="${RAG_REDPANDA_CONTAINER:-redpanda-rag-local}"
 KAFKA_CONTAINER="${RAG_KAFKA_CONTAINER:-kafka-rag-local}"
 REDIS_CONTAINER="${RAG_REDIS_CONTAINER:-redis-rag-local}"
+POSTGRES_CONTAINER="${RAG_POSTGRES_CONTAINER:-postgres-rag-local}"
+POSTGRES_VOLUME="${RAG_POSTGRES_VOLUME:-postgres-rag-local-data}"
 REDPANDA_CONSOLE_CONTAINER="${RAG_REDPANDA_CONSOLE_CONTAINER:-redpanda-console-rag-local}"
 REDIS_INSIGHT_CONTAINER="${RAG_REDIS_INSIGHT_CONTAINER:-redis-insight-rag-local}"
 REDIS_INSIGHT_VOLUME="${RAG_REDIS_INSIGHT_VOLUME:-redis-insight-rag-local-data}"
@@ -59,8 +62,9 @@ Usage:
   examples/local/run-all.sh [options]
 
 Starts the local multi-service composition:
+  - Postgres container, when Docker is available and nothing is on 127.0.0.1:5432
   - Qdrant container, when Docker is available and Qdrant is not already reachable
-  - manager, task manager, domain services, helper nodes, storage, and SQLite nodes
+  - manager, task manager, domain services, helper nodes, storage, and the database node
 
 Options:
   --init                         Initialize/seed local project config.
@@ -94,6 +98,7 @@ Options:
   --redpanda-container VALUE     Docker container name. Default: redpanda-rag-local.
   --kafka-container VALUE        Docker container name. Default: kafka-rag-local.
   --redis-container VALUE        Docker container name. Default: redis-rag-local.
+  --postgres-container VALUE     Docker container name. Default: postgres-rag-local.
   --redpanda-console-container VALUE
                                  Docker container name. Default: redpanda-console-rag-local.
   --redis-insight-container VALUE
@@ -223,6 +228,10 @@ while [[ $# -gt 0 ]]; do
       REDIS_CONTAINER="${2:?--redis-container requires a value}"
       shift 2
       ;;
+    --postgres-container)
+      POSTGRES_CONTAINER="${2:?--postgres-container requires a value}"
+      shift 2
+      ;;
     --redpanda-console-container)
       REDPANDA_CONSOLE_CONTAINER="${2:?--redpanda-console-container requires a value}"
       shift 2
@@ -272,13 +281,11 @@ fi
 
 export RAG_LOCAL_DATA_DIR="${RAG_LOCAL_DATA_DIR:-${RUNTIME_DIR}/data}"
 export RAG_CONFIG_PROFILE="${RAG_CONFIG_PROFILE:-local}"
-export PROJECT_CONFIG_DB_PATH="${PROJECT_CONFIG_DB_PATH:-${RAG_LOCAL_DATA_DIR}/project_config.db}"
-export RAG_RESPONSE_CACHE_DB_PATH="${RAG_RESPONSE_CACHE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/response_cache.db}"
-export INGESTION_JOB_DB_PATH="${INGESTION_JOB_DB_PATH:-${RAG_LOCAL_DATA_DIR}/ingestion_jobs.db}"
-export WORKFLOW_LOG_DB_PATH="${WORKFLOW_LOG_DB_PATH:-${RAG_LOCAL_DATA_DIR}/workflow_log.db}"
+# Postgres-always backend: every non-vector store resolves its DSN from
+# RAG_POSTGRES_URL (override per store with its *_DB_URL).
+export RAG_POSTGRES_URL="${RAG_POSTGRES_URL:-postgresql://rag:rag@localhost:5432/rag}"
 export RAG_OBJECT_STORAGE_BASE_PATH="${RAG_OBJECT_STORAGE_BASE_PATH:-${RAG_LOCAL_DATA_DIR}/raw_storage}"
 export RETRIEVAL_PLACEMENT_ENABLED="${RETRIEVAL_PLACEMENT_ENABLED:-true}"
-export RETRIEVAL_PLACEMENT_DB_PATH="${RETRIEVAL_PLACEMENT_DB_PATH:-${RAG_LOCAL_DATA_DIR}/placement.db}"
 export RETRIEVAL_PLACEMENT_ROUTING_MODE="${RETRIEVAL_PLACEMENT_ROUTING_MODE:-project_single}"
 export RETRIEVAL_PLACEMENT_BUCKET_COUNT="${RETRIEVAL_PLACEMENT_BUCKET_COUNT:-1}"
 export RETRIEVAL_PLACEMENT_REPLICATION_FACTOR="${RETRIEVAL_PLACEMENT_REPLICATION_FACTOR:-1}"
@@ -351,9 +358,6 @@ export REDIS_TASK_STATUS_URL="${REDIS_TASK_STATUS_URL:-redis://127.0.0.1:6379/0}
 export REDIS_TASK_STATUS_KEY_PREFIX="${REDIS_TASK_STATUS_KEY_PREFIX:-qdrant-rag-local:task:}"
 export REDIS_TASK_COMPLETED_TTL_SECONDS="${REDIS_TASK_COMPLETED_TTL_SECONDS:-86400}"
 export STORAGE_NODE_ROOT="${STORAGE_NODE_ROOT:-${RAG_LOCAL_DATA_DIR}/storage_node}"
-export SQLITE_NODE_DATABASE_ROOT="${SQLITE_NODE_DATABASE_ROOT:-${RAG_LOCAL_DATA_DIR}/sqlite}"
-export TASK_SERVICE_STATE_DB_PATH="${TASK_SERVICE_STATE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/task_service_state.db}"
-export MEMORY_DB_PATH="${MEMORY_DB_PATH:-${RAG_LOCAL_DATA_DIR}/agent_memory.db}"
 # Local-dev service-auth signing key (single signing-key contract, B3 §11).
 # Exported unconditionally so memory_service broker mode and the deployment
 # readiness gate both have an explicit key in the local topology. Production
@@ -376,30 +380,32 @@ if [[ "$START_MEMORY" -eq 1 ]]; then
   export MEMORY_LOOKUP_INCLUDE_MERGED="${MEMORY_LOOKUP_INCLUDE_MERGED:-false}"
 fi
 
-allocate_sqlite_databases() {
+register_databases() {
   "$PYTHON_BIN" - <<'PY'
 import asyncio
 import os
 
-from sqlite_node import SQLiteNodeSettings, SQLiteNodeService
+from db_node import DbNodeService, DbNodeSettings
+from shared.postgres import pg_dsn
 
 
 DATABASES = (
-    ("project_service", "project_config", "project domain configuration", "PROJECT_CONFIG_DB_PATH"),
-    ("retrieval_service", "response_cache", "retrieval response cache", "RAG_RESPONSE_CACHE_DB_PATH"),
-    ("ingestion_service", "ingestion_jobs", "ingestion job metadata", "INGESTION_JOB_DB_PATH"),
-    ("workflow_log_service", "workflow_log", "workflow audit log", "WORKFLOW_LOG_DB_PATH"),
-    ("retrieval_service", "retrieval_placement", "retrieval shard placement", "RETRIEVAL_PLACEMENT_DB_PATH"),
-    ("task_service", "task_service_state", "task-service durable fan-in state", "TASK_SERVICE_STATE_DB_PATH"),
+    ("project_service", "project_config", "project domain configuration"),
+    ("retrieval_service", "response_cache", "retrieval response cache"),
+    ("ingestion_service", "ingestion_jobs", "ingestion job metadata"),
+    ("workflow_log_service", "workflow_log", "workflow audit log"),
+    ("retrieval_service", "retrieval_placement", "retrieval shard placement"),
+    ("task_service", "task_service_state", "task-service durable fan-in state"),
+    ("memory_service", "agent_memory", "agent memory durable store"),
 )
 
 
 async def main() -> None:
-    settings = SQLiteNodeSettings.from_values(dict(os.environ))
-    service = SQLiteNodeService(database_root=settings.database_root)
+    settings = DbNodeSettings.from_values(dict(os.environ))
+    service = DbNodeService(pg_dsn(settings.db_url))
     await service.initialize()
-    for owner, database_name, purpose, env_name in DATABASES:
-        path = await service.allocate_database(
+    for owner, database_name, purpose in DATABASES:
+        await service.allocate_database(
             owner_service=owner,
             database_name=database_name,
             purpose=purpose,
@@ -410,21 +416,12 @@ async def main() -> None:
             schema_name=database_name,
             version=1,
         )
-        await service.record_health_check(
-            owner_service=owner,
-            database_name=database_name,
-            ok=path.parent.exists(),
-        )
-        print(f"export {env_name}={path}")
+    await service.close()
 
 
 asyncio.run(main())
 PY
 }
-
-while IFS= read -r assignment; do
-  export "${assignment#export }"
-done < <(allocate_sqlite_databases)
 
 normalize_proxy_env() {
   local name value fixed
@@ -670,6 +667,38 @@ start_redis_if_needed() {
   wait_for_tcp "Redis" "127.0.0.1" "6379" 60
 }
 
+start_postgres_if_needed() {
+  # Only auto-start for a local DSN; a remote RAG_POSTGRES_URL is the caller's
+  # own Postgres and must not be shadowed by a local container.
+  local pg_host="${RAG_POSTGRES_URL#postgresql://}"
+  pg_host="${pg_host#*@}"          # strip user[:password]@
+  pg_host="${pg_host%%[:/]*}"      # strip :port and /dbname
+  if [[ "$pg_host" != "localhost" && "$pg_host" != "127.0.0.1" ]]; then
+    echo "RAG_POSTGRES_URL points at non-local host ${pg_host}; not starting a local Postgres container."
+    return 0
+  fi
+  if is_tcp_port_open "127.0.0.1" "5432"; then
+    echo "Postgres already reachable at 127.0.0.1:5432."
+    return 0
+  fi
+  require_docker "Postgres"
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$POSTGRES_CONTAINER"; then
+    docker start "$POSTGRES_CONTAINER" >/dev/null
+  else
+    docker run -d \
+      --name "$POSTGRES_CONTAINER" \
+      -p 5432:5432 \
+      -e POSTGRES_USER=rag \
+      -e POSTGRES_PASSWORD=rag \
+      -e POSTGRES_DB=rag \
+      -v "${POSTGRES_VOLUME}:/var/lib/postgresql/data" \
+      postgres:16-alpine >/dev/null
+  fi
+  docker inspect --format '{{.Id}}' "$POSTGRES_CONTAINER" > "$POSTGRES_CID_FILE" 2>/dev/null || true
+  wait_for_tcp "Postgres" "127.0.0.1" "5432" 90
+  wait_for_postgres_ready 90
+}
+
 start_redpanda_console_if_needed() {
   if [[ "$START_REDPANDA_CONSOLE" -ne 1 ]]; then
     return 0
@@ -748,6 +777,28 @@ wait_for_tcp() {
   exit 1
 }
 
+wait_for_postgres_ready() {
+  # TCP can open before Postgres accepts auth (crash recovery / first init);
+  # poll a real SELECT 1 so the workers never see "database system is starting up".
+  local timeout_seconds="${1:-90}"
+  local elapsed=0
+  while [[ "$elapsed" -lt "$timeout_seconds" ]]; do
+    if RAG_POSTGRES_URL="$RAG_POSTGRES_URL" "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
+import os
+import psycopg
+psycopg.connect(os.environ["RAG_POSTGRES_URL"], connect_timeout=2).execute("SELECT 1").close()
+PY
+    then
+      echo "Postgres ready at ${RAG_POSTGRES_URL}."
+      return 0
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  echo "Postgres did not accept connections at ${RAG_POSTGRES_URL} within ${timeout_seconds}s." >&2
+  exit 1
+}
+
 start_qdrant_log_collector() {
   local qdrant_log="$1"
   if ! command -v docker >/dev/null 2>&1; then
@@ -815,10 +866,10 @@ init_project_config() {
   PROJECT_ID="$PROJECT_ID" PROJECT_TYPE="$PROJECT_TYPE" "$PYTHON_BIN" - <<'PY'
 import asyncio
 import os
-from pathlib import Path
 
-from project_service.config import SQLiteProjectConfigRepository
+from project_service.config import PostgresProjectConfigRepository
 from project_service.schemas import ProjectConfig
+from shared.postgres import pg_dsn
 
 
 async def main() -> None:
@@ -827,7 +878,9 @@ async def main() -> None:
     active_embedding_version = _safe_identifier(
         os.environ.get("RAG_EXAMPLE_EMBEDDING_VERSION", "v1")
     )
-    repo = SQLiteProjectConfigRepository(Path(os.environ["PROJECT_CONFIG_DB_PATH"]))
+    repo = PostgresProjectConfigRepository(
+        pg_dsn(os.environ.get("PROJECT_CONFIG_DB_URL"))
+    )
     await repo.initialize()
     await repo.upsert_project(
         ProjectConfig(
@@ -843,6 +896,7 @@ async def main() -> None:
             retrieval_config={"candidate_count": 20, "top_k": 5},
         )
     )
+    await repo.close()
     print(f"Initialized project {project_id!r} as type {project_type!r}")
 
 
@@ -945,7 +999,7 @@ ensure_not_already_running() {
     "$RETRIEVAL_WORKER_PID_FILE" \
     "$MEMORY_PID_FILE" \
     "$STORAGE_NODE_PID_FILE" \
-    "$SQLITE_NODE_PID_FILE" \
+    "$DB_NODE_PID_FILE" \
     "$REDIS_STATUS_PID_FILE"; do
     if [[ -f "$pid_file" ]]; then
       local old_pid
@@ -964,8 +1018,7 @@ write_state() {
 ROOT_DIR=${ROOT_DIR}
 RUNTIME_DIR=${RUNTIME_DIR}
 RAG_LOCAL_DATA_DIR=${RAG_LOCAL_DATA_DIR}
-PROJECT_CONFIG_DB_PATH=${PROJECT_CONFIG_DB_PATH}
-INGESTION_JOB_DB_PATH=${INGESTION_JOB_DB_PATH}
+RAG_POSTGRES_URL=${RAG_POSTGRES_URL}
 RAG_GRPC_PORT=${RAG_GRPC_PORT}
 RAG_QDRANT_HOST=${RAG_QDRANT_HOST}
 RAG_QDRANT_PORT=${RAG_QDRANT_PORT}
@@ -975,6 +1028,8 @@ QDRANT_VOLUME=${QDRANT_VOLUME}
 REDPANDA_CONTAINER=${REDPANDA_CONTAINER}
 KAFKA_CONTAINER=${KAFKA_CONTAINER}
 REDIS_CONTAINER=${REDIS_CONTAINER}
+POSTGRES_CONTAINER=${POSTGRES_CONTAINER}
+POSTGRES_VOLUME=${POSTGRES_VOLUME}
 REDPANDA_CONSOLE_CONTAINER=${REDPANDA_CONSOLE_CONTAINER}
 REDIS_INSIGHT_CONTAINER=${REDIS_INSIGHT_CONTAINER}
 REDIS_INSIGHT_VOLUME=${REDIS_INSIGHT_VOLUME}
@@ -1011,15 +1066,14 @@ WORKFLOW_LOG_AUDIT_TOPIC=${WORKFLOW_LOG_AUDIT_TOPIC}
 REDIS_TASK_STATUS_URL=${REDIS_TASK_STATUS_URL}
 REDIS_TASK_STATUS_KEY_PREFIX=${REDIS_TASK_STATUS_KEY_PREFIX}
 STORAGE_NODE_ROOT=${STORAGE_NODE_ROOT}
-SQLITE_NODE_DATABASE_ROOT=${SQLITE_NODE_DATABASE_ROOT}
-TASK_SERVICE_STATE_DB_PATH=${TASK_SERVICE_STATE_DB_PATH:-${RAG_LOCAL_DATA_DIR}/task_service_state.db}
+
+
 SERVICE_AUTH_SIGNING_KEY=${SERVICE_AUTH_SIGNING_KEY:-local-dev-signing-key}
 MEMORY_SERVICE_ENABLED=${MEMORY_SERVICE_ENABLED:-false}
 MEMORY_SERVICE_NAME=${MEMORY_SERVICE_NAME:-memory_service}
 MEMORY_DOMAIN_COMMAND_TOPIC=${MEMORY_DOMAIN_COMMAND_TOPIC:-domain.memory.commands}
 MEMORY_DOMAIN_RESULT_TOPIC=${MEMORY_DOMAIN_RESULT_TOPIC:-domain.memory.results}
 MEMORY_IDENTITY_TOPIC=${MEMORY_IDENTITY_TOPIC:-identity.user.events}
-MEMORY_DB_PATH=${MEMORY_DB_PATH:-${RAG_LOCAL_DATA_DIR}/agent_memory.db}
 MEMORY_IDENTITY_MODE=${MEMORY_IDENTITY_MODE:-broker}
 MEMORY_INDEX_MODE=${MEMORY_INDEX_MODE:-broker}
 MEMORY_SEARCH_MODE=${MEMORY_SEARCH_MODE:-broker}
@@ -1118,7 +1172,7 @@ start_module_background() {
 
 start_broker_first_background() {
   start_module_background "Redis status node" "redis_status_node.worker" "$REDIS_STATUS_PID_FILE" "redis-status"
-  start_module_background "SQLite node" "sqlite_node.worker" "$SQLITE_NODE_PID_FILE" "sqlite-node"
+  start_module_background "Database node" "db_node.worker" "$DB_NODE_PID_FILE" "db-node"
   start_module_background "Storage node" "storage_node.worker" "$STORAGE_NODE_PID_FILE" "storage-node"
   start_module_background "Task manager" "task_manager_service.worker" "$TASK_MANAGER_PID_FILE" "task-manager"
   start_module_background "Task service" "task_service.worker" "$TASK_SERVICE_PID_FILE" "task-service"
@@ -1165,6 +1219,8 @@ if [[ "$START_SERVER" -eq 1 ]]; then
   check_runtime_dependencies
   start_broker_if_needed
   start_redis_if_needed
+  start_postgres_if_needed
+  register_databases
   start_redpanda_console_if_needed
   start_redis_insight_if_needed
   bootstrap_broker_topics
@@ -1194,11 +1250,7 @@ Local RAG service settings:
   runtime_dir:         ${RUNTIME_DIR}
   data_dir:            ${RAG_LOCAL_DATA_DIR}
   config_profile:      ${RAG_CONFIG_PROFILE}
-  project_config_db:   ${PROJECT_CONFIG_DB_PATH}
-  response_cache_db:   ${RAG_RESPONSE_CACHE_DB_PATH}
-  ingestion_job_db:    ${INGESTION_JOB_DB_PATH}
-  workflow_log_db:     ${WORKFLOW_LOG_DB_PATH}
-  placement_db:        ${RETRIEVAL_PLACEMENT_DB_PATH}
+  db_url:              ${RAG_POSTGRES_URL}
   placement_mode:      ${RETRIEVAL_PLACEMENT_ROUTING_MODE}
   grpc_port:           ${RAG_GRPC_PORT}
   qdrant:              ${RAG_QDRANT_HOST}:${RAG_QDRANT_PORT}
@@ -1223,9 +1275,9 @@ Local RAG service settings:
   retrieval_helper:    ${RETRIEVAL_HELPER_COMMAND_TOPIC}
   index_helper:        ${RETRIEVAL_INDEX_HELPER_COMMAND_TOPIC}
   storage_node_root:   ${STORAGE_NODE_ROOT}
-  sqlite_node_root:    ${SQLITE_NODE_DATABASE_ROOT}
+  db_node:             ${RAG_POSTGRES_URL}
   memory_service:      ${MEMORY_SERVICE_ENABLED:-false} $([[ "$START_MEMORY" -eq 1 ]] && printf '(enabled, broker modes)' || printf '(disabled)')
-  memory_db:           ${MEMORY_DB_PATH:-${RAG_LOCAL_DATA_DIR}/agent_memory.db}
+  memory_db:           ${RAG_POSTGRES_URL}
   memory_topics:       ${MEMORY_DOMAIN_COMMAND_TOPIC:-domain.memory.commands} -> ${MEMORY_DOMAIN_RESULT_TOPIC:-domain.memory.results} + ${MEMORY_IDENTITY_TOPIC:-identity.user.events}
   memory_network:      ${MEMORY_NETWORK} (INTERNAL ${MEMORY_REDPANDA_INTERNAL_HOST}:${MEMORY_REDPANDA_INTERNAL_PORT}) $([[ "$START_MEMORY" -eq 1 ]] && printf '(enabled)' || printf '(not used)')
   embedding_provider:  ${RAG_EMBEDDING_PROVIDER}

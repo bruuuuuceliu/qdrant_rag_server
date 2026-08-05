@@ -1,44 +1,37 @@
-"""SQLite database-node service tests."""
+"""Database-node service tests (Postgres-backed)."""
 
 from __future__ import annotations
 
 import pytest
 
-from sqlite_node import SQLiteNodeService
+from db_node import DbNodeService
+
+
+@pytest.fixture
+async def service(pg_dsn: str) -> DbNodeService:
+    svc = DbNodeService(pg_dsn)
+    await svc.initialize()
+    async with svc._pool.connection() as conn:
+        await conn.execute(
+            "DROP TABLE IF EXISTS db_node_health_checks, db_node_allocations,"
+            " db_node_schema_versions, db_node_databases CASCADE"
+        )
+    svc._initialized = False
+    await svc.initialize()
+    yield svc
+    await svc.close()
 
 
 @pytest.mark.asyncio
-async def test_sqlite_node_service_initializes_root_and_builds_db_paths(tmp_path) -> None:
-    service = SQLiteNodeService(database_root=tmp_path / "dbs")
-
-    await service.initialize()
-
-    assert service.database_root.exists()
-    assert service.metadata_db_path.exists()
-    assert service.database_path("project_config") == tmp_path / "dbs" / "project_config.db"
-    assert service.database_path("workflow.db") == tmp_path / "dbs" / "workflow.db"
-
-
-def test_sqlite_node_service_rejects_nested_database_names(tmp_path) -> None:
-    service = SQLiteNodeService(database_root=tmp_path)
-
-    with pytest.raises(ValueError, match="file name"):
-        service.database_path("../outside.db")
-
-
-@pytest.mark.asyncio
-async def test_sqlite_node_service_initializes_control_plane_tables(tmp_path) -> None:
-    service = SQLiteNodeService(database_root=tmp_path / "dbs")
-
-    await service.initialize()
-
-    with service._connect_metadata() as conn:
-        tables = {
-            str(row[0])
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-        }
+async def test_db_node_service_initializes_control_plane_tables(service) -> None:
+    async with service._pool.connection() as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                "  AND tablename LIKE 'db_node_%'"
+            )
+        ).fetchall()
+    tables = {row["tablename"] for row in rows}
     assert "db_node_databases" in tables
     assert "db_node_schema_versions" in tables
     assert "db_node_allocations" in tables
@@ -46,9 +39,7 @@ async def test_sqlite_node_service_initializes_control_plane_tables(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_allocate_database_records_owner_path_and_allocation_history(tmp_path) -> None:
-    service = SQLiteNodeService(database_root=tmp_path / "dbs")
-
+async def test_allocate_database_records_owner_schema_and_allocation_history(service) -> None:
     first = await service.allocate_database(
         owner_service="project_service",
         database_name="project_config",
@@ -56,27 +47,26 @@ async def test_allocate_database_records_owner_path_and_allocation_history(tmp_p
     )
     second = await service.allocate_database(
         owner_service="project_service",
-        database_name="project_config.db",
+        database_name="project_config",
         purpose="project configuration",
         schema_version=2,
     )
     records = await service.list_databases(owner_service="project_service")
     allocations = await service.list_allocations("project_config")
 
-    assert first == tmp_path / "dbs" / "project_config.db"
+    assert first == "project_config"
     assert second == first
     assert len(records) == 1
     assert records[0].database_name == "project_config"
     assert records[0].owner_service == "project_service"
-    assert records[0].relative_path == "project_config.db"
+    assert records[0].target_schema == "project_config"
     assert records[0].schema_version == 2
     assert len(allocations) == 2
-    assert allocations[0].resolved_path == str(first)
+    assert allocations[0].resolved_schema == first
 
 
 @pytest.mark.asyncio
-async def test_allocate_database_rejects_cross_owner_reuse(tmp_path) -> None:
-    service = SQLiteNodeService(database_root=tmp_path / "dbs")
+async def test_allocate_database_rejects_cross_owner_reuse(service) -> None:
     await service.allocate_database(
         owner_service="project_service",
         database_name="project_config",
@@ -92,10 +82,8 @@ async def test_allocate_database_rejects_cross_owner_reuse(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_allocate_database_rejects_unsafe_names(tmp_path) -> None:
-    service = SQLiteNodeService(database_root=tmp_path / "dbs")
-
-    with pytest.raises(ValueError, match="file name"):
+async def test_allocate_database_rejects_unsafe_names(service) -> None:
+    with pytest.raises(ValueError, match="path separators"):
         await service.allocate_database(
             owner_service="project_service",
             database_name="/tmp/project",
@@ -110,8 +98,7 @@ async def test_allocate_database_rejects_unsafe_names(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_schema_versions_upsert_for_allocated_database(tmp_path) -> None:
-    service = SQLiteNodeService(database_root=tmp_path / "dbs")
+async def test_schema_versions_upsert_for_allocated_database(service) -> None:
     await service.allocate_database(
         owner_service="task_service",
         database_name="task_service_state",
@@ -139,8 +126,7 @@ async def test_schema_versions_upsert_for_allocated_database(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_health_checks_append_and_list_latest_first(tmp_path) -> None:
-    service = SQLiteNodeService(database_root=tmp_path / "dbs")
+async def test_health_checks_append_and_list_latest_first(service) -> None:
     await service.allocate_database(
         owner_service="workflow_log_service",
         database_name="workflow_log",

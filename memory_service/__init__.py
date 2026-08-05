@@ -24,7 +24,7 @@ from memory_service.reconciliation import reconcile_pending_index
 from memory_service.repository import (
     MemoryInMemoryRepository,
     MemoryRepository,
-    SQLiteMemoryRepository,
+    PostgresMemoryRepository,
 )
 from memory_service.searcher import BrokerMemorySearcher, FakeMemorySearcher
 from memory_service.worker import MemoryWorkerContext, create_worker_context
@@ -50,7 +50,7 @@ __all__ = [
     "MemorySession",
     "MemoryServiceSettings",
     "MemoryWorkerContext",
-    "SQLiteMemoryRepository",
+    "PostgresMemoryRepository",
     "UserFact",
     "UserProfile",
     "create_default_domain_app",

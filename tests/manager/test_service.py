@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import grpc
@@ -610,7 +609,6 @@ class _FakeGrpcContext:
 
 def _settings() -> AppSettings:
     return AppSettings(
-        response_cache_db_path=Path("/tmp/test-cache.db"),
         grpc_port=0,
         qdrant_url=None,
         qdrant_host="localhost",

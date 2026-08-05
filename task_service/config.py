@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from shared.contracts import TOPICS
 
@@ -17,7 +16,6 @@ class TaskServiceSettings:
     task_event_topic: str = TOPICS.task_events
     task_result_topic: str = TOPICS.task_results
     dead_letter_topic: str = TOPICS.task_dead_letters
-    state_db_path: str = "examples/local/.data/task_service_state.db"
     state_db_url: str | None = None
     max_attempts: int = 3
     helper_lease_seconds: int = 300
@@ -42,10 +40,6 @@ class TaskServiceSettings:
             task_event_topic=values.get("TASK_SERVICE_TASK_EVENT_TOPIC", TOPICS.task_events),
             task_result_topic=values.get("TASK_SERVICE_TASK_RESULT_TOPIC", TOPICS.task_results),
             dead_letter_topic=values.get("TASK_SERVICE_DEAD_LETTER_TOPIC", TOPICS.task_dead_letters),
-            state_db_path=values.get(
-                "TASK_SERVICE_STATE_DB_PATH",
-                str(Path(values.get("RAG_LOCAL_DATA_DIR", "examples/local/.data")) / "task_service_state.db"),
-            ),
             state_db_url=values.get("TASK_SERVICE_STATE_DB_URL") or None,
             max_attempts=int(values.get("TASK_SERVICE_MAX_ATTEMPTS", "3")),
             helper_lease_seconds=int(values.get("TASK_SERVICE_HELPER_LEASE_SECONDS", "300")),

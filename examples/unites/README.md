@@ -16,18 +16,19 @@ publishes one `MessageEnvelope`, and consumes it with a unique consumer group.
 Configure Redpanda with `BROKER_BOOTSTRAP_SERVERS`; the default is
 `127.0.0.1:9092`.
 
-## SQLite Database CRUD
+## Database Node CRUD
 
-Runs with local files only:
+Requires a reachable Postgres:
 
 ```bash
-python -m examples.unites.sqlite_database_crud
+python -m examples.unites.db_node_database_crud
 ```
 
-The SQLite node allocates the database and records schema/health metadata. The
-example then performs create, read, update, and delete inside the allocated DB
-as the owning service would. Configure the root with
-`SQLITE_NODE_DATABASE_ROOT`; the default is `/tmp/qdrant_rag/sqlite`.
+The database node registers the logical database and records schema/health
+metadata in the shared Postgres database. The example then performs create,
+read, update, and delete in the RAG Postgres database as the owning service
+would. Configure the DSN with `RAG_POSTGRES_URL` (default
+`postgresql://rag:rag@localhost:5432/rag`).
 
 ## Storage CRUD
 

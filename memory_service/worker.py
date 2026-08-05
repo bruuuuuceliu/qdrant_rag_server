@@ -46,7 +46,6 @@ class MemoryWorkerContext:
                 "broker_retrieval_consumer": getattr(self.domain_app, "retrieval_consumer", None) is not None,
             },
             details={
-                "db_path": str(self.settings.db_path),
                 "command_topic": self.settings.command_topic,
                 "identity_mode": self.settings.identity_mode,
                 "index_mode": self.settings.index_mode,

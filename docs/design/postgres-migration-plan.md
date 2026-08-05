@@ -1,5 +1,11 @@
 # Postgres migration sprint plan
 
+> **Status: CUTOVER COMPLETE.** Postgres is now the always-on backend for every
+> RAG durable store; SQLite repositories and tests have been removed, the
+> `sqlite_node` was converted to the Postgres-backed `db_node`, backup switched
+> to `pg_dump`, and Postgres is a CI service. This document is retained as the
+> historical sprint plan.
+
 Sprint goal: add a Postgres backend alongside the seven RAG SQLite stores, selected
 per store via env at the wiring composition root, with SQLite remaining the default
 and the fallback. Ship Postgres implementations of all seven stores (agent memory

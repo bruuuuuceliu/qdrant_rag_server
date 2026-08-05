@@ -12,7 +12,7 @@ from task_service.dispatcher import (
 from task_service.repository import (
     InMemoryTaskStateRepository,
     PendingHelperDispatch,
-    SQLiteTaskStateRepository,
+    PostgresTaskStateRepository,
     TaskState,
     TaskStateRepository,
 )
@@ -24,8 +24,8 @@ __all__ = [
     "HelperDispatchResult",
     "InMemoryTaskStateRepository",
     "PendingHelperDispatch",
+    "PostgresTaskStateRepository",
     "RecoveryResult",
-    "SQLiteTaskStateRepository",
     "TaskServiceDispatcher",
     "TaskServiceServerContext",
     "TaskServiceSettings",

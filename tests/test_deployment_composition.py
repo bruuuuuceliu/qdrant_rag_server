@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
 
@@ -90,7 +89,6 @@ def test_task_service_composition_loads_settings_from_env(monkeypatch: pytest.Mo
     assert captured["broker_settings"].client_id == "task-service-test"
     assert captured["settings"] == TaskServiceSettings(
         task_request_topic="task.requests.custom",
-        state_db_path="/tmp/task-service-state.db",
     )
 
 
@@ -161,7 +159,6 @@ async def test_manager_composition_loads_redis_namespace_from_env(
 
 def _settings() -> AppSettings:
     return AppSettings(
-        response_cache_db_path=Path("/tmp/test-cache.db"),
         grpc_port=0,
         qdrant_url=None,
         qdrant_host="localhost",

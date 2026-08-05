@@ -7,7 +7,7 @@ from examples.unites.broker_roundtrip import (
     build_showcase_envelope,
     build_showcase_settings,
 )
-from examples.unites.sqlite_database_crud import run_sqlite_crud
+from examples.unites.db_node_database_crud import run_db_node_crud
 from examples.unites.storage_database_crud import run_storage_crud
 from shared.contracts import MessageType
 
@@ -34,11 +34,10 @@ def test_broker_showcase_builds_valid_settings_and_envelope() -> None:
     envelope.validate()
 
 
-async def test_sqlite_database_crud_showcase_round_trip(tmp_path) -> None:
-    summary = await run_sqlite_crud(tmp_path / "sqlite")
+async def test_db_node_database_crud_showcase_round_trip(pg_dsn: str) -> None:
+    summary = await run_db_node_crud(pg_dsn)
 
-    assert summary.database_path == tmp_path / "sqlite" / "showcase_database.db"
-    assert summary.database_path.exists()
+    assert summary.target_schema == "showcase_database"
     assert summary.created_value == "created"
     assert summary.updated_value == "updated"
     assert summary.deleted_count == 0

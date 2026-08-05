@@ -20,7 +20,6 @@ from retrieval_service.placement import (
     PlacementStoreResolver,
     PostgresPlacementRegistry,
     RetrievalShard,
-    SQLitePlacementRegistry,
 )
 from retrieval_service.retrieval.app import create_app as create_retrieval_app
 from retrieval_service.retrieval.factory import ProjectRetrieverFactory
@@ -31,7 +30,6 @@ from retrieval_service.services.bm25 import BM25Retriever, QdrantSparseBM25Index
 from retrieval_service.services.cache import (
     PostgresTier2ResponseCache,
     Tier1MemoryCache,
-    Tier2ResponseCache,
 )
 from retrieval_service.services.entities import LocalNerExtractor, NoopNerExtractor
 from retrieval_service.services.retriever import QdrantVectorRetriever
@@ -42,6 +40,7 @@ from retrieval_service.storage.memory import MemoryObjectStorage
 from shared.logging import configure_logging
 from shared.ops.server import ops_server_from_env
 from shared.ops.shutdown import run_service
+from shared.postgres import pg_dsn
 from shared.runtime_health import RuntimeHealth
 
 
@@ -214,10 +213,7 @@ async def _build_retrieval_service(
     if settings.ner_provider == "local":
         ner_extractor = LocalNerExtractor(settings.ner_model)
         await ner_extractor.initialize()
-    if settings.response_cache_db_url:
-        tier2_cache: Any = PostgresTier2ResponseCache(settings.response_cache_db_url)
-    else:
-        tier2_cache = Tier2ResponseCache(settings.response_cache_db_path)
+    tier2_cache: Any = PostgresTier2ResponseCache(pg_dsn(settings.response_cache_db_url))
     await tier2_cache.initialize()
     tier1_cache = Tier1MemoryCache()
     object_storage: Any
@@ -263,10 +259,7 @@ def _build_placement_store_resolver(
 ) -> PlacementStoreResolver:
     if not settings.retrieval_placement_enabled:
         return PlacementStoreResolver(default_store=qdrant_store)
-    if settings.retrieval_placement_db_url:
-        registry: Any = PostgresPlacementRegistry(settings.retrieval_placement_db_url)
-    else:
-        registry = SQLitePlacementRegistry(settings.retrieval_placement_db_path)
+    registry: Any = PostgresPlacementRegistry(pg_dsn(settings.retrieval_placement_db_url))
     registry.initialize()
     endpoint = settings.qdrant_url or f"http://{settings.qdrant_host}:{settings.qdrant_port}"
     registry.upsert(

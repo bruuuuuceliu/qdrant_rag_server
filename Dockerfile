@@ -23,9 +23,10 @@ ENV PYTHONUNBUFFERED=1 \
     RAG_EMBEDDING_MODEL_CACHE_DIR=/home/rag/.cache/huggingface
 
 # Runtime system libraries: torch CPU inference needs libgomp; curl is used by
-# compose health checks against /healthz + /readyz.
+# compose health checks against /healthz + /readyz; postgresql-client provides
+# pg_dump for the backup service.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 curl \
+    && apt-get install -y --no-install-recommends libgomp1 curl postgresql-client \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --create-home --home /home/rag rag
 

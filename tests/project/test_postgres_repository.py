@@ -1,12 +1,7 @@
-"""Postgres project config repository tests.
-
-Run against the compose ``postgres`` service by setting ``PROJECT_TEST_DB_URL``
-(e.g. ``postgresql://rag:...@postgres:5432/rag``); skipped when unset.
-"""
+"""Postgres project config repository tests (run against the shared Postgres)."""
 
 from __future__ import annotations
 
-import os
 from dataclasses import replace
 
 import pytest
@@ -17,18 +12,10 @@ from project_service.config.repository import (
 )
 from project_service.schemas import ProjectConfig
 
-TEST_DB_URL = os.environ.get("PROJECT_TEST_DB_URL") or os.environ.get("PROJECT_CONFIG_DB_URL")
-
-
-def _dsn() -> str:
-    if not TEST_DB_URL:
-        pytest.skip("PROJECT_TEST_DB_URL is not set; skipping Postgres project tests")
-    return TEST_DB_URL
-
 
 @pytest.fixture
-async def repo() -> PostgresProjectConfigRepository:
-    repository = PostgresProjectConfigRepository(_dsn())
+async def repo(pg_dsn: str) -> PostgresProjectConfigRepository:
+    repository = PostgresProjectConfigRepository(pg_dsn)
     await repository.initialize()
     async with repository._pool.connection() as conn:
         await conn.execute("DROP TABLE IF EXISTS projects CASCADE")

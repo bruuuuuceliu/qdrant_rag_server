@@ -1,4 +1,4 @@
-"""SQLite database-node process entrypoint."""
+"""Database-node process entrypoint."""
 
 from __future__ import annotations
 
@@ -6,33 +6,31 @@ import asyncio
 import os
 from dataclasses import dataclass
 
+from db_node.config import DbNodeSettings
+from db_node.service import DbNodeService
 from shared.ops.server import ops_server_from_env
 from shared.ops.shutdown import run_service
+from shared.postgres import pg_dsn
 from shared.runtime_health import RuntimeHealth
-from sqlite_node.config import SQLiteNodeSettings
-from sqlite_node.service import SQLiteNodeService
 
 
 @dataclass(slots=True)
-class SQLiteWorkerContext:
-    settings: SQLiteNodeSettings
-    service: SQLiteNodeService
+class DbWorkerContext:
+    settings: DbNodeSettings
+    service: DbNodeService
 
     async def shutdown(self) -> None:
-        return None
+        await self.service.close()
 
     async def health(self) -> RuntimeHealth:
         records = await self.service.list_databases()
         return RuntimeHealth(
             service=self.settings.service_name,
-            ready=self.service.database_root.exists() and self.service.metadata_db_path.exists(),
+            ready=True,
             dependencies={
-                "database_root": self.service.database_root.exists(),
-                "metadata_db": self.service.metadata_db_path.exists(),
+                "postgres": True,
             },
             details={
-                "database_root": str(self.service.database_root),
-                "metadata_db": str(self.service.metadata_db_path),
                 "database_count": len(records),
             },
         )
@@ -40,17 +38,17 @@ class SQLiteWorkerContext:
 
 async def create_worker_context(
     *,
-    settings: SQLiteNodeSettings | None = None,
-) -> SQLiteWorkerContext:
-    settings = settings or SQLiteNodeSettings.from_values(dict(os.environ))
-    service = SQLiteNodeService(database_root=settings.database_root)
+    settings: DbNodeSettings | None = None,
+) -> DbWorkerContext:
+    settings = settings or DbNodeSettings.from_values(dict(os.environ))
+    service = DbNodeService(pg_dsn(settings.db_url))
     await service.initialize()
-    return SQLiteWorkerContext(settings=settings, service=service)
+    return DbWorkerContext(settings=settings, service=service)
 
 
 async def serve_forever() -> None:
     context = await create_worker_context()
-    ops_server = ops_server_from_env("sqlite_node", default_port=9010, readiness=context.health)
+    ops_server = ops_server_from_env("db_node", default_port=9010, readiness=context.health)
 
     async def serve() -> None:
         while True:

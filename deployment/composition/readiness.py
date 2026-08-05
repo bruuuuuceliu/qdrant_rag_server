@@ -12,16 +12,19 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
+import psycopg
+
 from broker_service import (
     BrokerSettings,
     broker_health,
     create_redpanda_admin,
     parse_broker_lag_targets,
 )
+from db_node import DbNodeService, DbNodeSettings
 from memory_service.config import MemoryServiceSettings
-from memory_service.repository import SQLiteMemoryRepository
+from memory_service.repository import PostgresMemoryRepository
 from redis_status_node import RedisStatusSettings, RedisTaskStatusStore, TaskStatusRecord
-from sqlite_node import SQLiteNodeService, SQLiteNodeSettings
+from shared.postgres import pg_dsn
 from storage_node.config import StorageNodeSettings
 
 
@@ -123,36 +126,40 @@ async def check_storage(values: dict[str, str] | None = None) -> ReadinessCheck:
     return ReadinessCheck(name="storage", ready=ready, details=details)
 
 
-async def check_sqlite(values: dict[str, str] | None = None) -> ReadinessCheck:
+async def check_postgres(values: dict[str, str] | None = None) -> ReadinessCheck:
     values = values or dict(os.environ)
-    settings = SQLiteNodeSettings.from_values(values)
-    service = SQLiteNodeService(database_root=settings.database_root)
-    details = {"database_root": str(service.database_root)}
+    settings = DbNodeSettings.from_values(values)
+    dsn = pg_dsn(settings.db_url)
+    service = DbNodeService(dsn)
+    details = {"db_url": dsn}
     try:
         await service.initialize()
-        db_path = await service.allocate_database(
-            owner_service="sqlite_node",
+        target = await service.allocate_database(
+            owner_service="db_node",
             database_name="readiness",
             purpose="deployment readiness probe",
         )
         await service.record_schema_version(
-            owner_service="sqlite_node",
+            owner_service="db_node",
             database_name="readiness",
             schema_name="readiness",
             version=1,
         )
         health = await service.record_health_check(
-            owner_service="sqlite_node",
+            owner_service="db_node",
             database_name="readiness",
-            ok=db_path.parent.exists(),
+            ok=True,
         )
-        ready = db_path.parent.exists() and service.metadata_db_path.exists() and health.ok
-        details["allocated_path"] = str(db_path)
-        details["metadata_db"] = str(service.metadata_db_path)
+        records = await service.list_databases()
+        ready = health.ok and len(records) >= 1
+        details["target_schema"] = target
+        details["database_count"] = len(records)
     except Exception as exc:
         ready = False
         details["error"] = str(exc)
-    return ReadinessCheck(name="sqlite", ready=ready, details=details)
+    finally:
+        await service.close()
+    return ReadinessCheck(name="postgres", ready=ready, details=details)
 
 
 async def check_qdrant(values: dict[str, str] | None = None) -> ReadinessCheck:
@@ -176,17 +183,18 @@ async def check_memory(values: dict[str, str] | None = None) -> ReadinessCheck:
     details: dict[str, Any]
     try:
         settings = MemoryServiceSettings.from_values(values)
+        dsn = pg_dsn(settings.db_url)
         details = {
-            "db_path": str(settings.db_path),
+            "db_url": dsn,
             "identity_mode": settings.identity_mode,
             "index_mode": settings.index_mode,
             "search_mode": settings.search_mode,
             "signing_key_set": bool(values.get("SERVICE_AUTH_SIGNING_KEY")),
         }
-        repository = SQLiteMemoryRepository(settings.db_path)
+        repository = PostgresMemoryRepository(dsn)
         await repository.initialize()
-        ready = settings.db_path.parent.exists()
-        details["db_exists"] = settings.db_path.exists()
+        await repository.count_messages(owner_user_id="", agent_id="")
+        ready = True
     except Exception as exc:
         ready = False
         details = {"error": str(exc)}
@@ -195,25 +203,14 @@ async def check_memory(values: dict[str, str] | None = None) -> ReadinessCheck:
 
 async def check_retrieval(values: dict[str, str] | None = None) -> ReadinessCheck:
     values = values or dict(os.environ)
-    placement_db = Path(
-        values.get("RETRIEVAL_PLACEMENT_DB_PATH", "/tmp/qdrant_rag/placement.db")
+    dsn = pg_dsn(
+        values.get("RETRIEVAL_PLACEMENT_DB_URL")
+        or values.get("RAG_RESPONSE_CACHE_DB_URL")
     )
-    cache_db = Path(
-        values.get("RAG_RESPONSE_CACHE_DB_PATH", "/tmp/qdrant_rag/response_cache.db")
-    )
-    details = {
-        "placement_db_path": str(placement_db),
-        "response_cache_db_path": str(cache_db),
-    }
+    details = {"db_url": dsn}
     try:
-        for probe_path in (placement_db.parent, cache_db.parent):
-            probe_path.mkdir(parents=True, exist_ok=True)
-            probe = probe_path / ".readiness"
-            probe.write_text("ok", encoding="utf-8")
-            ok = probe.read_text(encoding="utf-8") == "ok"
-            probe.unlink(missing_ok=True)
-            if not ok:
-                raise OSError(f"{probe_path} is not writable")
+        with psycopg.connect(dsn, connect_timeout=2) as conn:
+            conn.execute("SELECT 1")
         ready = True
     except Exception as exc:
         ready = False
@@ -231,7 +228,7 @@ async def broker_first_report(
         await check_broker(values),
         await check_redis(values),
         await check_storage(values),
-        await check_sqlite(values),
+        await check_postgres(values),
         await check_memory(values),
         await check_retrieval(values),
     ]

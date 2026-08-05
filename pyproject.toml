@@ -14,7 +14,7 @@ dependencies = [
     "redis>=5",
     "prometheus-client>=0.20",
     # Postgres backend for the durable stores (psycopg covers both the async
-    # pools and the sync placement seam; SQLite remains the default).
+    # pools and the sync placement seam).
     "psycopg[binary]>=3.1",
     "psycopg-pool>=3.2",
     # Pinned patched for CVE-2026-69247 in the transitive dependency tree.
@@ -61,10 +61,10 @@ include = [
     "manager_service*",
     "memory_service*",
     "project_service*",
+    "db_node*",
     "retrieval_service*",
     "redis_status_node*",
     "shared*",
-    "sqlite_node*",
     "storage_node*",
     "task_manager_service*",
     "task_service*",
@@ -85,11 +85,11 @@ source = [
     "deployment",
     "ingestion_service",
     "manager_service",
+    "db_node",
     "memory_service",
     "project_service",
     "retrieval_service",
     "shared",
-    "sqlite_node",
     "storage_node",
     "task_manager_service",
     "task_service",

@@ -117,7 +117,7 @@ All values come from the deployment environment (`docker compose ... up` env or 
 | RAG memory path | `memory` (`:9012`), `retrieval` (`:9007`), `retrieval-index` (`:9008`) keep their existing ops `/readyz` healthchecks. |
 | SA API | `conversation-server-api` keeps `*api-healthcheck` (`/health/ready` on `SERVICE_PORT`). Its readiness does not hard-fail on broker outage (saga best-effort; operations.md §7.1). |
 | SA workers | `conversation-server-worker` / `identity-server-worker` have no HTTP surface and no healthcheck — consistent with the existing worker pattern. Their health is observed via broker consumer-group attachment + logs, and end-to-end via the readiness report. |
-| End-to-end | RAG `python -m deployment.composition.readiness` (broker/redis/storage/sqlite/qdrant + memory/retrieval) plus SA `conversation-server-api /health/ready`. |
+| End-to-end | RAG `python -m deployment.composition.readiness` (broker/redis/storage/postgres/qdrant + memory/retrieval) plus SA `conversation-server-api /health/ready`. |
 
 ---
 

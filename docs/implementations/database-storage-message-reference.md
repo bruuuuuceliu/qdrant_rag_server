@@ -73,13 +73,13 @@ Record schema: `TaskStatusRecord` in `shared.contracts.task_status`.
 | `result` | object | final or latest status payload |
 | `error` | text | failure summary |
 
-## SQLite Node Control Plane
+## Database Node Control Plane (Postgres)
 
-The SQLite node owns database allocation metadata under
+]The database node owns the logical database registry in the shared Postgres database
 `SQLITE_NODE_DATABASE_ROOT`. It does not inspect service-private business
 tables.
 
-Metadata database: `_sqlite_node.db`.
+Metadata tables: `db_node_databases`, `db_node_schema_versions`, `db_node_allocations`, `db_node_health_checks`.
 
 | Table | Purpose |
 | --- | --- |
@@ -98,8 +98,8 @@ Table: `db_node_databases`.
 | `relative_path` | `TEXT NOT NULL UNIQUE` | file path under `SQLITE_NODE_DATABASE_ROOT` |
 | `schema_version` | `INTEGER NOT NULL` | owner-reported current schema version |
 | `state` | `TEXT NOT NULL` | allocation state such as `active` |
-| `created_at` | `TEXT NOT NULL` | SQLite timestamp |
-| `updated_at` | `TEXT NOT NULL` | SQLite timestamp |
+| `created_at` | `TEXT NOT NULL` | Postgres timestamp |
+| `updated_at` | `TEXT NOT NULL` | Postgres timestamp |
 
 Indexes: `idx_db_node_databases_owner`, `idx_db_node_databases_state`.
 
@@ -112,7 +112,7 @@ Table: `db_node_schema_versions`.
 | `schema_name` | `TEXT NOT NULL` | schema or migration stream |
 | `version` | `INTEGER NOT NULL` | owner-reported schema version |
 | `checksum` | `TEXT NOT NULL` | optional migration checksum |
-| `applied_at` | `TEXT NOT NULL` | SQLite timestamp |
+| `applied_at` | `TEXT NOT NULL` | Postgres timestamp |
 
 Primary key: `(owner_service, database_name, schema_name)`.
 
@@ -125,7 +125,7 @@ Table: `db_node_allocations`.
 | `owner_service` | `TEXT NOT NULL` | owning service |
 | `requested_name` | `TEXT NOT NULL` | raw requested database name |
 | `resolved_path` | `TEXT NOT NULL` | absolute file path returned to caller |
-| `created_at` | `TEXT NOT NULL` | SQLite timestamp |
+| `created_at` | `TEXT NOT NULL` | Postgres timestamp |
 
 Indexes: `idx_db_node_allocations_database`, `idx_db_node_allocations_owner`.
 
@@ -138,7 +138,7 @@ Table: `db_node_health_checks`.
 | `owner_service` | `TEXT NOT NULL` | owning service |
 | `ok` | `INTEGER NOT NULL` | readiness result |
 | `error` | `TEXT NOT NULL` | failure detail |
-| `checked_at` | `TEXT NOT NULL` | SQLite timestamp |
+| `checked_at` | `TEXT NOT NULL` | Postgres timestamp |
 
 Index: `idx_db_node_health_database_time`.
 
@@ -157,7 +157,7 @@ Local runner allocations:
 
 ### Project Config
 
-Owner: `project_service.config.SQLiteProjectConfigRepository`.
+Owner: `project_service.config.PostgresProjectConfigRepository`.
 
 Database path: `PROJECT_CONFIG_DB_PATH`.
 
@@ -173,14 +173,14 @@ Table: `projects`.
 | `chunker_config_json` | `TEXT NOT NULL` | JSON object |
 | `retrieval_config_json` | `TEXT NOT NULL` | JSON object |
 | `cache_config_json` | `TEXT NOT NULL` | JSON object |
-| `created_at` | `TEXT NOT NULL` | SQLite timestamp |
-| `updated_at` | `TEXT NOT NULL` | SQLite timestamp |
+| `created_at` | `TEXT NOT NULL` | Postgres timestamp |
+| `updated_at` | `TEXT NOT NULL` | Postgres timestamp |
 
 Index: `idx_projects_project_type(project_type)`.
 
 ### Task Service State
 
-Owner: `task_service.repository.SQLiteTaskStateRepository`.
+Owner: `task_service.repository.PostgresTaskStateRepository`.
 
 Database path: `TASK_SERVICE_STATE_DB_PATH`.
 
@@ -195,7 +195,7 @@ Important config keys:
 | `TASK_SERVICE_TASK_EVENT_TOPIC` | lifecycle event topic |
 | `TASK_SERVICE_TASK_RESULT_TOPIC` | final task result topic |
 | `TASK_SERVICE_DEAD_LETTER_TOPIC` | terminal helper failure topic |
-| `TASK_SERVICE_STATE_DB_PATH` | SQLite execution state database path |
+| `TASK_SERVICE_STATE_DB_PATH` | Postgres execution-state DSN |
 | `TASK_SERVICE_MAX_ATTEMPTS` | max helper result attempts before terminal failure |
 | `TASK_SERVICE_HELPER_LEASE_SECONDS` | helper command lease duration before expired-lease recovery |
 | `TASK_SERVICE_RETRY_BACKOFF_SECONDS` | delayed retry schedule; `0` preserves immediate retry dispatch |
@@ -214,8 +214,8 @@ Table: `task_executions`.
 | `data_type` | `TEXT NOT NULL` | envelope data type used to recreate helper commands during recovery |
 | `correlation_id` | `TEXT NOT NULL` | envelope correlation ID used during recovery |
 | `operation` | `TEXT NOT NULL` | latest task operation used as a recovery fallback |
-| `created_at` | `TEXT NOT NULL` | SQLite timestamp |
-| `updated_at` | `TEXT NOT NULL` | SQLite timestamp |
+| `created_at` | `TEXT NOT NULL` | Postgres timestamp |
+| `updated_at` | `TEXT NOT NULL` | Postgres timestamp |
 
 Table: `task_steps`.
 
@@ -239,8 +239,8 @@ Table: `task_steps`.
 | `last_result_at` | `TEXT` | last helper result timestamp |
 | `last_error` | `TEXT NOT NULL` | latest helper error text |
 | `last_source_message_id` | `TEXT NOT NULL` | latest helper command/result source message ID |
-| `created_at` | `TEXT NOT NULL` | SQLite timestamp |
-| `updated_at` | `TEXT NOT NULL` | SQLite timestamp |
+| `created_at` | `TEXT NOT NULL` | Postgres timestamp |
+| `updated_at` | `TEXT NOT NULL` | Postgres timestamp |
 
 Primary key: `(task_id, helper)`.
 Indexes: `idx_task_steps_task_complete`, `idx_task_steps_helper`,
@@ -264,7 +264,7 @@ Table: `task_step_attempts`.
 | `next_attempt_at` | `TEXT` | scheduled retry timestamp |
 | `lease_owner` | `TEXT NOT NULL` | claim owner recorded at dispatch |
 | `lease_expires_at` | `TEXT` | claim deadline timestamp |
-| `created_at` | `TEXT NOT NULL` | SQLite timestamp |
+| `created_at` | `TEXT NOT NULL` | Postgres timestamp |
 
 Indexes: `idx_task_step_attempts_task_helper`,
 `idx_task_step_attempts_status`.
@@ -277,16 +277,16 @@ Table: `task_results`.
 | `final_status` | `TEXT NOT NULL` | terminal status after publication |
 | `result_json` | `TEXT NOT NULL` | final result JSON object |
 | `published` | `INTEGER NOT NULL` | idempotency flag |
-| `published_at` | `TEXT` | SQLite timestamp when `published = 1`; otherwise null |
-| `updated_at` | `TEXT NOT NULL` | SQLite timestamp |
+| `published_at` | `TEXT` | Postgres timestamp when `published = 1`; otherwise null |
+| `updated_at` | `TEXT NOT NULL` | Postgres timestamp |
 
 Legacy local databases with the old `task_states` table are migrated into the
-explicit tables when `SQLiteTaskStateRepository` starts. The legacy table is not
+explicit tables when `PostgresTaskStateRepository` starts. The legacy table is not
 used for new writes.
 
 ### Ingestion Jobs
 
-Owner: `ingestion_service.jobs.SQLiteIngestionJobRepository`.
+Owner: `ingestion_service.jobs.PostgresIngestionJobRepository`.
 
 Database path: `INGESTION_JOB_DB_PATH`.
 
@@ -313,7 +313,7 @@ Indexes: `idx_ingestion_jobs_project_user`, `idx_ingestion_jobs_doc`,
 
 ### Workflow Log
 
-Owner: `workflow_log_service.repository.SQLiteWorkflowLogRepository`.
+Owner: `workflow_log_service.repository.PostgresWorkflowLogRepository`.
 
 Database path: `WORKFLOW_LOG_DB_PATH`.
 
@@ -368,7 +368,7 @@ Index: `idx_responses_expires(expires_at)`.
 
 ### Retrieval Placement
 
-Owner: `retrieval_service.placement.SQLitePlacementRegistry`.
+Owner: `retrieval_service.placement.PostgresPlacementRegistry`.
 
 Database path: `RETRIEVAL_PLACEMENT_DB_PATH`.
 
@@ -438,9 +438,9 @@ transport.
 
 ## Local Runtime Defaults
 
-`examples/local/run-all.sh` sets local database and storage paths under
-`RAG_LOCAL_DATA_DIR`, then asks the SQLite node to allocate service-owned
-database files. Local and production should differ by addresses, credentials,
+`examples/local/run-all.sh` sets local storage paths under `RAG_LOCAL_DATA_DIR`
+and registers the durable stores with the database node in the shared Postgres
+database. Local and production should differ by addresses, credentials,
 paths, and deployment settings, not by embedded runtime shortcuts.
 Smoke runs that do not explicitly set `RAG_EXAMPLE_EMBEDDING_VERSION` derive
 the project embedding version from `RAG_EMBEDDING_PROVIDER` and

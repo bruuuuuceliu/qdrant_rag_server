@@ -224,6 +224,6 @@ The workflow-log service has two broker inputs:
 - `domain.workflow_log.commands` for append/list command-reply workflows.
 - `audit.events` for passive audit observation.
 
-Audit events are stored durably in the workflow-log SQLite database and do not
+Audit events are stored durably in the workflow-log Postgres database and do not
 produce `domain.workflow_log.results`. Command messages still produce domain
 results.

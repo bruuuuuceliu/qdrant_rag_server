@@ -1,1 +1,0 @@
-"""SQLite node tests."""

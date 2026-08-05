@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 from configs.config import AppSettings
 from configs.retrieval.config import RetrievalHelperSettings
 from retrieval_service.server import create_worker_server
 from retrieval_service.server.worker import _build_placement_store_resolver
+from shared.postgres import pg_dsn
 
 
 class RetrievalWorkerTest(unittest.IsolatedAsyncioTestCase):
@@ -56,8 +56,8 @@ class _FakeRetrievalService:
 
 
 def _settings() -> AppSettings:
+    dsn = pg_dsn()
     return AppSettings(
-        response_cache_db_path=Path(":memory:"),
         grpc_port=50051,
         qdrant_url=None,
         qdrant_host="localhost",
@@ -70,6 +70,8 @@ def _settings() -> AppSettings:
         embedding_dimension=3,
         generation_enabled=False,
         bm25_encoder_model="fake-bm25",
+        response_cache_db_url=dsn,
+        retrieval_placement_db_url=dsn,
     )
 
 

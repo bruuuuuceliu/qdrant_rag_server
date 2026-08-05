@@ -5,31 +5,24 @@ Tier 1 — In-memory retrieval cache:
   - 5,000 entries per project, 1-hour TTL.
   - Concurrency-safe via per-project ``asyncio.Lock``.
 
-Tier 2 — SQLite response cache:
-  - Durable on-disk cache for full LLM responses.
-  - Scoped by ``project_id`` and ``user_id``.
-  - 1-hour TTL, survives engine restart.
-  - Stored at ``/var/lib/rag/response_cache.db``.
+Tier 2 — Postgres response cache:
+  - Durable response cache for full LLM responses, scoped by ``project_id``
+    and ``user_id`` with a 1-hour TTL, surviving engine restart.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
 import logging
-import sqlite3
 import time
 from collections import OrderedDict
-from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
 from shared.postgres import async_pool
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_RESPONSE_CACHE_DB_PATH = Path("/var/lib/rag/response_cache.db")
 DEFAULT_CACHE_TTL_SECONDS = 3600
 DEFAULT_MAX_ENTRIES_PER_PROJECT = 5000
 
@@ -109,154 +102,6 @@ class Tier1MemoryCache:
             for pid in empty_projects:
                 del self._stores[pid]
         return removed
-
-
-class Tier2ResponseCache:
-    """Durable SQLite cache for full LLM responses."""
-
-    def __init__(
-        self,
-        db_path: str | Path = DEFAULT_RESPONSE_CACHE_DB_PATH,
-        ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS,
-    ) -> None:
-        self.db_path = Path(db_path)
-        self._ttl_seconds = ttl_seconds
-
-    async def initialize(self) -> None:
-        self._initialize_sync()
-
-    async def get(
-        self, project_id: str, user_id: str, cache_key: str
-    ) -> str | None:
-        return self._get_sync(project_id, user_id, cache_key)
-
-    async def set(
-        self,
-        project_id: str,
-        user_id: str,
-        cache_key: str,
-        response: str,
-    ) -> None:
-        self._set_sync(project_id, user_id, cache_key, response)
-
-    async def invalidate_project(self, project_id: str) -> None:
-        self._delete_by_project_sync(project_id)
-        logger.debug("tier2: invalidated project %s", project_id)
-
-    async def invalidate_user(self, project_id: str, user_id: str) -> None:
-        self._delete_by_user_sync(project_id, user_id)
-        logger.debug("tier2: invalidated user %s/%s", project_id, user_id)
-
-    async def clear_expired(self) -> int:
-        return self._delete_expired_sync()
-
-    @contextlib.contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.db_path)
-        connection.row_factory = sqlite3.Row
-        try:
-            yield connection
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
-
-    def _initialize_sync(self) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS responses (
-                  project_id TEXT NOT NULL,
-                  user_id TEXT NOT NULL,
-                  cache_key TEXT NOT NULL,
-                  response TEXT NOT NULL,
-                  expires_at REAL NOT NULL,
-                  PRIMARY KEY (project_id, user_id, cache_key)
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_responses_expires
-                ON responses(expires_at)
-                """
-            )
-
-    def _get_sync(
-        self, project_id: str, user_id: str, cache_key: str
-    ) -> str | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT response, expires_at
-                FROM responses
-                WHERE project_id = ? AND user_id = ? AND cache_key = ?
-                """,
-                (project_id, user_id, cache_key),
-            ).fetchone()
-        if row is None:
-            return None
-        if row["expires_at"] < time.time():
-            self._delete_sync(project_id, user_id, cache_key)
-            return None
-        return row["response"]
-
-    def _set_sync(
-        self,
-        project_id: str,
-        user_id: str,
-        cache_key: str,
-        response: str,
-    ) -> None:
-        expires_at = time.time() + self._ttl_seconds
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT OR REPLACE INTO responses
-                  (project_id, user_id, cache_key, response, expires_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (project_id, user_id, cache_key, response, expires_at),
-            )
-
-    def _delete_sync(
-        self, project_id: str, user_id: str, cache_key: str
-    ) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                DELETE FROM responses
-                WHERE project_id = ? AND user_id = ? AND cache_key = ?
-                """,
-                (project_id, user_id, cache_key),
-            )
-
-    def _delete_by_project_sync(self, project_id: str) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                "DELETE FROM responses WHERE project_id = ?",
-                (project_id,),
-            )
-
-    def _delete_by_user_sync(
-        self, project_id: str, user_id: str
-    ) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                "DELETE FROM responses WHERE project_id = ? AND user_id = ?",
-                (project_id, user_id),
-            )
-
-    def _delete_expired_sync(self) -> int:
-        with self._connect() as connection:
-            cursor = connection.execute(
-                "DELETE FROM responses WHERE expires_at < ?",
-                (time.time(),),
-            )
-            return cursor.rowcount
 
 
 class PostgresTier2ResponseCache:

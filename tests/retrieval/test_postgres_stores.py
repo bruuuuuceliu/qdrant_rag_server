@@ -1,12 +1,7 @@
-"""Postgres retrieval stores tests (response cache + placement registry).
-
-Run against the compose ``postgres`` service by setting ``RETRIEVAL_TEST_DB_URL``
-(e.g. ``postgresql://rag:...@postgres:5432/rag``); skipped when unset.
-"""
+"""Postgres retrieval stores tests (response cache + placement registry)."""
 
 from __future__ import annotations
 
-import os
 import time
 
 import pytest
@@ -19,18 +14,10 @@ from retrieval_service.placement.models import (
 from retrieval_service.placement.repository import PostgresPlacementRegistry
 from retrieval_service.services.cache import PostgresTier2ResponseCache
 
-TEST_DB_URL = os.environ.get("RETRIEVAL_TEST_DB_URL")
-
-
-def _dsn() -> str:
-    if not TEST_DB_URL:
-        pytest.skip("RETRIEVAL_TEST_DB_URL is not set; skipping Postgres retrieval tests")
-    return TEST_DB_URL
-
 
 @pytest.fixture
-async def cache() -> PostgresTier2ResponseCache:
-    repository = PostgresTier2ResponseCache(_dsn(), ttl_seconds=60)
+async def cache(pg_dsn: str) -> PostgresTier2ResponseCache:
+    repository = PostgresTier2ResponseCache(pg_dsn, ttl_seconds=60)
     await repository.initialize()
     async with repository._pool.connection() as conn:
         await conn.execute("DROP TABLE IF EXISTS responses CASCADE")
@@ -75,8 +62,8 @@ async def test_cache_clear_expired(cache) -> None:
 
 
 @pytest.fixture
-def registry() -> PostgresPlacementRegistry:
-    repository = PostgresPlacementRegistry(_dsn())
+def registry(pg_dsn: str) -> PostgresPlacementRegistry:
+    repository = PostgresPlacementRegistry(pg_dsn)
     with repository._connect() as conn:
         conn.execute(
             "DROP TABLE IF EXISTS retrieval_routing_policies, retrieval_placements,"

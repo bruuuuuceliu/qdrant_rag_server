@@ -24,8 +24,8 @@ This roadmap tracks the current broker-first service split.
 - Workflow log service owns passive `audit.events` consumption, domain command
   handling, and durable log storage.
 - Local runner starts the same broker-first topology with Redpanda, Redis,
-  Qdrant, task services, domain services, helper workers, storage, SQLite node,
-  and manager gRPC.
+  Qdrant, task services, domain services, helper workers, storage, the database
+  node, and manager gRPC.
 - GitHub Actions runs the full non-live test/compile/shell gate by default and
   exposes manual Docker-backed live-infra and full local smoke jobs.
 - Placement execution and local placement registry are implemented for indexing,

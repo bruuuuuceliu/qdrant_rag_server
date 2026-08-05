@@ -234,7 +234,7 @@ async def test_lookup_degrades_stale_dimension_sources_to_empty(seeded_handler) 
             "documents": [{"doc_id": "doc_1", "text": "refund policy details"}],
         })
     )
-    # A fact source still resolves from SQLite independent of the vector search.
+    # A fact source still resolves from the durable store independent of the vector search.
     await handler.handle(
         command("profile.update", {"fact_type": "dietary", "subject": "", "text": "avoids gluten"})
     )

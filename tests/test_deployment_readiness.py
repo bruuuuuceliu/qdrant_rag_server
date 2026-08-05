@@ -93,25 +93,25 @@ async def test_redis_readiness_requires_ping_and_ttl(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_owned_storage_and_sqlite_readiness(tmp_path) -> None:
+async def test_owned_storage_and_postgres_readiness(tmp_path, pg_dsn: str) -> None:
     values = {
         "STORAGE_NODE_ROOT": str(tmp_path / "storage"),
-        "SQLITE_NODE_DATABASE_ROOT": str(tmp_path / "sqlite"),
+        "RAG_POSTGRES_URL": pg_dsn,
     }
 
     storage = await readiness.check_storage(values)
-    sqlite = await readiness.check_sqlite(values)
+    postgres = await readiness.check_postgres(values)
 
     assert storage.ready is True
-    assert sqlite.ready is True
-    assert sqlite.details["allocated_path"].endswith("readiness.db")
-    assert sqlite.details["metadata_db"].endswith("_sqlite_node.db")
+    assert postgres.ready is True
+    assert postgres.details["target_schema"] == "readiness"
+    assert postgres.details["database_count"] >= 1
 
 
 @pytest.mark.asyncio
-async def test_memory_readiness_requires_signing_key_and_writable_db(tmp_path) -> None:
+async def test_memory_readiness_requires_signing_key_and_reachable_db(pg_dsn: str) -> None:
     values = {
-        "MEMORY_DB_PATH": str(tmp_path / "memory" / "agent_memory.db"),
+        "RAG_POSTGRES_URL": pg_dsn,
         "MEMORY_IDENTITY_MODE": "broker",
         "MEMORY_INDEX_MODE": "broker",
         "MEMORY_SEARCH_MODE": "broker",
@@ -123,16 +123,14 @@ async def test_memory_readiness_requires_signing_key_and_writable_db(tmp_path) -
     check = await readiness.check_memory(values)
 
     assert check.ready is True
-    assert check.details["db_path"] == str(tmp_path / "memory" / "agent_memory.db")
+    assert check.details["db_url"] == pg_dsn
     assert check.details["index_mode"] == "broker"
-    assert (tmp_path / "memory" / "agent_memory.db").exists()
 
 
 @pytest.mark.asyncio
-async def test_memory_readiness_fails_when_signing_key_missing(tmp_path) -> None:
+async def test_memory_readiness_fails_when_signing_key_missing() -> None:
     check = await readiness.check_memory(
         {
-            "MEMORY_DB_PATH": str(tmp_path / "memory" / "agent_memory.db"),
             "MEMORY_IDENTITY_MODE": "broker",
         }
     )
@@ -142,14 +140,8 @@ async def test_memory_readiness_fails_when_signing_key_missing(tmp_path) -> None
 
 
 @pytest.mark.asyncio
-async def test_retrieval_readiness_requires_writable_data_paths(tmp_path) -> None:
-    check = await readiness.check_retrieval(
-        {
-            "RETRIEVAL_PLACEMENT_DB_PATH": str(tmp_path / "placement" / "placement.db"),
-            "RAG_RESPONSE_CACHE_DB_PATH": str(tmp_path / "cache" / "response_cache.db"),
-        }
-    )
+async def test_retrieval_readiness_requires_reachable_postgres(pg_dsn: str) -> None:
+    check = await readiness.check_retrieval({"RAG_POSTGRES_URL": pg_dsn})
 
     assert check.ready is True
-    assert check.details["placement_db_path"] == str(tmp_path / "placement" / "placement.db")
-    assert check.details["response_cache_db_path"] == str(tmp_path / "cache" / "response_cache.db")
+    assert check.details["db_url"] == pg_dsn

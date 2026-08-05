@@ -29,13 +29,11 @@ from configs.base import (
 )
 
 DEFAULT_ENV: dict[str, str] = {
-    "RAG_RESPONSE_CACHE_DB_PATH": "/var/lib/retrieval_service/response_cache.db",
     "RAG_GRPC_PORT": "50051",
     "RAG_GENERATION_ENABLED": "false",
     "RAG_OBJECT_STORAGE_PROVIDER": "filesystem",
     "RAG_OBJECT_STORAGE_BASE_PATH": "/var/lib/retrieval_service/raw_storage",
     "RETRIEVAL_PLACEMENT_ENABLED": "true",
-    "RETRIEVAL_PLACEMENT_DB_PATH": "/var/lib/retrieval_service/placement.db",
     "RETRIEVAL_PLACEMENT_ROUTING_MODE": "project_single",
     "RETRIEVAL_PLACEMENT_BUCKET_COUNT": "1",
     "RETRIEVAL_PLACEMENT_REPLICATION_FACTOR": "1",

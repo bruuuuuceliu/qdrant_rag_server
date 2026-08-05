@@ -1,7 +1,7 @@
 """Thread-pool executor for offloading blocking I/O from async event loops.
 
-SQLite, filesystem, and other synchronous operations run through this
-executor so they don't stall the asyncio event loop.
+Filesystem and other synchronous operations run through this executor so they
+don't stall the asyncio event loop.
 
 Use AsyncExecutor per application scope; do not share across event loops.
 """

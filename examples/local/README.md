@@ -2,8 +2,8 @@
 
 These scripts run the local broker-first multi-service composition for
 development. The default topology starts manager, task manager, project domain,
-workflow log, ingestion, retrieval, retrieval-index, storage, SQLite, Redis
-status, and Qdrant as separate processes when services are enabled.
+workflow log, ingestion, retrieval, retrieval-index, storage, the database
+node, Redis status, and Qdrant as separate processes when services are enabled.
 
 ## Start
 
@@ -43,13 +43,14 @@ The runner starts:
 
 - manager gRPC server on `RAG_GRPC_PORT`, default `50051`
 - task manager, project domain, workflow log, ingestion, retrieval,
-  retrieval-index, storage, SQLite, and Redis status worker processes
+  retrieval-index, storage, the database node, and Redis status worker
+  processes
 - Redpanda by default, or Apache Kafka with `--broker kafka`
 - Qdrant, when needed and Docker is available
 
 Before reporting startup success, the runner verifies broker topics, Redis
-task-status TTL behavior, Qdrant reachability, storage root writes, and SQLite
-database allocation through
+task-status TTL behavior, Postgres reachability, Qdrant reachability, storage
+root writes, and Postgres database allocation through
 `python -m deployment.composition.readiness`.
 
 Broker selection:
@@ -108,7 +109,7 @@ removes local Docker infra containers by recorded ID or configured name.
 - Retrieval helper log: `.run/logs/retrieval-worker.log`
 - Qdrant log, when managed by Docker: `.run/logs/qdrant.log`
 - PID/state files: `.run/`
-- SQLite/object-storage data, including placement registry:
+- Postgres (durable stores) + object-storage data, including placement:
   `.run/data/`
 
 ## Notes

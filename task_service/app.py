@@ -6,13 +6,10 @@ import os
 
 from broker_service import BrokerSettings, create_redpanda_bus
 from shared.contracts import TOPICS
+from shared.postgres import pg_dsn
 from task_service.config import TaskServiceSettings
 from task_service.dispatcher import TaskServiceDispatcher
-from task_service.repository import (
-    PostgresTaskStateRepository,
-    SQLiteTaskStateRepository,
-    TaskStateRepository,
-)
+from task_service.repository import PostgresTaskStateRepository, TaskStateRepository
 from task_service.server import TaskServiceServerContext
 
 HELPER_RESULT_TOPICS = (
@@ -61,11 +58,7 @@ def create_app(
         for index, topic in enumerate(HELPER_RESULT_TOPICS)
     )
     if state_repository is None:
-        state_repository = (
-            PostgresTaskStateRepository(settings.state_db_url)
-            if settings.state_db_url
-            else SQLiteTaskStateRepository(settings.state_db_path)
-        )
+        state_repository = PostgresTaskStateRepository(pg_dsn(settings.state_db_url))
     dispatcher = TaskServiceDispatcher(
         producer=producer_bus,
         state_repository=state_repository,

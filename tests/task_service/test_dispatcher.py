@@ -7,10 +7,26 @@ import pytest
 from shared.contracts import TOPICS, MessageEnvelope, MessageType
 from task_service import (
     InMemoryTaskStateRepository,
-    SQLiteTaskStateRepository,
+    PostgresTaskStateRepository,
     TaskServiceDispatcher,
     TaskServiceSettings,
 )
+
+
+@pytest.fixture
+async def pg_state_repo(pg_dsn: str) -> PostgresTaskStateRepository:
+    """Postgres task repo with a clean schema for durable-state tests."""
+    repository = PostgresTaskStateRepository(pg_dsn)
+    await repository._ensure_initialized()
+    async with repository._pool.connection() as conn:
+        await conn.execute(
+            "DROP TABLE IF EXISTS task_step_attempts, task_results, task_steps,"
+            " task_executions CASCADE"
+        )
+    repository._initialized = False
+    await repository._ensure_initialized()
+    yield repository
+    await repository.close()
 
 
 class FakeMessageProducer:
@@ -278,9 +294,9 @@ async def test_duplicate_retryable_helper_failure_does_not_reschedule_attempt() 
 
 
 @pytest.mark.asyncio
-async def test_retryable_helper_failure_can_be_scheduled_for_recovery(tmp_path) -> None:
+async def test_retryable_helper_failure_can_be_scheduled_for_recovery(pg_state_repo) -> None:
     producer = FakeMessageProducer()
-    state_repository = SQLiteTaskStateRepository(tmp_path / "task_state.db")
+    state_repository = pg_state_repo
     await state_repository.record_execution(
         "task-1",
         data_type="project_document",
@@ -337,9 +353,9 @@ async def test_retryable_helper_failure_can_be_scheduled_for_recovery(tmp_path) 
 
 
 @pytest.mark.asyncio
-async def test_recovery_redispatches_expired_helper_leases(tmp_path) -> None:
+async def test_recovery_redispatches_expired_helper_leases(pg_state_repo) -> None:
     producer = FakeMessageProducer()
-    state_repository = SQLiteTaskStateRepository(tmp_path / "task_state.db")
+    state_repository = pg_state_repo
     await state_repository.record_execution(
         "task-1",
         data_type="project_document",
@@ -380,9 +396,9 @@ async def test_recovery_redispatches_expired_helper_leases(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_recovery_fails_expired_helper_lease_after_max_attempts(tmp_path) -> None:
+async def test_recovery_fails_expired_helper_lease_after_max_attempts(pg_state_repo) -> None:
     producer = FakeMessageProducer()
-    state_repository = SQLiteTaskStateRepository(tmp_path / "task_state.db")
+    state_repository = pg_state_repo
     await state_repository.record_execution(
         "task-1",
         data_type="project_document",

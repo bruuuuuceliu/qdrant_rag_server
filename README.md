@@ -177,7 +177,8 @@ such as embedded local queues, project gRPC sidecars, and HTTP retrieval
 transports are no longer part of the supported runtime.
 
 Placement status: local project planning creates `placement_plan` payloads and
-stores placement records in a SQLite registry. Retrieval indexing/search/delete
+stores placement records in the Postgres placement registry. Retrieval
+indexing/search/delete
 now resolve placement targets to Qdrant stores, write primary plus replica
 targets, search bucketed targets with primary-to-replica failover, merge hits by
 score, and namespace search caches by placement scope. Placement policies and
@@ -333,8 +334,8 @@ Highlights (details in [docs/operations.md §11](docs/operations.md)):
 - **Hardening**: manager gRPC rate limiting + payload caps, broker SASL/TLS
   (commented env in the compose), secret-file injection (`KEY_FILE` pattern for
   Docker/k8s secrets), unprivileged containers, graceful SIGTERM shutdown.
-- **Backups**: `deployment/backup.py` snapshots SQLite + Qdrant with rotation;
-  run via `docker compose --profile backup run --rm backup`.
+- **Backups**: `deployment/backup.py` snapshots Postgres (`pg_dump`) + Qdrant
+  with rotation; run via `docker compose --profile backup run --rm backup`.
 - **CI**: ruff lint, pip-audit, and a coverage gate run on every push/PR; a
   manual `container-smoke` job builds the image and verifies the full compose
   topology end to end.
@@ -361,7 +362,7 @@ Known migration limits:
   manager edge while internal services communicate through broker messages.
 - Task service has immediate or scheduled retries, helper attempt propagation,
   dead-letter publication, durable lease/backoff state fields, and an active
-  SQLite-backed recovery loop for expired leases and due scheduled retries.
+  Postgres-backed recovery loop for expired leases and due scheduled retries.
 - Most service-owned tests are split by service folder under `tests/`; a few
   broad configuration, runner, and cross-service guards remain at the root.
 - Placement execution and policy/state persistence are implemented locally, but

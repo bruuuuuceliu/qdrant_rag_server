@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import urlparse
 
 from configs.base import AppSettings
@@ -43,7 +42,6 @@ def validate_settings(
 
     _validate_qdrant(settings, issues)
     _validate_urls(settings, issues)
-    _validate_paths(settings, issues)
     _validate_modes(settings, issues)
 
     if normalized_profile == "production":
@@ -104,30 +102,6 @@ def _validate_urls(
             )
 
 
-def _validate_paths(
-    settings: AppSettings,
-    issues: list[ConfigValidationIssue],
-) -> None:
-    path_fields = {
-        "response_cache_db_path": settings.response_cache_db_path,
-        "retrieval_placement_db_path": settings.retrieval_placement_db_path,
-    }
-    for field, path in path_fields.items():
-        if str(path) == ":memory:":
-            continue
-        if not path.is_absolute():
-            issues.append(ConfigValidationIssue(field, "must be an absolute path"))
-
-    if settings.object_storage_provider == "filesystem":
-        if not settings.object_storage_base_path.is_absolute():
-            issues.append(
-                ConfigValidationIssue(
-                    "object_storage_base_path",
-                    "must be an absolute path for filesystem storage",
-                )
-            )
-
-
 def _validate_modes(
     settings: AppSettings,
     issues: list[ConfigValidationIssue],
@@ -157,6 +131,16 @@ def _validate_modes(
             ConfigValidationIssue(
                 "object_storage_provider",
                 "must be one of: filesystem, memory",
+            )
+        )
+    if (
+        settings.object_storage_provider == "filesystem"
+        and not settings.object_storage_base_path.is_absolute()
+    ):
+        issues.append(
+            ConfigValidationIssue(
+                "object_storage_base_path",
+                "must be an absolute path for filesystem storage",
             )
         )
     if settings.retrieval_placement_replication_factor < 1:
@@ -218,9 +202,3 @@ def _validate_production(
                 severity="warning",
             )
         )
-    for field in ("response_cache_db_path", "retrieval_placement_db_path"):
-        value = getattr(settings, field)
-        if isinstance(value, Path) and str(value) == ":memory:":
-            issues.append(
-                ConfigValidationIssue(field, "must not use :memory: in production")
-            )

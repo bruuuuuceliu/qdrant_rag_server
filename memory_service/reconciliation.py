@@ -4,9 +4,9 @@ Best-effort, log-only reconciliation (design doc §9 "Index durability"): on
 ``memory_service`` startup, re-index ``memory_records`` where ``indexed=0``
 through the existing ``MemoryIndexer``, then persist the queued status for
 exactly the groups that were successfully re-queued. Failures are logged and
-never raised — SQLite stays the source of truth and the next startup re-attempts
-the failed groups. This is deliberately NOT a scheduler; the "periodic timer"
-variant is a documented follow-up.
+never raised — the durable store stays the source of truth and the next startup
+re-attempts the failed groups. This is deliberately NOT a scheduler; the
+"periodic timer" variant is a documented follow-up.
 """
 
 from __future__ import annotations

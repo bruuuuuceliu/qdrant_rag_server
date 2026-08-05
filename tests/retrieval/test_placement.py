@@ -2,25 +2,34 @@
 
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
+
+import psycopg
 
 from retrieval_service.placement import (
     InMemoryPlacementRepository,
     InMemoryRetrievalShardRepository,
     InMemoryRoutingPolicyRepository,
     PlacementResolver,
+    PostgresPlacementRegistry,
     ProjectPlacementScope,
     RetrievalShard,
     RoutingPolicy,
-    SQLitePlacementRegistry,
     choose_placement_shards,
     choose_shard,
     read_routing_keys,
     stable_hash_int,
     write_routing_key,
 )
+from shared.postgres import pg_dsn
+
+
+def _drop_placement_tables(dsn: str) -> None:
+    with psycopg.connect(dsn) as conn:
+        conn.execute(
+            "DROP TABLE IF EXISTS retrieval_placements, retrieval_shards,"
+            " retrieval_routing_policies CASCADE"
+        )
 
 
 class RetrievalPlacementTest(unittest.TestCase):
@@ -141,34 +150,35 @@ class RetrievalPlacementTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no active retrieval shards"):
             choose_shard("project:p1", [_down_shard()])
 
-    def test_sqlite_registry_round_trip(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            registry = SQLitePlacementRegistry(Path(temp_dir) / "placement.sqlite")
-            registry.initialize()
-            registry.upsert(_shards(1)[0])
-            resolver = PlacementResolver(
-                shard_repository=registry,
-                placement_repository=registry,
-            )
+    def test_postgres_registry_round_trip(self) -> None:
+        dsn = pg_dsn()
+        _drop_placement_tables(dsn)
+        registry = PostgresPlacementRegistry(dsn)
+        registry.initialize()
+        registry.upsert(_shards(1)[0])
+        resolver = PlacementResolver(
+            shard_repository=registry,
+            placement_repository=registry,
+        )
 
-            plan = resolver.resolve_write(
-                scope=ProjectPlacementScope(
-                    project_id="p1",
-                    user_id="u1",
-                    topic_id="t1",
-                ),
-                policy=RoutingPolicy(project_id="p1", routing_mode="topic_single"),
-                collection_name="rag_p1_v1",
-            )
-            active = registry.get_active(
-                "project:p1:topic:t1",
-                "rag_p1_v1",
-            )
+        plan = resolver.resolve_write(
+            scope=ProjectPlacementScope(
+                project_id="p1",
+                user_id="u1",
+                topic_id="t1",
+            ),
+            policy=RoutingPolicy(project_id="p1", routing_mode="topic_single"),
+            collection_name="rag_p1_v1",
+        )
+        active = registry.get_active(
+            "project:p1:topic:t1",
+            "rag_p1_v1",
+        )
 
-            self.assertIsNotNone(active)
-            self.assertEqual(registry.get("shard-0").qdrant_endpoint, "http://shard-0:6333")
-            self.assertEqual(active.primary_shard_id, "shard-0")
-            self.assertEqual(plan.to_mapping()["targets"][0]["shard_id"], "shard-0")
+        self.assertIsNotNone(active)
+        self.assertEqual(registry.get("shard-0").qdrant_endpoint, "http://shard-0:6333")
+        self.assertEqual(active.primary_shard_id, "shard-0")
+        self.assertEqual(plan.to_mapping()["targets"][0]["shard_id"], "shard-0")
 
     def test_routing_policy_repository_falls_back_to_default_policy(self) -> None:
         policies = InMemoryRoutingPolicyRepository(
@@ -194,29 +204,30 @@ class RetrievalPlacementTest(unittest.TestCase):
         self.assertEqual(policy.bucket_count, 3)
         self.assertEqual(policy.replication_factor, 2)
 
-    def test_sqlite_registry_persists_routing_policies(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            registry = SQLitePlacementRegistry(Path(temp_dir) / "placement.sqlite")
-            registry.initialize()
-            registry.save_policy(
-                RoutingPolicy(
-                    project_id="p1",
-                    routing_mode="doc_bucketed",
-                    bucket_count=8,
-                    replication_factor=2,
-                    read_fanout="all",
-                    cache_affinity=False,
-                )
+    def test_postgres_registry_persists_routing_policies(self) -> None:
+        dsn = pg_dsn()
+        _drop_placement_tables(dsn)
+        registry = PostgresPlacementRegistry(dsn)
+        registry.initialize()
+        registry.save_policy(
+            RoutingPolicy(
+                project_id="p1",
+                routing_mode="doc_bucketed",
+                bucket_count=8,
+                replication_factor=2,
+                read_fanout="all",
+                cache_affinity=False,
             )
+        )
 
-            policy = registry.get_policy("p1")
+        policy = registry.get_policy("p1")
 
-            self.assertIsNotNone(policy)
-            self.assertEqual(policy.routing_mode, "doc_bucketed")
-            self.assertEqual(policy.bucket_count, 8)
-            self.assertEqual(policy.replication_factor, 2)
-            self.assertEqual(policy.read_fanout, "all")
-            self.assertFalse(policy.cache_affinity)
+        self.assertIsNotNone(policy)
+        self.assertEqual(policy.routing_mode, "doc_bucketed")
+        self.assertEqual(policy.bucket_count, 8)
+        self.assertEqual(policy.replication_factor, 2)
+        self.assertEqual(policy.read_fanout, "all")
+        self.assertFalse(policy.cache_affinity)
 
     def test_rebalance_creates_moving_replacements_then_activates(self) -> None:
         placement_repo = InMemoryPlacementRepository()

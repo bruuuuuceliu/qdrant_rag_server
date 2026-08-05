@@ -11,7 +11,6 @@ from configs.ingestion import IngestionSettings, load_ingestion_settings
 from ingestion_service.jobs import (
     IngestionJobRepository,
     PostgresIngestionJobRepository,
-    SQLiteIngestionJobRepository,
 )
 from ingestion_service.server.broker_runtime import BrokerIngestionApp
 from ingestion_service.server.helper_app import IngestionHelperServerContext, create_helper_app
@@ -19,6 +18,7 @@ from ingestion_service.service import IngestionService
 from shared.logging import configure_logging
 from shared.ops.server import ops_server_from_env
 from shared.ops.shutdown import run_service
+from shared.postgres import pg_dsn
 from shared.runtime_health import RuntimeHealth
 
 
@@ -37,7 +37,6 @@ class IngestionWorkerServerContext:
             ready=True,
             dependencies={"jobs": True, "broker_helper": self.helper_app is not None},
             details={
-                "job_db_path": str(self.ingestion_settings.job_db_path),
                 "command_topic": self.ingestion_settings.command_topic,
             },
         )
@@ -47,12 +46,10 @@ async def create_worker_server(
     *,
     ingestion_settings: IngestionSettings | None = None,
     broker_settings: BrokerSettings | None = None,
+    jobs: IngestionJobRepository | None = None,
 ) -> IngestionWorkerServerContext:
     ingestion_settings = ingestion_settings or load_ingestion_settings(dict(os.environ))
-    if ingestion_settings.job_db_url:
-        jobs: IngestionJobRepository = PostgresIngestionJobRepository(ingestion_settings.job_db_url)
-    else:
-        jobs = SQLiteIngestionJobRepository(ingestion_settings.job_db_path)
+    jobs = jobs or PostgresIngestionJobRepository(pg_dsn(ingestion_settings.job_db_url))
     await jobs.initialize()
     ingestion_app = BrokerIngestionApp(
         jobs=jobs,

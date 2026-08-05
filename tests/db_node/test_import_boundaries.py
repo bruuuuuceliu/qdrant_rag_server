@@ -1,4 +1,4 @@
-"""SQLite node import boundary tests."""
+"""Database-node import boundary tests."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ FORBIDDEN_PREFIXES = (
 )
 
 
-def test_sqlite_node_does_not_import_service_internals() -> None:
-    assert _violations(ROOT / "sqlite_node") == []
+def test_db_node_does_not_import_service_internals() -> None:
+    assert _violations(ROOT / "db_node") == []
 
 
 def _violations(root: Path) -> list[str]:

@@ -1,7 +1,7 @@
 """Memory service domain models.
 
-Frozen dataclasses mirroring the SQLite tables in requirements §6 plus the
-transport fields carried over the broker. Each model exposes explicit
+Frozen dataclasses mirroring the durable-store tables in requirements §6 plus
+the transport fields carried over the broker. Each model exposes explicit
 ``from_mapping``/``to_mapping`` converters (mirror ``WorkflowLogEntry``).
 """
 

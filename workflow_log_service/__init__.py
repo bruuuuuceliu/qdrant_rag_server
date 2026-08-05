@@ -10,14 +10,14 @@ from workflow_log_service.domain_handler import WorkflowLogDomainHandler
 from workflow_log_service.models import WorkflowLogEntry
 from workflow_log_service.repository import (
     MemoryWorkflowLogRepository,
-    SQLiteWorkflowLogRepository,
+    PostgresWorkflowLogRepository,
     WorkflowLogRepository,
 )
 from workflow_log_service.worker import WorkflowLogWorkerContext, create_worker_context
 
 __all__ = [
     "MemoryWorkflowLogRepository",
-    "SQLiteWorkflowLogRepository",
+    "PostgresWorkflowLogRepository",
     "WorkflowLogDomainHandler",
     "WorkflowLogDomainServerContext",
     "WorkflowLogDomainSettings",

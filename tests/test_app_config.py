@@ -60,10 +60,7 @@ class AppConfigTest(unittest.TestCase):
                 profile="production",
             )
 
-        self.assertEqual(
-            settings.response_cache_db_path,
-            Path("/var/lib/retrieval_service/response_cache.db"),
-        )
+        self.assertIsNone(settings.response_cache_db_url)
         self.assertEqual(settings.retrieval_placement_shard_id, "retrieval-primary")
 
     def test_load_settings_can_select_profile_from_environment(self) -> None:
@@ -73,10 +70,7 @@ class AppConfigTest(unittest.TestCase):
                 component_env_files=(),
             )
 
-        self.assertEqual(
-            settings.response_cache_db_path,
-            Path("/var/lib/retrieval_service/response_cache.db"),
-        )
+        self.assertIsNone(settings.response_cache_db_url)
 
     def test_load_settings_rejects_unknown_profile(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -118,10 +112,7 @@ class AppConfigTest(unittest.TestCase):
                 component_env_files=(),
             )
 
-        self.assertEqual(
-            settings.response_cache_db_path,
-            Path("/var/lib/retrieval_service/response_cache.db"),
-        )
+        self.assertIsNone(settings.response_cache_db_url)
         self.assertEqual(settings.retrieval_placement_shard_id, "retrieval-primary")
 
     def test_promoted_profile_app_settings_from_env_uses_promoted_default(self) -> None:
@@ -140,10 +131,7 @@ class AppConfigTest(unittest.TestCase):
             )
 
         self.assertEqual(local_settings.embedding_provider, "local")
-        self.assertEqual(
-            production_settings.response_cache_db_path,
-            Path("/var/lib/retrieval_service/response_cache.db"),
-        )
+        self.assertIsNone(production_settings.response_cache_db_url)
 
     def test_env_files_and_process_env_override_profile_defaults(self) -> None:
         with TemporaryDirectory() as tempdir:
@@ -194,7 +182,6 @@ class AppConfigTest(unittest.TestCase):
         fields = {issue.field for issue in result.issues if issue.severity == "error"}
         self.assertFalse(result.ok)
         self.assertIn("embedding_api_key", fields)
-        self.assertIn("response_cache_db_path", fields)
         self.assertIn("qdrant_url", fields)
 
     def test_validate_settings_rejects_unknown_embedding_provider(self) -> None:
@@ -255,7 +242,7 @@ class AppConfigTest(unittest.TestCase):
                 "INGESTION_HELPER_COMMAND_TOPIC": "ingestion.commands",
                 "INGESTION_WORKER_COUNT": "3",
                 "INGESTION_QUEUE_MAXSIZE": "50",
-                "INGESTION_JOB_DB_PATH": "/tmp/jobs.db",
+                "INGESTION_JOB_DB_URL": "postgresql://rag:rag@localhost:5432/rag",
             }
         )
 
@@ -264,7 +251,7 @@ class AppConfigTest(unittest.TestCase):
         self.assertEqual(settings.command_topic, "ingestion.commands")
         self.assertEqual(settings.worker_count, 3)
         self.assertEqual(settings.queue_maxsize, 50)
-        self.assertEqual(settings.job_db_path, Path("/tmp/jobs.db"))
+        self.assertEqual(settings.job_db_url, "postgresql://rag:rag@localhost:5432/rag")
 
     def test_loads_manager_task_settings(self) -> None:
         settings = load_manager_settings(

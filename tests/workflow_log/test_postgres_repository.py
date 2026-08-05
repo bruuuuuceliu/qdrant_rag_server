@@ -1,30 +1,16 @@
-"""Postgres workflow log repository tests.
-
-Run against the compose ``postgres`` service by setting ``WORKFLOW_LOG_TEST_DB_URL``
-(e.g. ``postgresql://rag:...@postgres:5432/rag``); skipped when unset.
-"""
+"""Postgres workflow log repository tests (run against the shared Postgres)."""
 
 from __future__ import annotations
-
-import os
 
 import pytest
 
 from workflow_log_service.models import WorkflowLogEntry
 from workflow_log_service.repository import PostgresWorkflowLogRepository
 
-TEST_DB_URL = os.environ.get("WORKFLOW_LOG_TEST_DB_URL") or os.environ.get("WORKFLOW_LOG_DB_URL")
-
-
-def _dsn() -> str:
-    if not TEST_DB_URL:
-        pytest.skip("WORKFLOW_LOG_TEST_DB_URL is not set; skipping Postgres workflow-log tests")
-    return TEST_DB_URL
-
 
 @pytest.fixture
-async def repo() -> PostgresWorkflowLogRepository:
-    repository = PostgresWorkflowLogRepository(_dsn())
+async def repo(pg_dsn: str) -> PostgresWorkflowLogRepository:
+    repository = PostgresWorkflowLogRepository(pg_dsn)
     await repository.initialize()
     async with repository._pool.connection() as conn:
         await conn.execute("DROP TABLE IF EXISTS workflow_log_entries CASCADE")

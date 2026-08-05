@@ -170,8 +170,9 @@ async def _verify_lookup() -> None:
         assert compress_result.get("memory_id", "").startswith("mem_sum_"), compress_result
         assert compress_result.get("condensed_context"), compress_result
 
-        # Indexing is a fire-and-forget projection (SQLite stays authoritative);
-        # poll memory.lookup until the vector hand-off for ALL this run's records
+        # Indexing is a fire-and-forget projection (the durable store stays
+        # authoritative); poll memory.lookup until the vector hand-off for ALL
+        # this run's records
         # lands in Qdrant. The message ingests are queued during record_message,
         # but the compress-summary ingest is queued last (right before compress
         # replies), so the first lookup can already return the messages while the

@@ -26,7 +26,7 @@ def test_project_domain_settings_loads_owned_config_values() -> None:
             "PROJECT_SERVICE_NAME": "project-a",
             "PROJECT_PLAN_REQUEST_TOPIC": "project.commands",
             "PROJECT_PLAN_RESULT_TOPIC": "project.results",
-            "PROJECT_CONFIG_DB_PATH": "/data/project.db",
+            "PROJECT_CONFIG_DB_URL": "postgresql://rag:rag@localhost:5432/rag",
             "PROJECT_MAX_PER_PROJECT": "12",
             "PROJECT_MAX_PER_USER": "3",
         }
@@ -35,13 +35,16 @@ def test_project_domain_settings_loads_owned_config_values() -> None:
     assert settings.service_name == "project-a"
     assert settings.command_topic == "project.commands"
     assert settings.result_topic == "project.results"
-    assert settings.config_db_path == "/data/project.db"
+    assert settings.config_db_url == "postgresql://rag:rag@localhost:5432/rag"
     assert settings.max_per_project == 12
     assert settings.max_per_user == 3
 
 
 @pytest.mark.asyncio
-async def test_create_default_project_domain_app_builds_planning_stack(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_default_project_domain_app_builds_planning_stack(
+    monkeypatch: pytest.MonkeyPatch,
+    pg_dsn: str,
+) -> None:
     calls: list[tuple[str | None, str | None]] = []
 
     def fake_create_bus(settings: BrokerSettings, *, topic=None, group_id=None):
@@ -49,17 +52,22 @@ async def test_create_default_project_domain_app_builds_planning_stack(monkeypat
         return FakeBus(topic=topic, group_id=group_id)
 
     monkeypatch.setattr(domain_app, "create_redpanda_bus", fake_create_bus)
+    from project_service.config import PostgresProjectConfigRepository
+
+    config_repo = PostgresProjectConfigRepository(pg_dsn)
+    await config_repo.initialize()
     settings = domain_app.ProjectDomainSettings(
         service_name="project-a",
         command_topic="project.commands",
         result_topic="project.results",
-        config_db_path=":memory:",
     )
 
     context = await domain_app.create_default_domain_app(
         settings=settings,
         broker_settings=BrokerSettings(client_id="project-test"),
+        config_repo=config_repo,
     )
 
     assert context.command_topic == "project.commands"
     assert calls == [(None, None), ("project.commands", "project-a")]
+    await config_repo.close()

@@ -1,15 +1,17 @@
 # Postgres access layer design
 
-Design for the Postgres implementations that ship alongside the seven RAG
-SQLite stores. Companion to `docs/design/postgres-migration-plan.md` (store
-map, semantics to preserve, sequencing). This document fixes the access-layer
-decisions: driver, pooling, migration strategy, per-store schema mapping, and
-backend selection.
+> **Status: CUTOVER COMPLETE.** Postgres is now the always-on backend for every
+> RAG durable store; SQLite repositories and tests have been removed. This
+> document is retained as the historical access-layer design reference.
 
-Each store keeps its repository protocol and its SQLite implementation; a
-Postgres repository is added in the same module, next to the SQLite class, and
-selected at the wiring composition root when the store's `*_DB_URL` env var is
-set. SQLite stays the default and the fallback.
+Design for the Postgres implementations of the seven RAG durable stores.
+Companion to `docs/design/postgres-migration-plan.md` (store map, semantics to
+preserve, sequencing). This document fixes the access-layer decisions: driver,
+pooling, migration strategy, per-store schema mapping, and backend selection.
+
+Each store keeps its repository protocol and its Postgres implementation, with
+the durable-store DSN resolved from `RAG_POSTGRES_URL` (or a per-store
+`*_DB_URL` override) at the wiring composition root.
 
 ## 1. Driver: psycopg 3 (`psycopg[binary]` + `psycopg-pool`)
 

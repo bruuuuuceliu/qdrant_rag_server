@@ -37,6 +37,9 @@ class MemoryIngestionJobRepository:
     def __init__(self) -> None:
         self.records: dict[str, IngestionJob] = {}
 
+    async def initialize(self) -> None:
+        return None
+
     async def create(self, job: IngestionJob) -> None:
         self.records[job.job_id] = job
 

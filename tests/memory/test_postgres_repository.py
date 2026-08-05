@@ -1,9 +1,4 @@
-"""Postgres memory repository tests.
-
-Run against the compose ``postgres`` service by setting ``MEMORY_TEST_DB_URL``
-(e.g. ``postgresql://rag:...@postgres:5432/rag``); skipped when unset so the
-default suite stays green without a Postgres instance.
-"""
+"""Postgres memory repository tests (run against the shared Postgres)."""
 
 from __future__ import annotations
 
@@ -28,18 +23,10 @@ from memory_service.repository import (
     PostgresMemoryRepository,
 )
 
-TEST_DB_URL = os.environ.get("MEMORY_TEST_DB_URL") or os.environ.get("MEMORY_DB_URL")
-
-
-def _dsn() -> str:
-    if not TEST_DB_URL:
-        pytest.skip("MEMORY_TEST_DB_URL is not set; skipping Postgres memory tests")
-    return TEST_DB_URL
-
 
 @pytest.fixture
-async def repo() -> PostgresMemoryRepository:
-    repository = PostgresMemoryRepository(_dsn())
+async def repo(pg_dsn: str) -> PostgresMemoryRepository:
+    repository = PostgresMemoryRepository(pg_dsn)
     await repository.initialize()
     async with repository._pool.connection() as conn:
         await conn.execute(
@@ -179,7 +166,7 @@ async def test_pending_index_roundtrip(repo) -> None:
 @pytest.mark.asyncio
 async def test_fact_supersession_and_profile_without_row(repo) -> None:
     now = iso_utc_now()
-    # fact write does not require a prior profile row (SQLite FK parity)
+    # fact write does not require a prior profile row (FK parity)
     async with repo.transaction() as tx:
         tx.insert_fact(
             UserFact(
@@ -233,13 +220,13 @@ async def test_fact_supersession_and_profile_without_row(repo) -> None:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_supersession_conflict(repo) -> None:
+async def test_concurrent_supersession_conflict(repo, pg_dsn: str) -> None:
     now = iso_utc_now()
     # Race on a fresh key with no pre-existing active fact: with nothing to
     # lock, both transactions reach the insert and the partial unique index
     # deterministically trips FactSupersessionConflict for the loser.
     subject = f"theme_{os.urandom(4).hex()}"
-    dsn = _dsn()
+    dsn = pg_dsn
     barrier = threading.Barrier(3)
     outcomes: list[tuple[str, str]] = []
 

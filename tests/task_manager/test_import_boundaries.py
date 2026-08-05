@@ -32,7 +32,7 @@ def test_task_manager_does_not_expose_orchestration_state_repository() -> None:
     import task_manager_service
 
     assert not hasattr(task_manager_service, "InMemoryTaskStateRepository")
-    assert not hasattr(task_manager_service, "SQLiteTaskStateRepository")
+    assert not hasattr(task_manager_service, "PostgresTaskStateRepository")
     assert not hasattr(task_manager_service, "TaskStateRepository")
 
 

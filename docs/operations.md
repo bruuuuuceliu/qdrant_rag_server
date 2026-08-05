@@ -23,7 +23,7 @@ the memory stack.
 ### 1.1 The production memory path (what must be running)
 
 The memory feature is broker-first: Simple Agent services publish domain
-commands on Redpanda; the RAG `memory_service` persists to SQLite and hands
+commands on Redpanda; the RAG `memory_service` persists to Postgres and hands
 vector work to the RAG retrieval workers; Qdrant serves the vector index.
 Production runs **every** memory mode in `broker` (never `fake`).
 
@@ -33,10 +33,10 @@ Required processes/components:
 | --- | --- | --- |
 | Redpanda | `redpanda-rag-local` | **Dual listener**: `PLAINTEXT://127.0.0.1:9092` (local-dev only) + `INTERNAL://redpanda-rag-local:19092` on the private `rag-memory-test` network. Production clients reach the **internal** listener only. |
 | Qdrant | `qdrant-rag-local:6333` (REST) / `:6334` (gRPC) | Vector index. Reachable only from the RAG/memory stack + SA mesh over the private network. |
-| `memory_service` worker | `python -m memory_service.worker` | Consumes `domain.memory.commands` (group `memory_service`), replies on `domain.memory.results`; owns the SQLite memory DB; consumes `identity.user.events` (group `memory_service.identity`, raw) and `helper.retrieval.results` (group `memory_service.retrieval`). |
+| `memory_service` worker | `python -m memory_service.worker` | Consumes `domain.memory.commands` (group `memory_service`), replies on `domain.memory.results`; owns the Postgres memory DB; consumes `identity.user.events` (group `memory_service.identity`, raw) and `helper.retrieval.results` (group `memory_service.retrieval`). |
 | Retrieval index worker | `python -m retrieval_service.indexing.worker` | Consumes `helper.retrieval_index.commands` (`memory_ingest`), embeds + upserts Qdrant. Creates the memory collections lazily on first ingest. |
 | Retrieval helper worker | `python -m retrieval_service.server.worker` | Consumes `helper.retrieval.commands` (`memory_search`), serves semantic lookup. |
-| RAG broker-first core | Redis status node, SQLite node, storage node, task manager, task service, workflow log | Required for the full local parity stack; the memory path itself needs broker + Qdrant + the three memory-related workers above. |
+| RAG broker-first core | Redis status node, db_node, storage node, task manager, task service, workflow log | Required for the full local parity stack; the memory path itself needs broker + Qdrant + the three memory-related workers above. |
 | Simple Agent conversation-server | `conversation-server-api` (:8050) + worker | Publishes memory commands; **must set `REDPANDA_BOOTSTRAP_SERVERS=redpanda-rag-local:19092`** and join the `rag-memory-test` network. `memory.client_mode: broker` in production. |
 | Simple Agent identity-server | `identity-server-worker` | Publishes `identity.user.events`; **must set `REDPANDA_BOOTSTRAP_SERVERS=redpanda-rag-local:19092`**, join `rag-memory-test`, and set `REDPANDA_ENABLED=true`. |
 
@@ -54,7 +54,7 @@ BROKER_BOOTSTRAP_SERVERS=redpanda-rag-local:19092
 MEMORY_IDENTITY_MODE=broker
 MEMORY_INDEX_MODE=broker
 MEMORY_SEARCH_MODE=broker
-MEMORY_DB_PATH=/var/lib/rag/agent_memory.db
+RAG_POSTGRES_URL=postgresql://rag:...@postgres:5432/rag
 MEMORY_COLLECTION=agent_memory
 MEMORY_DOCUMENTS_COLLECTION=agent_documents
 MEMORY_ALLOWED_SERVICES=conversation-server
@@ -151,7 +151,7 @@ tests or the full local ingest/search smoke.
    `rag-memory-test` network (compose declares it `external: true`; the RAG
    stack creates it).
 7. **Verify**: run the readiness report (§2), then drive a chat or a direct
-   memory command and confirm a profile row + SQLite rows + Qdrant points.
+   memory command and confirm a profile row + Postgres rows + Qdrant points.
 
 ---
 
@@ -171,15 +171,15 @@ Current checks and what **healthy** looks like:
 | `broker` | `ok=true`; canonical topic set from `shared.contracts.TOPICS` present; `bootstrap_servers`/`topic_prefix` correct; `missing_topics` empty. Optional lag probes (`BROKER_LAG_TARGETS` in `group_id:topic,topic;...` format) are reported in details and do not fail startup when required topics are healthy. |
 | `redis` | `PING` ok; task-status write/read ok; completed-task TTL positive. |
 | `storage` | Owned local storage root is writable and allocatable (probe file write+read). |
-| `sqlite` | SQLite node root writable; readiness database allocated; schema version recorded; health snapshot stored in the node control-plane tables. |
+| `postgres` | RAG Postgres reachable; readiness database allocated; schema version recorded; health snapshot stored in the db_node control-plane tables. |
 | `qdrant` | `/collections` endpoint returns 2xx. |
 
 **[C6, implemented]** the report now includes `memory` and `retrieval` checks
-alongside `broker`/`redis`/`storage`/`sqlite`/`qdrant`:
+alongside `broker`/`redis`/`storage`/`postgres`/`qdrant`:
 
 - `memory` — verifies `MemoryServiceSettings` build (the B3 signing-key guard:
   broker modes require a non-empty `SERVICE_AUTH_SIGNING_KEY`), the
-  `MEMORY_DB_PATH` parent is writable, and `SQLiteMemoryRepository.initialize()`
+  `MEMORY_DB_PATH` parent is writable, and `PostgresMemoryRepository.initialize()`
   succeeds (schema created, WAL enabled). Details show `db_path`,
   `identity_mode`/`index_mode`/`search_mode`, `signing_key_set`, and
   `db_exists`.
@@ -199,7 +199,7 @@ Signals of health from logs/state:
 - Consumers attach to `domain.memory.commands`, `identity.user.events`, and
   `helper.retrieval.results` (groups `memory_service`,
   `memory_service.identity`, `memory_service.retrieval`).
-- SQLite schema initializes at `MEMORY_DB_PATH` (`sessions`, `messages`,
+- Postgres schema initializes at `MEMORY_DB_PATH` (`sessions`, `messages`,
   `memory_records`, `user_profiles`, `user_facts`, `idempotency_records`).
 - A driven command returns a correlated `DOMAIN_RESULT` on
   `domain.memory.results`.
@@ -342,36 +342,31 @@ sane defaults. Until C4 lands, collections are created with Qdrant defaults.
 
 ## 6. Backup / restore
 
-### 6.1 Memory DB (SQLite)
+### 6.1 Memory DB (Postgres)
 
-The durable memory store is the SQLite database at `MEMORY_DB_PATH`
-(default `/var/lib/rag/agent_memory.db`). **[C6, implemented]** the memory DB
-runs in **WAL** mode (`PRAGMA journal_mode=WAL` + `synchronous=NORMAL`), enabled
-by `SQLiteMemoryRepository.initialize()`. WAL mode is persistent in the DB file,
-so it only needs to be applied once.
+The durable memory store lives in the shared RAG Postgres database, resolved
+from `RAG_POSTGRES_URL` (or the `MEMORY_DB_URL` override) and owned by
+`PostgresMemoryRepository.initialize()`. The durable Postgres database is the
+primary backup target (see `deployment/backup.py` §11.7 for the `pg_dump`
+path).
 
 Recommended backup (consistent, online-safe):
 
 ```bash
-# Online consistent snapshot via the SQLite backup API (works under WAL):
-sqlite3 "${MEMORY_DB_PATH}" ".backup '/backup/agent_memory-$(date +%F).db'"
-
-# Or, with memory_service stopped, a plain file copy of the DB plus sidecar files
-# (WAL mode has -wal / -shm sidecars — copy all three together):
-cp -a "${MEMORY_DB_PATH}" "${MEMORY_DB_PATH}-wal" "${MEMORY_DB_PATH}-shm" /backup/
+pg_dump -Fc -f "/backup/agent_memory-$(date +%F).dump" "${RAG_POSTGRES_URL}"
 ```
 
 Restore:
 
 1. Stop `memory_service`.
-2. Replace `MEMORY_DB_PATH` with the restored file (and its `-wal`/`-shm`
+2. Restore the dump into the RAG Postgres database:
    sidecars if restoring a WAL snapshot).
 3. Start `memory_service`; the schema initializes idempotently (`CREATE TABLE
    IF NOT EXISTS` + in-place migrations).
 
 ### 6.2 Qdrant collections
 
-Vector points are a **projection** of the SQLite source of truth (design §9):
+Vector points are a **projection** of the Postgres source of truth (design §9):
 if Qdrant is lost, re-indexing from `memory_records` rebuilds it (the re-drive
 seam). **[C6, implemented]** on `memory_service` startup the worker re-queues
 `memory_records` where `indexed=0` through the existing indexer
@@ -394,8 +389,8 @@ collections unless you need exact point state (scores/IDs).
 
 | Store | Recoverable | Notes |
 | --- | --- | --- |
-| SQLite memory DB | **Fully** — sessions, messages, memory records, profiles, facts, idempotency | Primary backup target. |
-| Qdrant vectors | Rebuildable from SQLite via re-index; snapshot for exact point state | `agent_memory`, `agent_documents`. |
+| Postgres memory DB | **Fully** — sessions, messages, memory records, profiles, facts, idempotency | Primary backup target. |
+| Qdrant vectors | Rebuildable from Postgres via re-index; snapshot for exact point state | `agent_memory`, `agent_documents`. |
 | Redis task status | Ephemeral (TTL), not memory data | No backup needed. |
 | Redpanda topics | Not a memory backup | Transient unless retained; offsets replayed by consumer groups. |
 
@@ -410,7 +405,7 @@ collections unless you need exact point state (scores/IDs).
 | Every memory command → `401 unauthorized` / `403 forbidden` | Signing-key drift or issuer/audience mismatch (§3.1); `svc` not in `MEMORY_ALLOWED_SERVICES` | Confirm `SERVICE_AUTH_SIGNING_KEY` equals `SIMPLE_AGENT_SERVICE_AUTH_SIGNING_KEY`; issuer/audience/TTL match; `MEMORY_ALLOWED_SERVICES` includes `conversation-server`. |
 | `memory_service` won't start | B3 broker-mode guard (§3.2) — any `MEMORY_*_MODE=broker` with missing/empty/whitespace `SERVICE_AUTH_SIGNING_KEY` | Set a non-empty signing key, or run fake modes for standalone dev. |
 | `memory.lookup` → `upstream_error` (502, retryable) | Retrieval workers down (index or search helper) — the hand-off failed (a non-dimension upstream error) | Confirm `retrieval_service.indexing.worker` and `retrieval_service.server.worker` are up and their consumer groups are attached. Lookup is best-effort from SA's side; chat survives. |
-| `memory.lookup` returns empty `chat_history`/`documents` (not an error) | Stale-dimension memory collection (§5.3) — a 384-dim `agent_memory` collection queried with a 768-dim embedding | **Contract**: lookup is best-effort and per-source. The dimension mismatch degrades only the vector-backed source(s) to empty and never fails the whole lookup (`results: {chat_history: [], ...}`); facts still resolve from SQLite. Delete/re-version the stale collection and re-ingest to restore hits. |
+| `memory.lookup` returns empty `chat_history`/`documents` (not an error) | Stale-dimension memory collection (§5.3) — a 384-dim `agent_memory` collection queried with a 768-dim embedding | **Contract**: lookup is best-effort and per-source. The dimension mismatch degrades only the vector-backed source(s) to empty and never fails the whole lookup (`results: {chat_history: [], ...}`); facts still resolve from Postgres. Delete/re-version the stale collection and re-ingest to restore hits. |
 | Indexing silently not applied (`indexed=false` or no Qdrant points) | Retrieval index worker down; or stale-dimension collection (§5.3) | Check the retrieval index worker log; delete/re-version stale collections and re-ingest. |
 | Broker down | Saga best-effort fallback (SA) — chat **survives** on context-v1; memory commands not delivered | Restore Redpanda; memory_service reconnects, rejoins groups, consumes backlog, and integrity re-checks (verified live in Follow-up B). |
 | Long user turn appears truncated in memory | 2048-char cap is **by design** | `message.record` `content` and `memory.lookup` `query` are deterministically truncated to a 2048-char prefix server-side — recorded, not dropped (§7.2.2/7.2.5 of requirements). |
@@ -422,21 +417,20 @@ collections unless you need exact point state (scores/IDs).
 - Check `.run/logs/*.log` for process startup failures.
 - Run `examples/local/stop-all.sh --clean` before restarting a local topology.
 - Validate config with `configs.validation.validate_settings_or_raise`.
-- Inspect SQLite ownership state in `_sqlite_node.db` under
-  `SQLITE_NODE_DATABASE_ROOT`; service-owned rows remain in their separate
-  allocated database files.
+- Inspect logical database ownership state in the db_node control-plane tables
+  (`db_node_databases`, `db_node_schema_versions`) in the RAG Postgres database.
 - If tasks stay `running`, inspect task-service logs and the expected helper
-  result topics for missing fan-in results. Durable fan-in state is stored at
-  `TASK_SERVICE_STATE_DB_PATH`.
+  result topics for missing fan-in results. Durable fan-in state lives in the
+  RAG Postgres database (task tables).
 - Terminal helper failures publish repair context to `task.dead_letters` by
   default. Retryable helper failures are republished until
   `TASK_SERVICE_MAX_ATTEMPTS`.
-- Helper commands and results carry `attempt`; task-service SQLite state records
+- Helper commands and results carry `attempt`; task-service Postgres state records
   dispatch/result attempt history in `task_step_attempts`.
 - The broker service owns Redpanda transport, topic bootstrap, health, and lag
   visibility. Task leases, retries, backoff, attempt counts, and dead-letter
   decisions remain task-service responsibilities. The task-service recovery loop
-  claims due `next_attempt_at` retries and expired helper leases from SQLite,
+  claims due `next_attempt_at` retries and expired helper leases from Postgres,
   redispatches while attempts remain, and terminally fails expired max-attempt
   helper steps.
 
@@ -457,7 +451,7 @@ user's auth direction). There is **no custom RAG authentication service** and
   (`internal: true`). RAG/memory-only surfaces are on the private
   `rag-memory-test` network (SA compose declares it `external: true`; the RAG
   stack creates it): `redpanda-rag-local:19092` (internal listener),
-  `qdrant-rag-local:6333/6334`, Redis, memory_service SQLite, and the
+  `qdrant-rag-local:6333/6334`, Redis, memory_service Postgres, and the
   broker-only memory/retrieval workers.
 - **The `127.0.0.1:9092` PLAINTEXT listener is a local-dev convenience ONLY.**
 - **Trusted-broker identity events.** `identity.user.events` is published by
@@ -584,7 +578,7 @@ the worker's own dependency checks), and `/metrics` (Prometheus). Ports:
 | retrieval | 9007 |
 | retrieval-index | 9008 |
 | storage | 9009 |
-| sqlite-node | 9010 |
+| db-node | 9010 |
 | redis-status-node | 9011 |
 | memory | 9012 |
 
@@ -627,10 +621,10 @@ and any value the settings loaders read. Never commit `*.env` or cert material.
 
 ### 11.7 Backup / restore
 
-`deployment/backup.py` snapshots every service SQLite DB under `/var/lib/rag`
-(online SQLite backup API, WAL-safe) plus Qdrant collection snapshots into a
-timestamped directory with rotation (`--keep`). Run it from the compose backup
-service:
+`deployment/backup.py` snapshots the RAG Postgres durable stores via `pg_dump`
+(`--pg-url`, defaulting to `RAG_POSTGRES_URL`) plus Qdrant collection snapshots
+into a timestamped directory with rotation (`--keep`). Run it from the compose
+backup service:
 
 ```bash
 docker compose --profile backup run --rm backup
@@ -717,6 +711,6 @@ Drift ⇒ `401`/`403` on every memory command.
 
 **Verify end-to-end:** run the readiness report (§2), confirm
 `docker network inspect rag-memory-test` lists containers from **both** stacks,
-then drive a chat (`session.start`/`message.record` → SQLite rows, `memory.lookup`
+then drive a chat (`session.start`/`message.record` → Postgres rows, `memory.lookup`
 returns per-source results) and register a user (`identity.user.registered` →
 `user_profiles` row).

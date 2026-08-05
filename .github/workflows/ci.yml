@@ -79,6 +79,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rag
+          POSTGRES_PASSWORD: rag
+          POSTGRES_DB: rag
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rag -d rag"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -103,11 +118,11 @@ jobs:
             ingestion_service \
             manager_service \
             memory_service \
+            db_node \
             project_service \
             redis_status_node \
             retrieval_service \
             shared \
-            sqlite_node \
             storage_node \
             task_manager_service \
             task_service \
@@ -119,6 +134,8 @@ jobs:
           bash -n examples/local/stop-all.sh
 
       - name: Run pytest with coverage gate
+        env:
+          RAG_POSTGRES_URL: postgresql://rag:rag@localhost:5432/rag
         run: |
           python -m coverage run -m pytest
           python -m coverage report --fail-under=50
@@ -215,6 +232,7 @@ jobs:
       - name: Bring up the production compose (internal network, deterministic embeddings)
         env:
           REDIS_PASSWORD: ci-secret
+          POSTGRES_PASSWORD: ci-secret
           SERVICE_AUTH_SIGNING_KEY: ci-signing-key
           RAG_EMBEDDING_PROVIDER: deterministic
           RAG_EMBEDDING_MODEL: deterministic-hash
@@ -226,6 +244,7 @@ jobs:
       - name: Wait for all services healthy
         env:
           REDIS_PASSWORD: ci-secret
+          POSTGRES_PASSWORD: ci-secret
           SERVICE_AUTH_SIGNING_KEY: ci-signing-key
         run: |
           cd deployment
@@ -249,6 +268,7 @@ jobs:
       - name: Run a live backup and verify output
         env:
           REDIS_PASSWORD: ci-secret
+          POSTGRES_PASSWORD: ci-secret
           SERVICE_AUTH_SIGNING_KEY: ci-signing-key
         run: |
           cd deployment
@@ -257,11 +277,11 @@ jobs:
 
       - name: Verify graceful shutdown (SIGTERM -> clean exit)
         run: |
-          cid=$(docker run -d qdrant-rag-server:latest python -m sqlite_node.worker)
+          cid=$(docker run -d qdrant-rag-server:latest python -m db_node.worker)
           sleep 4
           docker kill --signal=SIGTERM "$cid"
           code=$(docker wait "$cid")
-          echo "sqlite-node exit code after SIGTERM: $code"
+          echo "db-node exit code after SIGTERM: $code"
           [ "$code" = "0" ]
 
       - name: Tear down the compose stack

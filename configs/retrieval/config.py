@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from configs.config import get_bool_value, get_int_value, get_value
@@ -34,17 +33,6 @@ class RetrievalIndexWorkerSettings:
     enabled: bool = True
     service_name: str = "retrieval_index_worker"
     command_topic: str = TOPICS.helper_retrieval_index_commands
-
-
-@dataclass(frozen=True, slots=True)
-class RetrievalPlacementSettings:
-    enabled: bool = True
-    db_path: Path = Path("/tmp/qdrant_rag/placement.db")
-    routing_mode: str = "project_single"
-    bucket_count: int = 1
-    replication_factor: int = 1
-    shard_id: str = "local-qdrant"
-    cluster_id: str = "local"
 
 
 def load_collection_index_config(values: dict[str, str]) -> Any:
@@ -118,37 +106,3 @@ def load_retrieval_index_worker_settings(
     )
 
 
-def load_retrieval_placement_settings(
-    values: dict[str, str],
-) -> RetrievalPlacementSettings:
-    return RetrievalPlacementSettings(
-        enabled=get_bool_value(values, "RETRIEVAL_PLACEMENT_ENABLED", True),
-        db_path=Path(
-            get_value(
-                values,
-                "RETRIEVAL_PLACEMENT_DB_PATH",
-                "/tmp/qdrant_rag/placement.db",
-            )
-        ),
-        routing_mode=get_value(
-            values,
-            "RETRIEVAL_PLACEMENT_ROUTING_MODE",
-            "project_single",
-        ),
-        bucket_count=get_int_value(values, "RETRIEVAL_PLACEMENT_BUCKET_COUNT", 1),
-        replication_factor=get_int_value(
-            values,
-            "RETRIEVAL_PLACEMENT_REPLICATION_FACTOR",
-            1,
-        ),
-        shard_id=get_value(
-            values,
-            "RETRIEVAL_PLACEMENT_SHARD_ID",
-            "local-qdrant",
-        ),
-        cluster_id=get_value(
-            values,
-            "RETRIEVAL_PLACEMENT_CLUSTER_ID",
-            "local",
-        ),
-    )

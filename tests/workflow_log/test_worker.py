@@ -20,7 +20,7 @@ class DomainApp:
 
 
 @pytest.mark.asyncio
-async def test_create_workflow_log_worker_context_wires_domain_app(monkeypatch, tmp_path) -> None:
+async def test_create_workflow_log_worker_context_wires_domain_app(monkeypatch) -> None:
     captured = {}
 
     async def fake_create_default_domain_app(*, settings, broker_settings):
@@ -33,7 +33,6 @@ async def test_create_workflow_log_worker_context_wires_domain_app(monkeypatch, 
         service_name="workflow-a",
         command_topic="workflow.commands",
         audit_topic="audit.custom",
-        db_path=tmp_path / "workflow.db",
     )
     broker_settings = BrokerSettings(client_id="workflow-test")
 

@@ -19,9 +19,10 @@ from memory_service.config import MemoryServiceSettings
 from memory_service.domain_handler import MemoryDomainHandler
 from memory_service.identity import BrokerIdentitySource, FakeIdentitySource
 from memory_service.indexer import BrokerMemoryIndexer, FakeMemoryIndexer
-from memory_service.repository import MemoryRepository, PostgresMemoryRepository, SQLiteMemoryRepository
+from memory_service.repository import MemoryRepository, PostgresMemoryRepository
 from memory_service.searcher import BrokerMemorySearcher, FakeMemorySearcher
 from shared.contracts import TOPICS, MessageConsumer, MessageProducer
+from shared.postgres import pg_dsn
 
 
 @dataclass(slots=True)
@@ -203,13 +204,15 @@ async def create_default_domain_app(
     *,
     settings: MemoryServiceSettings | None = None,
     broker_settings: BrokerSettings | None = None,
+    repository: MemoryRepository | None = None,
 ) -> MemoryDomainServerContext:
-    """Build the runtime composition root from settings (fake modes for local)."""
+    """Build the runtime composition root from settings (fake modes for local).
+
+    The durable store defaults to Postgres via ``settings.db_url`` (falling back
+    to the shared ``RAG_POSTGRES_URL``); tests inject an in-memory repository.
+    """
     settings = settings or MemoryServiceSettings()
-    if settings.db_url:
-        repository: MemoryRepository = PostgresMemoryRepository(settings.db_url)
-    else:
-        repository = SQLiteMemoryRepository(settings.db_path)
+    repository = repository or PostgresMemoryRepository(pg_dsn(settings.db_url))
     await repository.initialize()
 
     producer = (

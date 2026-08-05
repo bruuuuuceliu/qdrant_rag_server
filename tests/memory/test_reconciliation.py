@@ -6,7 +6,7 @@ import pytest
 
 from memory_service.models import MemoryRecord, iso_utc_now
 from memory_service.reconciliation import reconcile_pending_index
-from memory_service.repository import MemoryInMemoryRepository, SQLiteMemoryRepository
+from memory_service.repository import MemoryInMemoryRepository
 
 
 class _RecordingIndexer:
@@ -59,8 +59,8 @@ async def test_reconcile_skips_when_nothing_pending() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reconcile_requeues_and_marks_pending_records(tmp_path) -> None:
-    repository = SQLiteMemoryRepository(tmp_path / "memory.db")
+async def test_reconcile_requeues_and_marks_pending_records() -> None:
+    repository = MemoryInMemoryRepository()
     await repository.initialize()
     for memory_id in ("mem_1", "mem_2"):
         async with repository.transaction() as tx:

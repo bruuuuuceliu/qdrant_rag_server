@@ -37,7 +37,6 @@ class WorkflowLogWorkerContext:
                 "broker_audit_consumer": audit_ready,
             },
             details={
-                "db_path": str(self.settings.db_path),
                 "command_topic": self.settings.command_topic,
                 "audit_topic": self.settings.audit_topic,
             },

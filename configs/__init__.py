@@ -11,11 +11,9 @@ from configs.validation import (
 )
 
 _PROJECT_EXPORTS = {
-    "DEFAULT_CONFIG_DB_PATH",
     "PostgresProjectConfigRepository",
     "ProjectConfigNotFoundError",
     "ProjectConfigRecord",
-    "SQLiteProjectConfigRepository",
 }
 
 
@@ -31,11 +29,9 @@ __all__ = [
     "AppSettings",
     "ConfigValidationIssue",
     "ConfigValidationResult",
-    "DEFAULT_CONFIG_DB_PATH",
     "PostgresProjectConfigRepository",
     "ProjectConfigNotFoundError",
     "ProjectConfigRecord",
-    "SQLiteProjectConfigRepository",
     "load_settings",
     "validate_settings",
     "validate_settings_or_raise",

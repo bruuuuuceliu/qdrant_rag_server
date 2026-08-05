@@ -1,14 +1,14 @@
 """Automated backup for the broker-first RAG stack.
 
-Snapshots every service SQLite database (online SQLite backup API — consistent
-and safe under WAL) plus Qdrant collection snapshots into a timestamped backup
-directory, then rotates old backups. Restore steps live in docs/operations.md §6.
+Snapshots every Postgres durable store (``pg_dump`` custom format) plus Qdrant
+collection snapshots into a timestamped backup directory, then rotates old
+backups. Restore steps live in docs/operations.md §6.
 
 Usage:
 
     python -m deployment.backup \
         --root /backup/rag \
-        --sqlite-root /var/lib/rag \
+        --pg-url postgresql://rag:...@postgres:5432/rag \
         --qdrant-url http://qdrant:6333 \
         --keep 7
 
@@ -21,39 +21,28 @@ from __future__ import annotations
 import argparse
 import logging
 import shutil
-import sqlite3
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
+
+from shared.postgres import pg_dsn
 
 logger = logging.getLogger(__name__)
 
 _BACKUP_PREFIX = "rag-backup-"
 
 
-def snapshot_sqlite(db_path: Path, dest_dir: Path) -> Path:
-    """Copy one SQLite database with the online backup API (WAL-safe)."""
-    source = sqlite3.connect(str(db_path))
-    try:
-        dest_path = dest_dir / f"{db_path.name}.bak"
-        target = sqlite3.connect(str(dest_path))
-        try:
-            source.backup(target)
-        finally:
-            target.close()
-    finally:
-        source.close()
-    logger.info("backed up sqlite db_path=%s -> %s", db_path, dest_path)
+def snapshot_postgres(dsn: str, dest_dir: Path) -> Path:
+    """Dump one Postgres database with pg_dump in custom format."""
+    dbname = urlparse(dsn).path.lstrip("/") or "rag"
+    dest_path = dest_dir / f"{dbname}.dump"
+    subprocess.run(["pg_dump", "-Fc", "-f", str(dest_path), dsn], check=True)
+    logger.info("backed up postgres db=%s -> %s", dbname, dest_path)
     return dest_path
-
-
-def collect_sqlite_paths(sqlite_root: Path) -> list[Path]:
-    """Find all SQLite databases under the durable data root."""
-    if not sqlite_root.exists():
-        return []
-    return sorted(sqlite_root.rglob("*.db"))
 
 
 def qdrant_collection_names(base_url: str, *, timeout: float = 15.0) -> list[str]:
@@ -107,7 +96,7 @@ def rotate(backup_root: Path, keep: int) -> list[Path]:
 def backup_all(
     *,
     backup_root: Path,
-    sqlite_root: Path,
+    pg_urls: list[str],
     qdrant_url: str = "",
     qdrant_collections: list[str] | None = None,
     keep: int = 7,
@@ -119,13 +108,13 @@ def backup_all(
     dest = backup_root / f"{_BACKUP_PREFIX}{stamp}"
     dest.mkdir(parents=True, exist_ok=False)
 
-    sqlite_dest = dest / "sqlite"
-    sqlite_dest.mkdir()
-    for db_path in collect_sqlite_paths(Path(sqlite_root)):
+    pg_dest = dest / "postgres"
+    pg_dest.mkdir()
+    for dsn in pg_urls:
         try:
-            snapshot_sqlite(db_path, sqlite_dest)
-        except sqlite3.Error as exc:
-            logger.warning("sqlite backup failed db_path=%s error=%s", db_path, exc)
+            snapshot_postgres(dsn, pg_dest)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("postgres backup failed dsn=%s error=%s", dsn, exc)
 
     if qdrant_url:
         qdrant_dest = dest / "qdrant"
@@ -145,9 +134,14 @@ def backup_all(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Back up RAG SQLite + Qdrant state.")
+    parser = argparse.ArgumentParser(description="Back up RAG Postgres + Qdrant state.")
     parser.add_argument("--root", required=True, help="Backup destination root directory.")
-    parser.add_argument("--sqlite-root", default="/var/lib/rag", help="Directory tree containing service SQLite DBs.")
+    parser.add_argument(
+        "--pg-url",
+        action="append",
+        default=[],
+        help="Postgres DSN to dump (repeatable; defaults to RAG_POSTGRES_URL).",
+    )
     parser.add_argument("--qdrant-url", default="", help="Qdrant HTTP base URL, e.g. http://qdrant:6333.")
     parser.add_argument("--qdrant-collection", action="append", default=[], help="Restrict Qdrant snapshots to this collection (repeatable).")
     parser.add_argument("--keep", type=int, default=7, help="Number of backups to retain (default 7).")
@@ -159,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     backup_all(
         backup_root=Path(args.root),
-        sqlite_root=Path(args.sqlite_root),
+        pg_urls=args.pg_url or [pg_dsn()],
         qdrant_url=args.qdrant_url,
         qdrant_collections=args.qdrant_collection or None,
         keep=args.keep,

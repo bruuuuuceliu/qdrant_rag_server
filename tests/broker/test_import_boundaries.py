@@ -14,7 +14,7 @@ FORBIDDEN_PREFIXES = (
     "retrieval_service",
     "task_manager_service",
     "storage_node",
-    "sqlite_node",
+    "db_node",
     "redis_status_node",
 )
 

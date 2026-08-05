@@ -29,10 +29,10 @@ from configs.base import (
 )
 
 DEFAULT_ENV: dict[str, str] = {
-    "RAG_RESPONSE_CACHE_DB_PATH": "/var/lib/rag/response_cache.db",
     "RAG_GRPC_PORT": "50051",
     "RAG_QDRANT_HOST": "localhost",
     "RAG_QDRANT_PORT": "6333",
+    "RAG_POSTGRES_URL": "postgresql://rag:rag@localhost:5432/rag",
     "BM25_SPARSE_VECTOR_NAME": "bm25",
     "BM25_DENSE_VECTOR_NAME": "dense",
     "BM25_ENCODER_PROVIDER": "fastembed",
@@ -51,7 +51,6 @@ DEFAULT_ENV: dict[str, str] = {
     "RAG_OBJECT_STORAGE_PROVIDER": "filesystem",
     "RAG_OBJECT_STORAGE_BASE_PATH": "/tmp/qdrant_rag/raw_storage",
     "RETRIEVAL_PLACEMENT_ENABLED": "true",
-    "RETRIEVAL_PLACEMENT_DB_PATH": "/var/lib/rag/placement.db",
     "RETRIEVAL_PLACEMENT_ROUTING_MODE": "project_single",
     "RETRIEVAL_PLACEMENT_BUCKET_COUNT": "1",
     "RETRIEVAL_PLACEMENT_REPLICATION_FACTOR": "1",

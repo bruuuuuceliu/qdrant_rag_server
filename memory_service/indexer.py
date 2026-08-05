@@ -3,7 +3,8 @@
 ``MemoryIndexer`` is a fire-and-forget port that hands memory records to the
 retrieval service for vector indexing. ``BrokerMemoryIndexer`` publishes a
 ``memory_ingest`` helper command; ``FakeMemoryIndexer`` records calls for tests.
-SQLite remains the source of truth; indexing is an async best-effort projection.
+The durable store remains the source of truth; indexing is an async best-effort
+projection.
 """
 
 from __future__ import annotations

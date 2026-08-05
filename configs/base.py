@@ -19,7 +19,6 @@ CONFIG_ROOT = Path(__file__).resolve().parent
 
 @dataclass(frozen=True, slots=True)
 class AppSettings:
-    response_cache_db_path: Path
     grpc_port: int
     qdrant_url: str | None
     qdrant_host: str
@@ -52,7 +51,6 @@ class AppSettings:
     object_storage_provider: str = "filesystem"
     object_storage_base_path: Path = Path("/tmp/qdrant_rag/raw_storage")
     retrieval_placement_enabled: bool = True
-    retrieval_placement_db_path: Path = Path("/tmp/qdrant_rag/placement.db")
     retrieval_placement_routing_mode: str = "project_single"
     retrieval_placement_bucket_count: int = 1
     retrieval_placement_replication_factor: int = 1
@@ -120,9 +118,6 @@ def load_settings_from_defaults(
     retrieval_settings = load_retrieval_component_settings(values)
 
     return AppSettings(
-        response_cache_db_path=Path(
-            get_value(values, "RAG_RESPONSE_CACHE_DB_PATH", "/var/lib/rag/response_cache.db")
-        ),
         grpc_port=get_int_value(values, "RAG_GRPC_PORT", 50051),
         qdrant_url=qdrant_settings.url,
         qdrant_host=qdrant_settings.host,
@@ -160,13 +155,6 @@ def load_settings_from_defaults(
             values,
             "RETRIEVAL_PLACEMENT_ENABLED",
             True,
-        ),
-        retrieval_placement_db_path=Path(
-            get_value(
-                values,
-                "RETRIEVAL_PLACEMENT_DB_PATH",
-                "/tmp/qdrant_rag/placement.db",
-            )
         ),
         retrieval_placement_routing_mode=get_value(
             values,

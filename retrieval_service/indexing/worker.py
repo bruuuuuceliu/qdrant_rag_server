@@ -24,7 +24,6 @@ from retrieval_service.placement import (
     PlacementStoreResolver,
     PostgresPlacementRegistry,
     RetrievalShard,
-    SQLitePlacementRegistry,
 )
 from retrieval_service.services.bm25 import QdrantSparseBM25Index
 from retrieval_service.services.entities import LocalNerExtractor, NoopNerExtractor
@@ -33,6 +32,7 @@ from retrieval_service.services.vector_store import QdrantStore
 from shared.logging import configure_logging
 from shared.ops.server import ops_server_from_env
 from shared.ops.shutdown import run_service
+from shared.postgres import pg_dsn
 from shared.runtime_health import RuntimeHealth
 
 
@@ -181,10 +181,7 @@ def _build_placement_store_resolver(
 ) -> PlacementStoreResolver:
     if not settings.retrieval_placement_enabled:
         return PlacementStoreResolver(default_store=qdrant_store)
-    if settings.retrieval_placement_db_url:
-        registry: Any = PostgresPlacementRegistry(settings.retrieval_placement_db_url)
-    else:
-        registry = SQLitePlacementRegistry(settings.retrieval_placement_db_path)
+    registry: Any = PostgresPlacementRegistry(pg_dsn(settings.retrieval_placement_db_url))
     registry.initialize()
     endpoint = settings.qdrant_url or f"http://{settings.qdrant_host}:{settings.qdrant_port}"
     registry.upsert(

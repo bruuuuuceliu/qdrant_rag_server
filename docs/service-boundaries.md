@@ -175,7 +175,7 @@ Not allowed in `shared`:
 Service-specific config must live in service folders under `configs/`, for
 example `configs/manager/`, `configs/project/`, `configs/ingestion/`,
 `configs/retrieval/`, `configs/workflow_log/`, `configs/broker/`, and
-`configs/sqlite/`.
+`configs/db_node/`.
 
 Service-specific tests must live in matching folders under `tests/`, for
 example `tests/manager/`, `tests/project/`, `tests/ingestion/`,

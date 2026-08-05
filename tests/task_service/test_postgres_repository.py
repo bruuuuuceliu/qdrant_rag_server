@@ -1,29 +1,15 @@
-"""Postgres task state repository tests.
-
-Run against the compose ``postgres`` service by setting ``TASK_TEST_DB_URL``
-(e.g. ``postgresql://rag:...@postgres:5432/rag``); skipped when unset.
-"""
+"""Postgres task state repository tests (run against the shared Postgres)."""
 
 from __future__ import annotations
-
-import os
 
 import pytest
 
 from task_service.repository import PostgresTaskStateRepository
 
-TEST_DB_URL = os.environ.get("TASK_TEST_DB_URL") or os.environ.get("TASK_SERVICE_STATE_DB_URL")
-
-
-def _dsn() -> str:
-    if not TEST_DB_URL:
-        pytest.skip("TASK_TEST_DB_URL is not set; skipping Postgres task tests")
-    return TEST_DB_URL
-
 
 @pytest.fixture
-async def repo() -> PostgresTaskStateRepository:
-    repository = PostgresTaskStateRepository(_dsn())
+async def repo(pg_dsn: str) -> PostgresTaskStateRepository:
+    repository = PostgresTaskStateRepository(pg_dsn)
     await repository._ensure_initialized()
     async with repository._pool.connection() as conn:
         await conn.execute(

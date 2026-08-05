@@ -5,7 +5,7 @@ serialization: an aiokafka producer keyed by ``user_id`` with ``sort_keys``
 compact JSON, mirroring ``RedpandaIdentityEventPublisher.publish``) to
 ``identity.user.events`` and asserts the RAG memory worker's
 ``BrokerIdentitySource`` created the ``user_profiles`` row -- proven end-to-end
-via ``read_profile``, which reads the same SQLite row the worker wrote.
+via ``read_profile``, which reads the same durable row the worker wrote.
 
 Same container topology as the interop tests: the client runs inside a
 throwaway container on ``rag-memory-test`` because Redpanda's INTERNAL listener
@@ -47,7 +47,7 @@ pytestmark = pytest.mark.live_infra
 # Runs inside the throwaway client container (RAG image, /app = RAG code; SA
 # checkout mounted at /sa). Publishes a fresh identity.user.registered outbox
 # event and polls read_profile until the worker's BrokerIdentitySource has
-# applied it to the SQLite user_profiles row.
+# applied it to the durable user_profiles row.
 _IDENTITY_SCRIPT = r"""
 from __future__ import annotations
 
@@ -146,7 +146,7 @@ async def _verify_identity() -> None:
         await client.start()
 
         # The worker applies identity events asynchronously; poll read_profile
-        # (the same SQLite row) until the registered event lands.
+        # (the same durable row) until the registered event lands.
         basic_info: dict = {}
         deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:

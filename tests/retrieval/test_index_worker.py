@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import replace
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 from configs.config import AppSettings
@@ -15,6 +12,7 @@ from retrieval_service.indexing.worker import (
     create_worker_server,
 )
 from shared.contracts import TOPICS
+from shared.postgres import pg_dsn
 
 
 class RetrievalIndexWorkerTest(unittest.IsolatedAsyncioTestCase):
@@ -60,13 +58,11 @@ class RetrievalIndexWorkerTest(unittest.IsolatedAsyncioTestCase):
 
 class RetrievalIndexWorkerPlacementTest(unittest.TestCase):
     def test_build_placement_store_resolver_uses_registry(self) -> None:
-        with TemporaryDirectory() as tempdir:
-            settings = _settings()
-            settings = _settings_with_placement_db(settings, Path(tempdir) / "placement.db")
-            resolver = _build_placement_store_resolver(
-                settings,
-                qdrant_store=object(),
-            )
+        settings = _settings()
+        resolver = _build_placement_store_resolver(
+            settings,
+            qdrant_store=object(),
+        )
 
         self.assertIsNotNone(resolver)
 
@@ -98,8 +94,8 @@ class _Closable:
 
 
 def _settings() -> AppSettings:
+    dsn = pg_dsn()
     return AppSettings(
-        response_cache_db_path=Path(":memory:"),
         grpc_port=50051,
         qdrant_url=None,
         qdrant_host="localhost",
@@ -112,11 +108,9 @@ def _settings() -> AppSettings:
         embedding_dimension=3,
         generation_enabled=False,
         bm25_encoder_model="fake-bm25",
+        response_cache_db_url=dsn,
+        retrieval_placement_db_url=dsn,
     )
-
-
-def _settings_with_placement_db(settings: AppSettings, db_path: Path) -> AppSettings:
-    return replace(settings, retrieval_placement_db_path=db_path)
 
 
 if __name__ == "__main__":

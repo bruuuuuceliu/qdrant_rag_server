@@ -16,13 +16,14 @@ RETRIEVAL_INDEX_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-index-worker.pid"
 RETRIEVAL_WORKER_PID_FILE="${RUNTIME_DIR}/retrieval-worker.pid"
 MEMORY_PID_FILE="${RUNTIME_DIR}/memory-worker.pid"
 STORAGE_NODE_PID_FILE="${RUNTIME_DIR}/storage-node.pid"
-SQLITE_NODE_PID_FILE="${RUNTIME_DIR}/sqlite-node.pid"
+DB_NODE_PID_FILE="${RUNTIME_DIR}/db-node.pid"
 REDIS_STATUS_PID_FILE="${RUNTIME_DIR}/redis-status.pid"
 QDRANT_CID_FILE="${RUNTIME_DIR}/qdrant.cid"
 QDRANT_LOG_PID_FILE="${RUNTIME_DIR}/qdrant-log.pid"
 REDPANDA_CID_FILE="${RUNTIME_DIR}/redpanda.cid"
 KAFKA_CID_FILE="${RUNTIME_DIR}/kafka.cid"
 REDIS_CID_FILE="${RUNTIME_DIR}/redis.cid"
+POSTGRES_CID_FILE="${RUNTIME_DIR}/postgres.cid"
 REDPANDA_CONSOLE_CID_FILE="${RUNTIME_DIR}/redpanda-console.cid"
 REDIS_INSIGHT_CID_FILE="${RUNTIME_DIR}/redis-insight.cid"
 
@@ -35,6 +36,8 @@ QDRANT_VOLUME="${RAG_QDRANT_VOLUME:-qdrant-rag-local-data}"
 REDPANDA_CONTAINER="${RAG_REDPANDA_CONTAINER:-redpanda-rag-local}"
 KAFKA_CONTAINER="${RAG_KAFKA_CONTAINER:-kafka-rag-local}"
 REDIS_CONTAINER="${RAG_REDIS_CONTAINER:-redis-rag-local}"
+POSTGRES_CONTAINER="${RAG_POSTGRES_CONTAINER:-postgres-rag-local}"
+POSTGRES_VOLUME="${RAG_POSTGRES_VOLUME:-postgres-rag-local-data}"
 REDPANDA_CONSOLE_CONTAINER="${RAG_REDPANDA_CONSOLE_CONTAINER:-redpanda-console-rag-local}"
 REDIS_INSIGHT_CONTAINER="${RAG_REDIS_INSIGHT_CONTAINER:-redis-insight-rag-local}"
 REDIS_INSIGHT_VOLUME="${RAG_REDIS_INSIGHT_VOLUME:-redis-insight-rag-local-data}"
@@ -137,6 +140,8 @@ if [[ -f "$STATE_FILE" ]]; then
   REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-redpanda-rag-local}"
   KAFKA_CONTAINER="${KAFKA_CONTAINER:-kafka-rag-local}"
   REDIS_CONTAINER="${REDIS_CONTAINER:-redis-rag-local}"
+  POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-postgres-rag-local}"
+  POSTGRES_VOLUME="${POSTGRES_VOLUME:-postgres-rag-local-data}"
   REDPANDA_CONSOLE_CONTAINER="${REDPANDA_CONSOLE_CONTAINER:-redpanda-console-rag-local}"
   REDIS_INSIGHT_CONTAINER="${REDIS_INSIGHT_CONTAINER:-redis-insight-rag-local}"
   REDIS_INSIGHT_VOLUME="${REDIS_INSIGHT_VOLUME:-redis-insight-rag-local-data}"
@@ -200,7 +205,7 @@ fallback_stop_python_services() {
     "python -m task_manager_service.worker"
     "python -m task_service.worker"
     "python -m redis_status_node.worker"
-    "python -m sqlite_node.worker"
+    "python -m db_node.worker"
     "python -m storage_node.worker"
     "python -m workflow_log_service.worker"
     "python -m ingestion_service.server.worker"
@@ -278,7 +283,7 @@ stop_pid_file "$RETRIEVAL_INDEX_WORKER_PID_FILE" "retrieval index worker"
 stop_pid_file "$RETRIEVAL_WORKER_PID_FILE" "retrieval worker"
 stop_pid_file "$MEMORY_PID_FILE" "memory worker"
 stop_pid_file "$STORAGE_NODE_PID_FILE" "storage node"
-stop_pid_file "$SQLITE_NODE_PID_FILE" "SQLite node"
+stop_pid_file "$DB_NODE_PID_FILE" "Database node"
 stop_pid_file "$REDIS_STATUS_PID_FILE" "Redis status node"
 stop_pid_file "$TASK_MANAGER_PID_FILE" "task manager"
 stop_pid_file "$TASK_SERVICE_PID_FILE" "task service"
@@ -294,6 +299,7 @@ stop_docker_container "Redis Insight" "$REDIS_INSIGHT_CONTAINER" "$REDIS_INSIGHT
 stop_docker_container "Redpanda" "$REDPANDA_CONTAINER" "$REDPANDA_CID_FILE"
 stop_docker_container "Kafka" "$KAFKA_CONTAINER" "$KAFKA_CID_FILE"
 stop_docker_container "Redis" "$REDIS_CONTAINER" "$REDIS_CID_FILE"
+stop_docker_container "Postgres" "$POSTGRES_CONTAINER" "$POSTGRES_CID_FILE"
 
 if [[ "$CLEAN_RUNTIME" -eq 1 ]]; then
   rm -rf "$RUNTIME_DIR"
@@ -306,6 +312,7 @@ if [[ "$CLEAN_DATA" -eq 1 ]]; then
   if command -v docker >/dev/null 2>&1; then
     docker volume rm "$QDRANT_VOLUME" >/dev/null 2>&1 || true
     docker volume rm "$REDIS_INSIGHT_VOLUME" >/dev/null 2>&1 || true
+    docker volume rm "$POSTGRES_VOLUME" >/dev/null 2>&1 || true
   fi
 fi
 

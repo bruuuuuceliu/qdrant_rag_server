@@ -36,7 +36,6 @@ from retrieval_service.placement.repository import (
     PostgresPlacementRegistry,
     RetrievalShardRepository,
     RoutingPolicyRepository,
-    SQLitePlacementRegistry,
 )
 from retrieval_service.placement.resolver import PlacementResolver
 
@@ -58,7 +57,6 @@ __all__ = [
     "RetrievalShardRepository",
     "RoutingPolicy",
     "RoutingPolicyRepository",
-    "SQLitePlacementRegistry",
     "active_shards",
     "choose_placement_shards",
     "choose_shard",

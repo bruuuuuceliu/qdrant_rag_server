@@ -629,9 +629,9 @@ class MemoryDomainHandler:
         }
         to_index = [record for record in records if recorded_by_id[record.memory_id]]
         # Async projection: `indexed=True` means the index command was *queued*,
-        # not that Qdrant holds the points. SQLite is the source of truth; the
-        # only recovery path for a lost hand-off is the §9 re-drive seam (a
-        # periodic job re-indexing memory_records lacking a Qdrant point).
+        # not that Qdrant holds the points. The durable store is the source of
+        # truth; the only recovery path for a lost hand-off is the §9 re-drive
+        # seam (a periodic job re-indexing memory_records lacking a Qdrant point).
         indexed = bool(
             await self._try_index(to_index, collection_name=target) if to_index else False
         )
