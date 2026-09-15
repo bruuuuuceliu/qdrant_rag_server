@@ -258,9 +258,21 @@ class RetrievalService:
             hits,
             top_k=settings.top_k,
         )
+        chunks = _chunks_from_hits(final)
+        elapsed_ms = _elapsed_ms(start_ns)
+        logger.info(
+            "retrieval.memory_search completed",
+            extra={
+                "operation": "retrieval.memory_search",
+                "hits": len(chunks),
+                "elapsed_ms": elapsed_ms,
+                "agent_id": agent_id,
+                "owner_user_id": owner_id,
+            },
+        )
         return RetrievalSearchResult(
-            chunks=_chunks_from_hits(final),
-            elapsed_ms=_elapsed_ms(start_ns),
+            chunks=chunks,
+            elapsed_ms=elapsed_ms,
             cache_hit=False,
         )
 

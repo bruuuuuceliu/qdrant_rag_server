@@ -43,7 +43,7 @@ RUN if [ "$INSTALL_CPU_ONLY_TORCH" = "1" ]; then \
     fi
 
 RUN python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install --no-cache-dir .
+    && python -m pip install --no-cache-dir ".[tracing]"
 
 # Optional embedding-model pre-cache (see ops runbook §5 for the model choice).
 ARG EMBEDDING_MODEL=""

@@ -57,7 +57,7 @@ MEMORY_SEARCH_MODE=broker
 RAG_POSTGRES_URL=postgresql://rag:...@postgres:5432/rag
 MEMORY_COLLECTION=agent_memory
 MEMORY_DOCUMENTS_COLLECTION=agent_documents
-MEMORY_ALLOWED_SERVICES=conversation-server
+MEMORY_ALLOWED_SERVICES=conversation-server,just-agent-server
 
 # Embeddings: production is local bge 768-dim.
 RAG_EMBEDDING_PROVIDER=local
@@ -225,7 +225,7 @@ command (see §7). Issuer/audience/TTL must also match. Both production composes
 and local `run-all.sh --memory` pair on `simple-agent-local` /
 `simple-agent-internal` / `300` (SA compose.production.yaml `x-service-auth`,
 line 64; RAG compose default — see §11.9).
-`MEMORY_ALLOWED_SERVICES` must include `conversation-server`.
+`MEMORY_ALLOWED_SERVICES` must include `conversation-server` and `just-agent-server`.
 
 ### 3.2 The B3 broker-mode guard
 
@@ -402,7 +402,7 @@ collections unless you need exact point state (scores/IDs).
 
 | Symptom | Likely cause | Check / fix |
 | --- | --- | --- |
-| Every memory command → `401 unauthorized` / `403 forbidden` | Signing-key drift or issuer/audience mismatch (§3.1); `svc` not in `MEMORY_ALLOWED_SERVICES` | Confirm `SERVICE_AUTH_SIGNING_KEY` equals `SIMPLE_AGENT_SERVICE_AUTH_SIGNING_KEY`; issuer/audience/TTL match; `MEMORY_ALLOWED_SERVICES` includes `conversation-server`. |
+| Every memory command → `401 unauthorized` / `403 forbidden` | Signing-key drift or issuer/audience mismatch (§3.1); `svc` not in `MEMORY_ALLOWED_SERVICES` | Confirm `SERVICE_AUTH_SIGNING_KEY` equals `SIMPLE_AGENT_SERVICE_AUTH_SIGNING_KEY`; issuer/audience/TTL match; `MEMORY_ALLOWED_SERVICES` includes `conversation-server` and `just-agent-server`. |
 | `memory_service` won't start | B3 broker-mode guard (§3.2) — any `MEMORY_*_MODE=broker` with missing/empty/whitespace `SERVICE_AUTH_SIGNING_KEY` | Set a non-empty signing key, or run fake modes for standalone dev. |
 | `memory.lookup` → `upstream_error` (502, retryable) | Retrieval workers down (index or search helper) — the hand-off failed (a non-dimension upstream error) | Confirm `retrieval_service.indexing.worker` and `retrieval_service.server.worker` are up and their consumer groups are attached. Lookup is best-effort from SA's side; chat survives. |
 | `memory.lookup` returns empty `chat_history`/`documents` (not an error) | Stale-dimension memory collection (§5.3) — a 384-dim `agent_memory` collection queried with a 768-dim embedding | **Contract**: lookup is best-effort and per-source. The dimension mismatch degrades only the vector-backed source(s) to empty and never fails the whole lookup (`results: {chat_history: [], ...}`); facts still resolve from Postgres. Delete/re-version the stale collection and re-ingest to restore hits. |
@@ -686,7 +686,8 @@ network (`docker network rm rag-memory-test`), or pre-create it with
 secret manager or `*_FILE`; never committed — §3.1). Issuer/audience/TTL must
 match SA's `x-service-auth`: `simple-agent-local` / `simple-agent-internal`
 / `300` in both the RAG and SA production composes (same as local
-`run-all.sh --memory`). `MEMORY_ALLOWED_SERVICES` includes `conversation-server`.
+`run-all.sh --memory`). `MEMORY_ALLOWED_SERVICES` includes `conversation-server`
+and `just-agent-server`.
 Drift ⇒ `401`/`403` on every memory command.
 
 **Topology and trust surface.**

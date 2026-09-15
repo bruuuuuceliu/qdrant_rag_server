@@ -57,6 +57,10 @@ x-rag-env: &rag-env
   RAG_LOG_FORMAT: ${RAG_LOG_FORMAT:-json}
   RAG_LOG_LEVEL: ${RAG_LOG_LEVEL:-INFO}
   RAG_OPS_ENABLED: "true"
+  # Shared OTel collector on the rag-memory-test network (OTLP/gRPC). Tracing is
+  # opt-in per worker via RAG_OTEL_ENDPOINT; service identity for logs/traces is
+  # set by each worker's configure_logging/setup_tracing call.
+  RAG_OTEL_ENDPOINT: ${RAG_OTEL_ENDPOINT:-otel-collector:4317}
 
   # Broker: INTERNAL listener on the private shared network (bare topics so the
   # simple_agent memory path shares names). Same contract as
@@ -355,7 +359,9 @@ services:
       MEMORY_IDENTITY_MODE: broker
       MEMORY_INDEX_MODE: broker
       MEMORY_SEARCH_MODE: broker
-      MEMORY_ALLOWED_SERVICES: ${MEMORY_ALLOWED_SERVICES:-conversation-server}
+      # Memory-path callers. just-agent-server is the chat runtime after the
+      # P-5b cutover; conversation-server stays during the parallel-run window.
+      MEMORY_ALLOWED_SERVICES: ${MEMORY_ALLOWED_SERVICES:-conversation-server,just-agent-server}
       MEMORY_COLLECTION: ${MEMORY_COLLECTION:-agent_memory}
       MEMORY_DOCUMENTS_COLLECTION: ${MEMORY_DOCUMENTS_COLLECTION:-agent_documents}
       # Single signing-key contract with simple_agent (operations.md §3).

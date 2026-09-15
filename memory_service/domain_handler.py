@@ -23,6 +23,7 @@ from typing import Any
 from uuid import uuid4
 
 from memory_service.compression import CompressionPolicy
+from memory_service.facts import extract_facts
 from memory_service.identity import IdentitySource
 from memory_service.indexer import MemoryIndexer
 from memory_service.models import (
@@ -55,6 +56,7 @@ from shared.contracts import (
     MessageProducer,
     MessageType,
 )
+from shared.ops.tracing import resume_span, setup_tracing, traceparent_from_envelope
 from shared.service_auth import ServiceAuthError, ServiceAuthSettings, verify_service_token
 
 logger = logging.getLogger(__name__)
@@ -137,7 +139,17 @@ class MemoryDomainHandler:
             return await self._reply(envelope, operation, result)
         try:
             scope = self._build_scope(envelope)
-            result = await handler(self, scope, payload)
+            with resume_span(
+                setup_tracing("memory_service"),
+                traceparent_from_envelope(envelope),
+                f"memory.{operation}",
+                operation=operation,
+                task_id=envelope.task_id,
+                correlation_id=envelope.correlation_id,
+                agent_id=scope.agent_id,
+                owner_user_id=scope.owner_user_id,
+            ):
+                result = await handler(self, scope, payload)
         except MemoryAuthError as exc:
             result = _error_result(exc.code, str(exc), retryable=False)
         except MemoryNotFoundError as exc:
@@ -318,13 +330,56 @@ class MemoryDomainHandler:
         async def run(tx: MemoryTransaction) -> dict[str, Any]:
             _ensure_session(tx, scope, session_id, agent_id, now)
             recorded = tx.insert_message(message)
-            return {"message": message.to_mapping(), "recorded": recorded, "indexed": False}
+            return {
+                "message": message.to_mapping(),
+                "recorded": recorded,
+                "indexed": False,
+            }
 
         result = await self._mutate(
             "message.record", request, key, run, owner_user_id=scope.owner_user_id
         )
         if result.get("recorded"):
             result["indexed"] = await self._try_index([record])
+            # FR-4: deterministic first-person fact extraction from user turns.
+            # Runs AFTER the message transaction commits, in its own per-fact
+            # transactions, so a supersession conflict (unique partial index) or
+            # any fact-write failure can never abort the message transaction or
+            # lose the recorded message (best-effort, non-fatal). The get_message
+            # guard + per-message idempotency above ensure extraction fires at
+            # most once per message_id. The outer guard means even a wholly
+            # unexpected failure here never turns an already-recorded message
+            # into an error response.
+            if role == "user":
+                try:
+                    extracted = await _persist_extracted_facts(
+                        self._repository,
+                        owner_user_id=scope.owner_user_id,
+                        agent_id=agent_id,
+                        message_id=message_id,
+                        content=content,
+                        now=now,
+                    )
+                except Exception:  # noqa: BLE001 - best-effort, never fatal
+                    logger.warning(
+                        "fact persistence failed for message %s",
+                        message_id,
+                        exc_info=True,
+                    )
+                else:
+                    if extracted:
+                        result["extracted_facts"] = extracted
+        logger.info(
+            "memory.message.record completed",
+            extra={
+                "operation": "message.record",
+                "role": role,
+                "recorded": bool(result.get("recorded")),
+                "indexed": bool(result.get("indexed")),
+                "agent_id": scope.agent_id,
+                "owner_user_id": scope.owner_user_id,
+            },
+        )
         return result
 
     async def session_close(
@@ -514,6 +569,17 @@ class MemoryDomainHandler:
             "results": results,
             "elapsed_ms": int((time.monotonic() - started) * 1000),
         }
+        logger.info(
+            "memory.lookup completed",
+            extra={
+                "operation": "memory.lookup",
+                "source": "|".join(ordered),
+                "hits": sum(len(values) for values in results.values()),
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "agent_id": scope.agent_id,
+                "owner_user_id": scope.owner_user_id,
+            },
+        )
         if self._include_merged:
             merged = sorted(
                 (item for source in results.values() for item in source),
@@ -1036,6 +1102,83 @@ def _ensure_session(
             updated_at=now,
         )
     )
+
+
+async def _persist_extracted_facts(
+    repository: MemoryRepository,
+    *,
+    owner_user_id: str,
+    agent_id: str,
+    message_id: str,
+    content: str,
+    now: str,
+) -> list[dict[str, Any]]:
+    """Best-effort persistence of first-person facts from a user message.
+
+    Runs AFTER ``message.record``'s transaction has committed, in a fresh
+    transaction per fact. This isolates fact writes from the message write: a
+    supersession conflict (Postgres unique partial index, FR-4.5) or any
+    fact-write failure can never abort the already-committed message
+    transaction, so ``message.record`` never loses the message and never fails
+    because of extraction. Each fact is best-effort independently — one failed
+    fact does not drop the others.
+
+    Facts are intentionally kept self-contained in Postgres (retrieved via
+    ``list_active_facts``, not vector search): unlike ``profile_update`` no
+    ``MemoryRecord`` is created and no Qdrant index hand-off happens, so the
+    §9 reconciliation re-drive does not try to vector-index fact rows.
+    """
+    try:
+        matches = extract_facts(content)
+    except Exception:  # noqa: BLE001 - extraction must never fail message.record
+        logger.warning(
+            "fact extraction failed for message %s", message_id, exc_info=True
+        )
+        return []
+    created: list[dict[str, Any]] = []
+    for match in matches:
+        fact_type = str(match.get("fact_type") or "").strip()
+        subject = str(match.get("subject") or "").strip()
+        text = str(match.get("text") or "").strip()
+        if not fact_type or not text:
+            continue
+        fact = UserFact(
+            fact_id=f"fact_{uuid4().hex}",
+            user_id=owner_user_id,
+            fact_type=fact_type,
+            subject=subject,
+            text=text,
+            status="active",
+            version=0,
+            updated_by=agent_id,
+            source_message_id=message_id,
+            created_at=now,
+            updated_at=now,
+        )
+        try:
+            # Own transaction per fact: an aborted transaction on a conflict
+            # stays scoped to this fact and cannot affect the message or the
+            # other facts.
+            async with repository.transaction() as tx:
+                # FR-4.5: supersede prior active facts of the same (fact_type,
+                # subject) so the durable store keeps exactly one active version.
+                _, inserted = tx.supersede_fact(
+                    user_id=owner_user_id,
+                    fact_type=fact_type,
+                    subject=subject,
+                    new_fact=fact,
+                )
+        except Exception:  # noqa: BLE001 - best-effort persistence
+            logger.warning(
+                "fact supersede failed for (%s, %s) from message %s",
+                fact_type,
+                subject,
+                message_id,
+                exc_info=True,
+            )
+            continue
+        created.append(inserted.to_mapping())
+    return created
 
 
 def _require_agent_match(scope: RequestScope, agent_id: str) -> None:

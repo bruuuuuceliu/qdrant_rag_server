@@ -168,7 +168,7 @@ async def serve_forever(settings: AppSettings | None = None) -> None:
 
 
 def main() -> None:
-    configure_logging()
+    configure_logging(service_name="retrieval")
     asyncio.run(serve_forever(load_settings()))
 
 

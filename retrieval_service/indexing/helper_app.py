@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from broker_service import BrokerSettings, create_redpanda_bus
 from retrieval_service.indexing.domain_handler import RetrievalIndexHelperHandler
 from shared.contracts import TOPICS, MessageConsumer, MessageProducer
+from shared.logging import correlation_id
 
 
 @dataclass(slots=True)
@@ -39,7 +40,8 @@ class RetrievalIndexHelperServerContext:
 
     async def run_once(self) -> None:
         envelope = await self.consumer.consume(self.command_topic)
-        await self.handler.handle(envelope)
+        with correlation_id(envelope.correlation_id):
+            await self.handler.handle(envelope)
         await _commit_component(self.consumer)
 
     async def _run(self) -> None:

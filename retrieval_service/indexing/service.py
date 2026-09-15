@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass, field, replace
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from retrieval_service.indexing.sparse_text import (
     _attach_sparse_text,
@@ -69,6 +73,7 @@ class IndexingService:
         self._default_candidate_count = default_candidate_count
 
     async def index_chunks(self, request: IndexChunksRequest) -> IndexChunksResult:
+        started = time.monotonic()
         if len(request.chunks) != len(request.payloads):
             raise ValueError(
                 "indexing request must have matching chunk and payload counts"
@@ -144,11 +149,21 @@ class IndexingService:
                     payloads=payloads,
                 )
 
-        return IndexChunksResult(
+        result = IndexChunksResult(
             chunk_count=len(request.chunks),
             dense_enabled=settings.dense_enabled,
             sparse_enabled=settings.bm25_enabled,
         )
+        logger.info(
+            "retrieval.index_chunks completed",
+            extra={
+                "operation": "retrieval.index_chunks",
+                "chunk_count": result.chunk_count,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "collection_name": request.collection_name,
+            },
+        )
+        return result
 
     async def shutdown(self) -> None:
         await self._placement_store_resolver.close()

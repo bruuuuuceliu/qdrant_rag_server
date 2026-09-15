@@ -23,7 +23,7 @@ async def serve_forever() -> None:
 
 
 def main() -> None:
-    configure_logging()
+    configure_logging(service_name="task_service")
     asyncio.run(serve_forever())
 
 

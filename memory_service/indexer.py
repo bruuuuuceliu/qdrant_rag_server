@@ -24,6 +24,7 @@ from shared.contracts import (
     MessageProducer,
     MessageType,
 )
+from shared.ops.tracing import active_traceparent, optional_span, setup_tracing
 
 
 class MemoryIndexError(RuntimeError):
@@ -78,12 +79,14 @@ class BrokerMemoryIndexer:
             payloads.append(MemoryChunkPayload.from_chunk(chunk))
         task_id = records[0].memory_id
         target = collection_name or self._collection_name
+        traceparent = active_traceparent()
         envelope = MessageEnvelope.create(
             producer="memory_service",
             message_type=MessageType.HELPER_COMMAND,
             data_type="agent_memory",
             task_id=task_id,
             correlation_id=f"mem_index_{task_id}",
+            headers={"traceparent": traceparent} if traceparent else None,
             payload=HelperCommandPayload(
                 operation="memory_ingest",
                 helper=TOPICS.helper_retrieval_index_commands,
@@ -98,11 +101,18 @@ class BrokerMemoryIndexer:
             ).to_payload(),
         )
         try:
-            await self._producer.publish(
-                TOPICS.helper_retrieval_index_commands,
-                envelope,
-                key=task_id,
-            )
+            with optional_span(
+                setup_tracing("memory_service"),
+                "memory.ingest",
+                operation="memory_ingest",
+                task_id=task_id,
+                correlation_id=f"mem_index_{task_id}",
+            ):
+                await self._producer.publish(
+                    TOPICS.helper_retrieval_index_commands,
+                    envelope,
+                    key=task_id,
+                )
         except Exception as exc:
             raise MemoryIndexUnavailableError(f"memory index publish failed: {exc}") from exc
 

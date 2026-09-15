@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from dataclasses import dataclass
 
 from redis_status_node.client import RedisTaskStatusStore
 from redis_status_node.config import RedisStatusSettings
+from shared.logging import configure_logging
 from shared.ops.server import ops_server_from_env
 from shared.ops.shutdown import run_service
 from shared.runtime_health import RuntimeHealth
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -67,6 +71,8 @@ async def serve_forever() -> None:
 
 
 def main() -> None:
+    configure_logging(service_name="redis_status_node")
+    logger.info("starting redis_status_node")
     asyncio.run(serve_forever())
 
 

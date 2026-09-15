@@ -47,7 +47,30 @@ _LOG_RECORD_RESERVED = frozenset(
     }
 )
 
+_SENSITIVE_FRAGMENTS = (
+    "password",
+    "passwd",
+    "api_key",
+    "apikey",
+    "token",
+    "secret",
+    "credential",
+    "authorization",
+    "private_key",
+    "master_key",
+)
+
+# Fields the formatter sets itself; extra= must not overwrite them.
+_CORE_FIELDS = frozenset(
+    {"ts", "level", "logger", "msg", "service", "environment", "version",
+     "correlation_id", "trace_id", "exc_info"}
+)
+
 _correlation_id_var: ContextVar[str] = ContextVar("correlation_id", default="")
+
+# Service identity stamped onto every JSON log record. Populated by
+# ``configure_logging`` from explicit kwargs or the RAG_* env vars.
+_service_context: dict[str, str] = {}
 
 
 def get_correlation_id() -> str:
@@ -71,13 +94,43 @@ def correlation_id(value: str):
         _correlation_id_var.reset(token)
 
 
+def _otel_trace_id() -> str:
+    """Return the active OTel span's trace ID, or empty when tracing is off."""
+    try:
+        from opentelemetry import trace
+    except ImportError:
+        return ""
+    span = trace.get_current_span()
+    context = span.get_span_context()
+    if context.is_valid and context.trace_id != 0:
+        return format(context.trace_id, "032x")
+    return ""
+
+
+def _redact_value(key: str, value: Any) -> Any:
+    lowered = key.lower()
+    if any(fragment in lowered for fragment in _SENSITIVE_FRAGMENTS):
+        return "***"
+    if isinstance(value, dict):
+        return {k: _redact_value(k, v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(key, v) for v in value]
+    if isinstance(value, str):
+        lowered_value = value.lower()
+        for fragment in _SENSITIVE_FRAGMENTS:
+            if fragment in lowered_value and len(value) >= 8:
+                return "***"
+    return value
+
+
 class JsonFormatter(logging.Formatter):
     """Emit one JSON object per log record.
 
     ``record`` attributes outside the stdlib reserved set are included as
     top-level fields, so callers can attach structured context via
     ``logger.info(..., extra={"task_id": ...})``. The active correlation ID is
-    always included when set.
+    always included when set, and service/environment/version are stamped from
+    ``configure_logging`` context when provided.
     """
 
     def format(self, record: logging.LogRecord) -> str:
@@ -87,17 +140,29 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "msg": record.getMessage(),
         }
+        service = _service_context.get("service")
+        if service:
+            payload["service"] = service
+        environment = _service_context.get("environment")
+        if environment:
+            payload["environment"] = environment
+        version = _service_context.get("version")
+        if version:
+            payload["version"] = version
         correlation_value = get_correlation_id()
         if correlation_value:
             payload["correlation_id"] = correlation_value
+        trace_id = _otel_trace_id()
+        if trace_id:
+            payload["trace_id"] = trace_id
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
         if record.stack_info:
             payload["stack_info"] = self.formatStack(record.stack_info)
         for key, value in record.__dict__.items():
-            if key in _LOG_RECORD_RESERVED or key.startswith("_"):
+            if key in _LOG_RECORD_RESERVED or key in _CORE_FIELDS or key.startswith("_"):
                 continue
-            payload[key] = value
+            payload[key] = _redact_value(key, value)
         return json.dumps(payload, default=str, separators=(",", ":"))
 
 
@@ -122,20 +187,36 @@ def configure_logging(
     default_level: str = "INFO",
     *,
     log_format: str | None = None,
+    service_name: str | None = None,
+    service_version: str | None = None,
+    environment: str | None = None,
 ) -> None:
     """Configure root logging.
 
     ``log_format`` may be ``"json"`` or ``"text"``; when omitted it is read from
     the ``RAG_LOG_FORMAT`` environment variable (default ``"text"``). Existing
     callers that pass only ``default_level`` keep their current behavior.
+
+    ``service_name``/``service_version``/``environment`` stamp the fleet-standard
+    ``service``/``version``/``environment`` fields onto JSON records; each
+    defaults from ``RAG_SERVICE_NAME``/``RAG_VERSION``/``RAG_ENVIRONMENT``.
     """
+    _service_context.update(
+        service=service_name if service_name is not None else os.environ.get("RAG_SERVICE_NAME", ""),
+        version=service_version
+        if service_version is not None
+        else os.environ.get("RAG_VERSION", ""),
+        environment=environment
+        if environment is not None
+        else os.environ.get("RAG_ENVIRONMENT", ""),
+    )
     level_name = os.environ.get("RAG_LOG_LEVEL", default_level).strip().upper()
     level = getattr(logging, level_name, logging.INFO)
     fmt = (log_format or os.environ.get("RAG_LOG_FORMAT", "text")).strip().lower()
     if fmt == "json":
         formatter: logging.Formatter = JsonFormatter()
     elif fmt in {"text", "plain"}:
-        formatter = TextCorrelationFormatter("%(asctime)s %(levelname)s %(name)s %(message)s%( _correlation_id_suffix)s")
+        formatter = TextCorrelationFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     else:
         raise ValueError(f"unknown RAG_LOG_FORMAT: {fmt!r}")
     handler = logging.StreamHandler()

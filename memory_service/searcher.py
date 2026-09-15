@@ -21,6 +21,7 @@ from shared.contracts import (
     MessageProducer,
     MessageType,
 )
+from shared.ops.tracing import active_traceparent, optional_span, setup_tracing
 
 
 class MemorySearchError(RuntimeError):
@@ -106,12 +107,14 @@ class BrokerMemorySearcher:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[list[dict[str, Any]]] = loop.create_future()
         self._pending[correlation_id] = future
+        traceparent = active_traceparent()
         envelope = MessageEnvelope.create(
             producer="memory_service",
             message_type=MessageType.HELPER_COMMAND,
             data_type="agent_memory",
             task_id=task_id,
             correlation_id=correlation_id,
+            headers={"traceparent": traceparent} if traceparent else None,
             payload=HelperCommandPayload(
                 operation="memory_search",
                 helper=TOPICS.helper_retrieval_commands,
@@ -133,12 +136,19 @@ class BrokerMemorySearcher:
             ).to_payload(),
         )
         try:
-            await self.producer.publish(
-                TOPICS.helper_retrieval_commands,
-                envelope,
-                key=task_id,
-            )
-            return await asyncio.wait_for(future, timeout=self.timeout_seconds)
+            with optional_span(
+                setup_tracing("memory_service"),
+                "memory.search",
+                operation="memory_search",
+                task_id=task_id,
+                correlation_id=correlation_id,
+            ):
+                await self.producer.publish(
+                    TOPICS.helper_retrieval_commands,
+                    envelope,
+                    key=task_id,
+                )
+                return await asyncio.wait_for(future, timeout=self.timeout_seconds)
         except TimeoutError as exc:
             raise MemorySearchUnavailableError(
                 f"memory search timed out after {self.timeout_seconds}s"

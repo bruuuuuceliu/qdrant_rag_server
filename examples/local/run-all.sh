@@ -374,7 +374,7 @@ if [[ "$START_MEMORY" -eq 1 ]]; then
   export MEMORY_IDENTITY_MODE="${MEMORY_IDENTITY_MODE:-broker}"
   export MEMORY_INDEX_MODE="${MEMORY_INDEX_MODE:-broker}"
   export MEMORY_SEARCH_MODE="${MEMORY_SEARCH_MODE:-broker}"
-  export MEMORY_ALLOWED_SERVICES="${MEMORY_ALLOWED_SERVICES:-conversation-server}"
+  export MEMORY_ALLOWED_SERVICES="${MEMORY_ALLOWED_SERVICES:-conversation-server,just-agent-server}"
   export MEMORY_COLLECTION="${MEMORY_COLLECTION:-agent_memory}"
   export MEMORY_DOCUMENTS_COLLECTION="${MEMORY_DOCUMENTS_COLLECTION:-agent_documents}"
   export MEMORY_LOOKUP_INCLUDE_MERGED="${MEMORY_LOOKUP_INCLUDE_MERGED:-false}"
@@ -544,10 +544,13 @@ ensure_redpanda_on_memory_network() {
   # integration: create the external 'rag-memory-test' network (simple_agent's
   # compose declares it external) and attach Redpanda so SA containers reach it
   # at redpanda-rag-local:19092 via the INTERNAL listener.
+  # --internal: private trust network, no default route (Connection B3); a
+  # pre-existing network from an older run (created without --internal) is
+  # left as-is, matching the deployment compose's ownership model.
   if ! command -v docker >/dev/null 2>&1; then
     return 0
   fi
-  docker network create "$MEMORY_NETWORK" >/dev/null 2>&1 || true
+  docker network create --internal "$MEMORY_NETWORK" >/dev/null 2>&1 || true
   local attached
   attached="$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$REDPANDA_CONTAINER" 2>/dev/null || true)"
   if [[ "$attached" != *"$MEMORY_NETWORK"* ]]; then
@@ -575,7 +578,7 @@ start_redpanda_if_needed() {
     # (127.0.0.1:9092, the local-dev default); the INTERNAL listener is only
     # reachable from other containers on the 'rag-memory-test' network, so the
     # plaintext default is preserved for local dev (SASL is owned by C5).
-    docker network create "$MEMORY_NETWORK" >/dev/null 2>&1 || true
+    docker network create --internal "$MEMORY_NETWORK" >/dev/null 2>&1 || true
     docker run -d \
       --name "$REDPANDA_CONTAINER" \
       --network "$MEMORY_NETWORK" \
@@ -1077,7 +1080,7 @@ MEMORY_IDENTITY_TOPIC=${MEMORY_IDENTITY_TOPIC:-identity.user.events}
 MEMORY_IDENTITY_MODE=${MEMORY_IDENTITY_MODE:-broker}
 MEMORY_INDEX_MODE=${MEMORY_INDEX_MODE:-broker}
 MEMORY_SEARCH_MODE=${MEMORY_SEARCH_MODE:-broker}
-MEMORY_ALLOWED_SERVICES=${MEMORY_ALLOWED_SERVICES:-conversation-server}
+MEMORY_ALLOWED_SERVICES=${MEMORY_ALLOWED_SERVICES:-conversation-server,just-agent-server}
 MEMORY_COLLECTION=${MEMORY_COLLECTION:-agent_memory}
 MEMORY_DOCUMENTS_COLLECTION=${MEMORY_DOCUMENTS_COLLECTION:-agent_documents}
 MEMORY_LOOKUP_INCLUDE_MERGED=${MEMORY_LOOKUP_INCLUDE_MERGED:-false}

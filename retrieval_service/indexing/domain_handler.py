@@ -18,6 +18,7 @@ from shared.contracts import (
     MessageProducer,
     MessageType,
 )
+from shared.ops.tracing import resume_span, setup_tracing, traceparent_from_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +34,18 @@ class RetrievalIndexHelperHandler:
         payload = HelperCommandPayload.from_envelope(envelope)
         if payload.operation not in {"ingest", "memory_ingest"}:
             raise ValueError(f"unsupported retrieval-index operation: {payload.operation}")
-        if payload.operation == "memory_ingest":
-            result = await self._run_memory_index(envelope, payload)
-        else:
-            result = await self._run_index(envelope, payload)
+        with resume_span(
+            setup_tracing("retrieval_service"),
+            traceparent_from_envelope(envelope),
+            f"retrieval.{payload.operation}",
+            operation=payload.operation,
+            task_id=envelope.task_id,
+            correlation_id=envelope.correlation_id,
+        ):
+            if payload.operation == "memory_ingest":
+                result = await self._run_memory_index(envelope, payload)
+            else:
+                result = await self._run_index(envelope, payload)
         response = MessageEnvelope.create(
             producer="retrieval_service",
             message_type=MessageType.HELPER_RESULT,

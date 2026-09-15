@@ -22,6 +22,7 @@ from memory_service.indexer import BrokerMemoryIndexer, FakeMemoryIndexer
 from memory_service.repository import MemoryRepository, PostgresMemoryRepository
 from memory_service.searcher import BrokerMemorySearcher, FakeMemorySearcher
 from shared.contracts import TOPICS, MessageConsumer, MessageProducer
+from shared.logging import correlation_id
 from shared.postgres import pg_dsn
 
 
@@ -78,7 +79,8 @@ class MemoryDomainServerContext:
 
     async def run_once(self) -> None:
         envelope = await self.consumer.consume(self.command_topic)
-        await self.handler.handle(envelope)
+        with correlation_id(envelope.correlation_id):
+            await self.handler.handle(envelope)
         await _commit_component(self.consumer)
 
     async def run_identity_once(self) -> None:

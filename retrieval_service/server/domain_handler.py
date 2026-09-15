@@ -12,6 +12,7 @@ from shared.contracts import (
     MessageProducer,
     MessageType,
 )
+from shared.ops.tracing import resume_span, setup_tracing, traceparent_from_envelope
 
 
 class RetrievalHelperHandler:
@@ -24,14 +25,25 @@ class RetrievalHelperHandler:
     async def handle(self, envelope: MessageEnvelope) -> MessageEnvelope:
         payload = HelperCommandPayload.from_envelope(envelope)
         operation = payload.operation
-        if operation == "search":
-            result = await self._run_search(envelope, payload)
-        elif operation == "memory_search":
-            result = await self._run_memory_search(envelope, payload)
-        elif operation == "delete":
-            result = await self._run_delete(envelope, payload)
-        else:
-            raise ValueError(f"unsupported retrieval helper operation: {operation}")
+        request = payload.plan.get("request", {}) if isinstance(payload.plan, dict) else {}
+        with resume_span(
+            setup_tracing("retrieval_service"),
+            traceparent_from_envelope(envelope),
+            f"retrieval.{operation}",
+            operation=operation,
+            task_id=envelope.task_id,
+            correlation_id=envelope.correlation_id,
+            agent_id=str(request.get("agent_id", "")),
+            owner_user_id=str(request.get("user_id", "")),
+        ):
+            if operation == "search":
+                result = await self._run_search(envelope, payload)
+            elif operation == "memory_search":
+                result = await self._run_memory_search(envelope, payload)
+            elif operation == "delete":
+                result = await self._run_delete(envelope, payload)
+            else:
+                raise ValueError(f"unsupported retrieval helper operation: {operation}")
         response = MessageEnvelope.create(
             producer="retrieval_service",
             message_type=MessageType.HELPER_RESULT,

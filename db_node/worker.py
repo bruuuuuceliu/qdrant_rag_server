@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from dataclasses import dataclass
 
 from db_node.config import DbNodeSettings
 from db_node.service import DbNodeService
+from shared.logging import configure_logging
 from shared.ops.server import ops_server_from_env
 from shared.ops.shutdown import run_service
 from shared.postgres import pg_dsn
 from shared.runtime_health import RuntimeHealth
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -58,6 +62,8 @@ async def serve_forever() -> None:
 
 
 def main() -> None:
+    configure_logging(service_name="db_node")
+    logger.info("starting db_node")
     asyncio.run(serve_forever())
 
 

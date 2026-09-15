@@ -86,7 +86,9 @@ class MemoryServiceSettings:
                 ServiceAuthSettings().ttl_seconds,
             ),
             allowed_services=_str_tuple(
-                get_value(values, "MEMORY_ALLOWED_SERVICES", "conversation-server")
+                get_value(
+                    values, "MEMORY_ALLOWED_SERVICES", "conversation-server,just-agent-server"
+                )
             ),
         )
         return cls(
