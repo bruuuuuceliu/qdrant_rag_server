@@ -1,0 +1,1775 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-manager
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag-manager
+  template:
+    metadata:
+      labels:
+        app: rag-manager
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag
+        image: bruceserver.tail3d8162.ts.net:5050/bruce/qdrant_rag_server:dev
+        imagePullPolicy: Always
+        env:
+        - name: RAG_CONFIG_PROFILE
+          value: local
+        - name: RAG_OPS_ENABLED
+          value: 'true'
+        - name: BROKER_BOOTSTRAP_SERVERS
+          value: redpanda.agents-dev.svc.cluster.local:9092
+        - name: RAG_QDRANT_HOST
+          value: qdrant
+        - name: RAG_QDRANT_PORT
+          value: '6333'
+        - name: RAG_QDRANT_URL
+          value: http://qdrant:6333
+        - name: RETRIEVAL_PLACEMENT_ENABLED
+          value: 'true'
+        - name: RETRIEVAL_PLACEMENT_SHARD_ID
+          value: retrieval-primary
+        - name: RETRIEVAL_PLACEMENT_CLUSTER_ID
+          value: retrieval-cluster
+        - name: RAG_OBJECT_STORAGE_PROVIDER
+          value: filesystem
+        - name: RAG_OBJECT_STORAGE_BASE_PATH
+          value: /var/lib/rag/raw_storage
+        - name: RAG_GENERATION_ENABLED
+          value: 'false'
+        - name: RAG_OPS_PORT
+          value: '9001'
+        - name: RAG_GRPC_PORT
+          value: '50051'
+        - name: BROKER_TOPIC_PREFIX
+          value: ''
+        - name: RAG_OTEL_ENDPOINT
+          value: ''
+        - name: HTTP_PROXY
+          value: http://10.0.0.1:7890
+        - name: HTTPS_PROXY
+          value: http://10.0.0.1:7890
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,postgres,qdrant,redis,.svc,.cluster.local
+        - name: HF_HOME
+          value: /var/lib/rag/models
+        - name: SENTENCE_TRANSFORMERS_HOME
+          value: /var/lib/rag/models
+        - name: RAG_EMBEDDING_MODEL_CACHE_DIR
+          value: /var/lib/rag/models
+        - name: REDIS_TASK_STATUS_URL
+          value: redis://redis:6379/0
+        - name: RAG_POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: DB_RAG
+        - name: SERVICE_AUTH_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: SERVICE_AUTH_SIGNING_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rag
+        ports:
+        - containerPort: 9001
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9001
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9001
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 5
+        startupProbe:
+          tcpSocket:
+            port: 9001
+          periodSeconds: 5
+          failureThreshold: 120
+        command:
+        - python
+        - -m
+        - manager_service.worker
+      imagePullSecrets:
+      - name: gitlab-registry-qdrant-rag-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-manager
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  selector:
+    app: rag-manager
+  ports:
+  - port: 9001
+    targetPort: 9001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-redis-status-node
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag-redis-status-node
+  template:
+    metadata:
+      labels:
+        app: rag-redis-status-node
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag
+        image: bruceserver.tail3d8162.ts.net:5050/bruce/qdrant_rag_server:dev
+        imagePullPolicy: Always
+        env:
+        - name: RAG_CONFIG_PROFILE
+          value: local
+        - name: RAG_OPS_ENABLED
+          value: 'true'
+        - name: BROKER_BOOTSTRAP_SERVERS
+          value: redpanda.agents-dev.svc.cluster.local:9092
+        - name: RAG_QDRANT_HOST
+          value: qdrant
+        - name: RAG_QDRANT_PORT
+          value: '6333'
+        - name: RAG_QDRANT_URL
+          value: http://qdrant:6333
+        - name: RETRIEVAL_PLACEMENT_ENABLED
+          value: 'true'
+        - name: RETRIEVAL_PLACEMENT_SHARD_ID
+          value: retrieval-primary
+        - name: RETRIEVAL_PLACEMENT_CLUSTER_ID
+          value: retrieval-cluster
+        - name: RAG_OBJECT_STORAGE_PROVIDER
+          value: filesystem
+        - name: RAG_OBJECT_STORAGE_BASE_PATH
+          value: /var/lib/rag/raw_storage
+        - name: RAG_GENERATION_ENABLED
+          value: 'false'
+        - name: RAG_OPS_PORT
+          value: '9011'
+        - name: BROKER_TOPIC_PREFIX
+          value: ''
+        - name: RAG_OTEL_ENDPOINT
+          value: ''
+        - name: HTTP_PROXY
+          value: http://10.0.0.1:7890
+        - name: HTTPS_PROXY
+          value: http://10.0.0.1:7890
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,postgres,qdrant,redis,.svc,.cluster.local
+        - name: HF_HOME
+          value: /var/lib/rag/models
+        - name: SENTENCE_TRANSFORMERS_HOME
+          value: /var/lib/rag/models
+        - name: RAG_EMBEDDING_MODEL_CACHE_DIR
+          value: /var/lib/rag/models
+        - name: REDIS_TASK_STATUS_URL
+          value: redis://redis:6379/0
+        - name: RAG_POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: DB_RAG
+        - name: SERVICE_AUTH_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: SERVICE_AUTH_SIGNING_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rag
+        ports:
+        - containerPort: 9011
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9011
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9011
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 5
+        startupProbe:
+          tcpSocket:
+            port: 9011
+          periodSeconds: 5
+          failureThreshold: 120
+        command:
+        - python
+        - -m
+        - redis_status_node.worker
+      imagePullSecrets:
+      - name: gitlab-registry-qdrant-rag-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-redis-status-node
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  selector:
+    app: rag-redis-status-node
+  ports:
+  - port: 9011
+    targetPort: 9011
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-db-node
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag-db-node
+  template:
+    metadata:
+      labels:
+        app: rag-db-node
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag
+        image: bruceserver.tail3d8162.ts.net:5050/bruce/qdrant_rag_server:dev
+        imagePullPolicy: Always
+        env:
+        - name: RAG_CONFIG_PROFILE
+          value: local
+        - name: RAG_OPS_ENABLED
+          value: 'true'
+        - name: BROKER_BOOTSTRAP_SERVERS
+          value: redpanda.agents-dev.svc.cluster.local:9092
+        - name: RAG_QDRANT_HOST
+          value: qdrant
+        - name: RAG_QDRANT_PORT
+          value: '6333'
+        - name: RAG_QDRANT_URL
+          value: http://qdrant:6333
+        - name: RETRIEVAL_PLACEMENT_ENABLED
+          value: 'true'
+        - name: RETRIEVAL_PLACEMENT_SHARD_ID
+          value: retrieval-primary
+        - name: RETRIEVAL_PLACEMENT_CLUSTER_ID
+          value: retrieval-cluster
+        - name: RAG_OBJECT_STORAGE_PROVIDER
+          value: filesystem
+        - name: RAG_OBJECT_STORAGE_BASE_PATH
+          value: /var/lib/rag/raw_storage
+        - name: RAG_GENERATION_ENABLED
+          value: 'false'
+        - name: RAG_OPS_PORT
+          value: '9010'
+        - name: BROKER_TOPIC_PREFIX
+          value: ''
+        - name: RAG_OTEL_ENDPOINT
+          value: ''
+        - name: HTTP_PROXY
+          value: http://10.0.0.1:7890
+        - name: HTTPS_PROXY
+          value: http://10.0.0.1:7890
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,postgres,qdrant,redis,.svc,.cluster.local
+        - name: HF_HOME
+          value: /var/lib/rag/models
+        - name: SENTENCE_TRANSFORMERS_HOME
+          value: /var/lib/rag/models
+        - name: RAG_EMBEDDING_MODEL_CACHE_DIR
+          value: /var/lib/rag/models
+        - name: REDIS_TASK_STATUS_URL
+          value: redis://redis:6379/0
+        - name: RAG_POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: DB_RAG
+        - name: SERVICE_AUTH_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: SERVICE_AUTH_SIGNING_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rag
+        ports:
+        - containerPort: 9010
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9010
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9010
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 5
+        startupProbe:
+          tcpSocket:
+            port: 9010
+          periodSeconds: 5
+          failureThreshold: 120
+        command:
+        - python
+        - -m
+        - db_node.worker
+      imagePullSecrets:
+      - name: gitlab-registry-qdrant-rag-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-db-node
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  selector:
+    app: rag-db-node
+  ports:
+  - port: 9010
+    targetPort: 9010
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-storage
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag-storage
+  template:
+    metadata:
+      labels:
+        app: rag-storage
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag
+        image: bruceserver.tail3d8162.ts.net:5050/bruce/qdrant_rag_server:dev
+        imagePullPolicy: Always
+        env:
+        - name: RAG_CONFIG_PROFILE
+          value: local
+        - name: RAG_OPS_ENABLED
+          value: 'true'
+        - name: BROKER_BOOTSTRAP_SERVERS
+          value: redpanda.agents-dev.svc.cluster.local:9092
+        - name: RAG_QDRANT_HOST
+          value: qdrant
+        - name: RAG_QDRANT_PORT
+          value: '6333'
+        - name: RAG_QDRANT_URL
+          value: http://qdrant:6333
+        - name: RETRIEVAL_PLACEMENT_ENABLED
+          value: 'true'
+        - name: RETRIEVAL_PLACEMENT_SHARD_ID
+          value: retrieval-primary
+        - name: RETRIEVAL_PLACEMENT_CLUSTER_ID
+          value: retrieval-cluster
+        - name: RAG_OBJECT_STORAGE_PROVIDER
+          value: filesystem
+        - name: RAG_OBJECT_STORAGE_BASE_PATH
+          value: /var/lib/rag/raw_storage
+        - name: RAG_GENERATION_ENABLED
+          value: 'false'
+        - name: RAG_OPS_PORT
+          value: '9009'
+        - name: STORAGE_NODE_ROOT
+          value: /var/lib/rag/raw_storage
+        - name: BROKER_TOPIC_PREFIX
+          value: ''
+        - name: RAG_OTEL_ENDPOINT
+          value: ''
+        - name: HTTP_PROXY
+          value: http://10.0.0.1:7890
+        - name: HTTPS_PROXY
+          value: http://10.0.0.1:7890
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,postgres,qdrant,redis,.svc,.cluster.local
+        - name: HF_HOME
+          value: /var/lib/rag/models
+        - name: SENTENCE_TRANSFORMERS_HOME
+          value: /var/lib/rag/models
+        - name: RAG_EMBEDDING_MODEL_CACHE_DIR
+          value: /var/lib/rag/models
+        - name: REDIS_TASK_STATUS_URL
+          value: redis://redis:6379/0
+        - name: RAG_POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: DB_RAG
+        - name: SERVICE_AUTH_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: SERVICE_AUTH_SIGNING_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rag
+        ports:
+        - containerPort: 9009
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9009
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9009
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 5
+        startupProbe:
+          tcpSocket:
+            port: 9009
+          periodSeconds: 5
+          failureThreshold: 120
+        command:
+        - python
+        - -m
+        - storage_node.worker
+      imagePullSecrets:
+      - name: gitlab-registry-qdrant-rag-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-storage
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  selector:
+    app: rag-storage
+  ports:
+  - port: 9009
+    targetPort: 9009
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-task-manager
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag-task-manager
+  template:
+    metadata:
+      labels:
+        app: rag-task-manager
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag
+        image: bruceserver.tail3d8162.ts.net:5050/bruce/qdrant_rag_server:dev
+        imagePullPolicy: Always
+        env:
+        - name: RAG_CONFIG_PROFILE
+          value: local
+        - name: RAG_OPS_ENABLED
+          value: 'true'
+        - name: BROKER_BOOTSTRAP_SERVERS
+          value: redpanda.agents-dev.svc.cluster.local:9092
+        - name: RAG_QDRANT_HOST
+          value: qdrant
+        - name: RAG_QDRANT_PORT
+          value: '6333'
+        - name: RAG_QDRANT_URL
+          value: http://qdrant:6333
+        - name: RETRIEVAL_PLACEMENT_ENABLED
+          value: 'true'
+        - name: RETRIEVAL_PLACEMENT_SHARD_ID
+          value: retrieval-primary
+        - name: RETRIEVAL_PLACEMENT_CLUSTER_ID
+          value: retrieval-cluster
+        - name: RAG_OBJECT_STORAGE_PROVIDER
+          value: filesystem
+        - name: RAG_OBJECT_STORAGE_BASE_PATH
+          value: /var/lib/rag/raw_storage
+        - name: RAG_GENERATION_ENABLED
+          value: 'false'
+        - name: RAG_OPS_PORT
+          value: '9002'
+        - name: BROKER_TOPIC_PREFIX
+          value: ''
+        - name: RAG_OTEL_ENDPOINT
+          value: ''
+        - name: HTTP_PROXY
+          value: http://10.0.0.1:7890
+        - name: HTTPS_PROXY
+          value: http://10.0.0.1:7890
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,postgres,qdrant,redis,.svc,.cluster.local
+        - name: HF_HOME
+          value: /var/lib/rag/models
+        - name: SENTENCE_TRANSFORMERS_HOME
+          value: /var/lib/rag/models
+        - name: RAG_EMBEDDING_MODEL_CACHE_DIR
+          value: /var/lib/rag/models
+        - name: REDIS_TASK_STATUS_URL
+          value: redis://redis:6379/0
+        - name: RAG_POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: DB_RAG
+        - name: SERVICE_AUTH_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: SERVICE_AUTH_SIGNING_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rag
+        ports:
+        - containerPort: 9002
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9002
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9002
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 5
+        startupProbe:
+          tcpSocket:
+            port: 9002
+          periodSeconds: 5
+          failureThreshold: 120
+        command:
+        - python
+        - -m
+        - task_manager_service.worker
+      imagePullSecrets:
+      - name: gitlab-registry-qdrant-rag-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-task-manager
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  selector:
+    app: rag-task-manager
+  ports:
+  - port: 9002
+    targetPort: 9002
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-task-service
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag-task-service
+  template:
+    metadata:
+      labels:
+        app: rag-task-service
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag
+        image: bruceserver.tail3d8162.ts.net:5050/bruce/qdrant_rag_server:dev
+        imagePullPolicy: Always
+        env:
+        - name: RAG_CONFIG_PROFILE
+          value: local
+        - name: RAG_OPS_ENABLED
+          value: 'true'
+        - name: BROKER_BOOTSTRAP_SERVERS
+          value: redpanda.agents-dev.svc.cluster.local:9092
+        - name: RAG_QDRANT_HOST
+          value: qdrant
+        - name: RAG_QDRANT_PORT
+          value: '6333'
+        - name: RAG_QDRANT_URL
+          value: http://qdrant:6333
+        - name: RETRIEVAL_PLACEMENT_ENABLED
+          value: 'true'
+        - name: RETRIEVAL_PLACEMENT_SHARD_ID
+          value: retrieval-primary
+        - name: RETRIEVAL_PLACEMENT_CLUSTER_ID
+          value: retrieval-cluster
+        - name: RAG_OBJECT_STORAGE_PROVIDER
+          value: filesystem
+        - name: RAG_OBJECT_STORAGE_BASE_PATH
+          value: /var/lib/rag/raw_storage
+        - name: RAG_GENERATION_ENABLED
+          value: 'false'
+        - name: RAG_OPS_PORT
+          value: '9003'
+        - name: BROKER_TOPIC_PREFIX
+          value: ''
+        - name: RAG_OTEL_ENDPOINT
+          value: ''
+        - name: HTTP_PROXY
+          value: http://10.0.0.1:7890
+        - name: HTTPS_PROXY
+          value: http://10.0.0.1:7890
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,postgres,qdrant,redis,.svc,.cluster.local
+        - name: HF_HOME
+          value: /var/lib/rag/models
+        - name: SENTENCE_TRANSFORMERS_HOME
+          value: /var/lib/rag/models
+        - name: RAG_EMBEDDING_MODEL_CACHE_DIR
+          value: /var/lib/rag/models
+        - name: REDIS_TASK_STATUS_URL
+          value: redis://redis:6379/0
+        - name: RAG_POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: DB_RAG
+        - name: SERVICE_AUTH_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: SERVICE_AUTH_SIGNING_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rag
+        ports:
+        - containerPort: 9003
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9003
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9003
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 5
+        startupProbe:
+          tcpSocket:
+            port: 9003
+          periodSeconds: 5
+          failureThreshold: 120
+        command:
+        - python
+        - -m
+        - task_service.worker
+      imagePullSecrets:
+      - name: gitlab-registry-qdrant-rag-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-task-service
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  selector:
+    app: rag-task-service
+  ports:
+  - port: 9003
+    targetPort: 9003
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-project
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag-project
+  template:
+    metadata:
+      labels:
+        app: rag-project
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag
+        image: bruceserver.tail3d8162.ts.net:5050/bruce/qdrant_rag_server:dev
+        imagePullPolicy: Always
+        env:
+        - name: RAG_CONFIG_PROFILE
+          value: local
+        - name: RAG_OPS_ENABLED
+          value: 'true'
+        - name: BROKER_BOOTSTRAP_SERVERS
+          value: redpanda.agents-dev.svc.cluster.local:9092
+        - name: RAG_QDRANT_HOST
+          value: qdrant
+        - name: RAG_QDRANT_PORT
+          value: '6333'
+        - name: RAG_QDRANT_URL
+          value: http://qdrant:6333
+        - name: RETRIEVAL_PLACEMENT_ENABLED
+          value: 'true'
+        - name: RETRIEVAL_PLACEMENT_SHARD_ID
+          value: retrieval-primary
+        - name: RETRIEVAL_PLACEMENT_CLUSTER_ID
+          value: retrieval-cluster
+        - name: RAG_OBJECT_STORAGE_PROVIDER
+          value: filesystem
+        - name: RAG_OBJECT_STORAGE_BASE_PATH
+          value: /var/lib/rag/raw_storage
+        - name: RAG_GENERATION_ENABLED
+          value: 'false'
+        - name: RAG_OPS_PORT
+          value: '9004'
+        - name: BROKER_TOPIC_PREFIX
+          value: ''
+        - name: RAG_OTEL_ENDPOINT
+          value: ''
+        - name: HTTP_PROXY
+          value: http://10.0.0.1:7890
+        - name: HTTPS_PROXY
+          value: http://10.0.0.1:7890
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,postgres,qdrant,redis,.svc,.cluster.local
+        - name: HF_HOME
+          value: /var/lib/rag/models
+        - name: SENTENCE_TRANSFORMERS_HOME
+          value: /var/lib/rag/models
+        - name: RAG_EMBEDDING_MODEL_CACHE_DIR
+          value: /var/lib/rag/models
+        - name: REDIS_TASK_STATUS_URL
+          value: redis://redis:6379/0
+        - name: RAG_POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: DB_RAG
+        - name: SERVICE_AUTH_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: SERVICE_AUTH_SIGNING_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rag
+        ports:
+        - containerPort: 9004
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9004
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9004
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 5
+        startupProbe:
+          tcpSocket:
+            port: 9004
+          periodSeconds: 5
+          failureThreshold: 120
+        command:
+        - python
+        - -m
+        - project_service.domain_app
+      imagePullSecrets:
+      - name: gitlab-registry-qdrant-rag-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-project
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  selector:
+    app: rag-project
+  ports:
+  - port: 9004
+    targetPort: 9004
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-workflow-log
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag-workflow-log
+  template:
+    metadata:
+      labels:
+        app: rag-workflow-log
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag
+        image: bruceserver.tail3d8162.ts.net:5050/bruce/qdrant_rag_server:dev
+        imagePullPolicy: Always
+        env:
+        - name: RAG_CONFIG_PROFILE
+          value: local
+        - name: RAG_OPS_ENABLED
+          value: 'true'
+        - name: BROKER_BOOTSTRAP_SERVERS
+          value: redpanda.agents-dev.svc.cluster.local:9092
+        - name: RAG_QDRANT_HOST
+          value: qdrant
+        - name: RAG_QDRANT_PORT
+          value: '6333'
+        - name: RAG_QDRANT_URL
+          value: http://qdrant:6333
+        - name: RETRIEVAL_PLACEMENT_ENABLED
+          value: 'true'
+        - name: RETRIEVAL_PLACEMENT_SHARD_ID
+          value: retrieval-primary
+        - name: RETRIEVAL_PLACEMENT_CLUSTER_ID
+          value: retrieval-cluster
+        - name: RAG_OBJECT_STORAGE_PROVIDER
+          value: filesystem
+        - name: RAG_OBJECT_STORAGE_BASE_PATH
+          value: /var/lib/rag/raw_storage
+        - name: RAG_GENERATION_ENABLED
+          value: 'false'
+        - name: RAG_OPS_PORT
+          value: '9005'
+        - name: BROKER_TOPIC_PREFIX
+          value: ''
+        - name: RAG_OTEL_ENDPOINT
+          value: ''
+        - name: HTTP_PROXY
+          value: http://10.0.0.1:7890
+        - name: HTTPS_PROXY
+          value: http://10.0.0.1:7890
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,postgres,qdrant,redis,.svc,.cluster.local
+        - name: HF_HOME
+          value: /var/lib/rag/models
+        - name: SENTENCE_TRANSFORMERS_HOME
+          value: /var/lib/rag/models
+        - name: RAG_EMBEDDING_MODEL_CACHE_DIR
+          value: /var/lib/rag/models
+        - name: REDIS_TASK_STATUS_URL
+          value: redis://redis:6379/0
+        - name: RAG_POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: DB_RAG
+        - name: SERVICE_AUTH_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: SERVICE_AUTH_SIGNING_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rag
+        ports:
+        - containerPort: 9005
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9005
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9005
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 5
+        startupProbe:
+          tcpSocket:
+            port: 9005
+          periodSeconds: 5
+          failureThreshold: 120
+        command:
+        - python
+        - -m
+        - workflow_log_service.worker
+      imagePullSecrets:
+      - name: gitlab-registry-qdrant-rag-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-workflow-log
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  selector:
+    app: rag-workflow-log
+  ports:
+  - port: 9005
+    targetPort: 9005
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-ingestion
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag-ingestion
+  template:
+    metadata:
+      labels:
+        app: rag-ingestion
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag
+        image: bruceserver.tail3d8162.ts.net:5050/bruce/qdrant_rag_server:dev
+        imagePullPolicy: Always
+        env:
+        - name: RAG_CONFIG_PROFILE
+          value: local
+        - name: RAG_OPS_ENABLED
+          value: 'true'
+        - name: BROKER_BOOTSTRAP_SERVERS
+          value: redpanda.agents-dev.svc.cluster.local:9092
+        - name: RAG_QDRANT_HOST
+          value: qdrant
+        - name: RAG_QDRANT_PORT
+          value: '6333'
+        - name: RAG_QDRANT_URL
+          value: http://qdrant:6333
+        - name: RETRIEVAL_PLACEMENT_ENABLED
+          value: 'true'
+        - name: RETRIEVAL_PLACEMENT_SHARD_ID
+          value: retrieval-primary
+        - name: RETRIEVAL_PLACEMENT_CLUSTER_ID
+          value: retrieval-cluster
+        - name: RAG_OBJECT_STORAGE_PROVIDER
+          value: filesystem
+        - name: RAG_OBJECT_STORAGE_BASE_PATH
+          value: /var/lib/rag/raw_storage
+        - name: RAG_GENERATION_ENABLED
+          value: 'false'
+        - name: RAG_OPS_PORT
+          value: '9006'
+        - name: BROKER_TOPIC_PREFIX
+          value: ''
+        - name: RAG_OTEL_ENDPOINT
+          value: ''
+        - name: HTTP_PROXY
+          value: http://10.0.0.1:7890
+        - name: HTTPS_PROXY
+          value: http://10.0.0.1:7890
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,postgres,qdrant,redis,.svc,.cluster.local
+        - name: HF_HOME
+          value: /var/lib/rag/models
+        - name: SENTENCE_TRANSFORMERS_HOME
+          value: /var/lib/rag/models
+        - name: RAG_EMBEDDING_MODEL_CACHE_DIR
+          value: /var/lib/rag/models
+        - name: REDIS_TASK_STATUS_URL
+          value: redis://redis:6379/0
+        - name: RAG_POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: DB_RAG
+        - name: SERVICE_AUTH_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: SERVICE_AUTH_SIGNING_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rag
+        ports:
+        - containerPort: 9006
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9006
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9006
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 5
+        startupProbe:
+          tcpSocket:
+            port: 9006
+          periodSeconds: 5
+          failureThreshold: 120
+        command:
+        - python
+        - -m
+        - ingestion_service.server.worker
+      imagePullSecrets:
+      - name: gitlab-registry-qdrant-rag-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-ingestion
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  selector:
+    app: rag-ingestion
+  ports:
+  - port: 9006
+    targetPort: 9006
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-retrieval
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag-retrieval
+  template:
+    metadata:
+      labels:
+        app: rag-retrieval
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag
+        image: bruceserver.tail3d8162.ts.net:5050/bruce/qdrant_rag_server:dev
+        imagePullPolicy: Always
+        env:
+        - name: RAG_CONFIG_PROFILE
+          value: local
+        - name: RAG_OPS_ENABLED
+          value: 'true'
+        - name: BROKER_BOOTSTRAP_SERVERS
+          value: redpanda.agents-dev.svc.cluster.local:9092
+        - name: RAG_QDRANT_HOST
+          value: qdrant
+        - name: RAG_QDRANT_PORT
+          value: '6333'
+        - name: RAG_QDRANT_URL
+          value: http://qdrant:6333
+        - name: RETRIEVAL_PLACEMENT_ENABLED
+          value: 'true'
+        - name: RETRIEVAL_PLACEMENT_SHARD_ID
+          value: retrieval-primary
+        - name: RETRIEVAL_PLACEMENT_CLUSTER_ID
+          value: retrieval-cluster
+        - name: RAG_OBJECT_STORAGE_PROVIDER
+          value: filesystem
+        - name: RAG_OBJECT_STORAGE_BASE_PATH
+          value: /var/lib/rag/raw_storage
+        - name: RAG_GENERATION_ENABLED
+          value: 'false'
+        - name: RAG_OPS_PORT
+          value: '9007'
+        - name: BROKER_TOPIC_PREFIX
+          value: ''
+        - name: RAG_OTEL_ENDPOINT
+          value: ''
+        - name: HTTP_PROXY
+          value: http://10.0.0.1:7890
+        - name: HTTPS_PROXY
+          value: http://10.0.0.1:7890
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,postgres,qdrant,redis,.svc,.cluster.local
+        - name: HF_HOME
+          value: /var/lib/rag/models
+        - name: SENTENCE_TRANSFORMERS_HOME
+          value: /var/lib/rag/models
+        - name: RAG_EMBEDDING_MODEL_CACHE_DIR
+          value: /var/lib/rag/models
+        - name: REDIS_TASK_STATUS_URL
+          value: redis://redis:6379/0
+        - name: RAG_POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: DB_RAG
+        - name: SERVICE_AUTH_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: SERVICE_AUTH_SIGNING_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rag
+        ports:
+        - containerPort: 9007
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9007
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9007
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 5
+        startupProbe:
+          tcpSocket:
+            port: 9007
+          periodSeconds: 5
+          failureThreshold: 120
+        command:
+        - python
+        - -m
+        - retrieval_service.server.worker
+      imagePullSecrets:
+      - name: gitlab-registry-qdrant-rag-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-retrieval
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  selector:
+    app: rag-retrieval
+  ports:
+  - port: 9007
+    targetPort: 9007
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-retrieval-index
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag-retrieval-index
+  template:
+    metadata:
+      labels:
+        app: rag-retrieval-index
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag
+        image: bruceserver.tail3d8162.ts.net:5050/bruce/qdrant_rag_server:dev
+        imagePullPolicy: Always
+        env:
+        - name: RAG_CONFIG_PROFILE
+          value: local
+        - name: RAG_OPS_ENABLED
+          value: 'true'
+        - name: BROKER_BOOTSTRAP_SERVERS
+          value: redpanda.agents-dev.svc.cluster.local:9092
+        - name: RAG_QDRANT_HOST
+          value: qdrant
+        - name: RAG_QDRANT_PORT
+          value: '6333'
+        - name: RAG_QDRANT_URL
+          value: http://qdrant:6333
+        - name: RETRIEVAL_PLACEMENT_ENABLED
+          value: 'true'
+        - name: RETRIEVAL_PLACEMENT_SHARD_ID
+          value: retrieval-primary
+        - name: RETRIEVAL_PLACEMENT_CLUSTER_ID
+          value: retrieval-cluster
+        - name: RAG_OBJECT_STORAGE_PROVIDER
+          value: filesystem
+        - name: RAG_OBJECT_STORAGE_BASE_PATH
+          value: /var/lib/rag/raw_storage
+        - name: RAG_GENERATION_ENABLED
+          value: 'false'
+        - name: RAG_OPS_PORT
+          value: '9008'
+        - name: BROKER_TOPIC_PREFIX
+          value: ''
+        - name: RAG_OTEL_ENDPOINT
+          value: ''
+        - name: HTTP_PROXY
+          value: http://10.0.0.1:7890
+        - name: HTTPS_PROXY
+          value: http://10.0.0.1:7890
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,postgres,qdrant,redis,.svc,.cluster.local
+        - name: HF_HOME
+          value: /var/lib/rag/models
+        - name: SENTENCE_TRANSFORMERS_HOME
+          value: /var/lib/rag/models
+        - name: RAG_EMBEDDING_MODEL_CACHE_DIR
+          value: /var/lib/rag/models
+        - name: REDIS_TASK_STATUS_URL
+          value: redis://redis:6379/0
+        - name: RAG_POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: DB_RAG
+        - name: SERVICE_AUTH_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: SERVICE_AUTH_SIGNING_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rag
+        ports:
+        - containerPort: 9008
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9008
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9008
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 5
+        startupProbe:
+          tcpSocket:
+            port: 9008
+          periodSeconds: 5
+          failureThreshold: 120
+        command:
+        - python
+        - -m
+        - retrieval_service.indexing.worker
+      imagePullSecrets:
+      - name: gitlab-registry-qdrant-rag-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-retrieval-index
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  selector:
+    app: rag-retrieval-index
+  ports:
+  - port: 9008
+    targetPort: 9008
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-memory
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag-memory
+  template:
+    metadata:
+      labels:
+        app: rag-memory
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag
+        image: bruceserver.tail3d8162.ts.net:5050/bruce/qdrant_rag_server:dev
+        imagePullPolicy: Always
+        env:
+        - name: RAG_CONFIG_PROFILE
+          value: local
+        - name: RAG_OPS_ENABLED
+          value: 'true'
+        - name: BROKER_BOOTSTRAP_SERVERS
+          value: redpanda.agents-dev.svc.cluster.local:9092
+        - name: RAG_QDRANT_HOST
+          value: qdrant
+        - name: RAG_QDRANT_PORT
+          value: '6333'
+        - name: RAG_QDRANT_URL
+          value: http://qdrant:6333
+        - name: RETRIEVAL_PLACEMENT_ENABLED
+          value: 'true'
+        - name: RETRIEVAL_PLACEMENT_SHARD_ID
+          value: retrieval-primary
+        - name: RETRIEVAL_PLACEMENT_CLUSTER_ID
+          value: retrieval-cluster
+        - name: RAG_OBJECT_STORAGE_PROVIDER
+          value: filesystem
+        - name: RAG_OBJECT_STORAGE_BASE_PATH
+          value: /var/lib/rag/raw_storage
+        - name: RAG_GENERATION_ENABLED
+          value: 'false'
+        - name: RAG_OPS_PORT
+          value: '9012'
+        - name: MEMORY_IDENTITY_MODE
+          value: broker
+        - name: MEMORY_INDEX_MODE
+          value: broker
+        - name: MEMORY_SEARCH_MODE
+          value: broker
+        - name: BROKER_TOPIC_PREFIX
+          value: ''
+        - name: RAG_OTEL_ENDPOINT
+          value: ''
+        - name: HTTP_PROXY
+          value: http://10.0.0.1:7890
+        - name: HTTPS_PROXY
+          value: http://10.0.0.1:7890
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,postgres,qdrant,redis,.svc,.cluster.local
+        - name: HF_HOME
+          value: /var/lib/rag/models
+        - name: SENTENCE_TRANSFORMERS_HOME
+          value: /var/lib/rag/models
+        - name: RAG_EMBEDDING_MODEL_CACHE_DIR
+          value: /var/lib/rag/models
+        - name: SERVICE_AUTH_TOKEN_ISSUER
+          value: simple-agent-local
+        - name: REDIS_TASK_STATUS_URL
+          value: redis://redis:6379/0
+        - name: RAG_POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: DB_RAG
+        - name: SERVICE_AUTH_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agents-runtime
+              key: SERVICE_AUTH_SIGNING_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rag
+        ports:
+        - containerPort: 9012
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9012
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9012
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 5
+        startupProbe:
+          tcpSocket:
+            port: 9012
+          periodSeconds: 5
+          failureThreshold: 120
+        command:
+        - python
+        - -m
+        - memory_service.worker
+      imagePullSecrets:
+      - name: gitlab-registry-qdrant-rag-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-memory
+  namespace: agents-dev
+  labels:
+    app.kubernetes.io/part-of: agent-platform-dev
+spec:
+  selector:
+    app: rag-memory
+  ports:
+  - port: 9012
+    targetPort: 9012
