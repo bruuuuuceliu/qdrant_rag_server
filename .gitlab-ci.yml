@@ -11,6 +11,9 @@ default:
   tags:
   - agent-build
   interruptible: false
+  cache:
+    key: kubectl-v1
+    paths: [.cache/kubectl-*]
 variables:
   BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
   KUBECTL_VERSION: v1.31.14
