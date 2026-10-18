@@ -1,0 +1,13 @@
+# resource container image-component; must match the Rancher workloads
+deployment/rag-manager rag app
+deployment/rag-redis-status-node rag app
+deployment/rag-db-node rag app
+deployment/rag-storage rag app
+deployment/rag-task-manager rag app
+deployment/rag-task-service rag app
+deployment/rag-project rag app
+deployment/rag-workflow-log rag app
+deployment/rag-ingestion rag app
+deployment/rag-retrieval rag app
+deployment/rag-retrieval-index rag app
+deployment/rag-memory rag app
