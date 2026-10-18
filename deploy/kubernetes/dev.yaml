@@ -144,8 +144,12 @@ spec:
   selector:
     app: rag-manager
   ports:
-  - port: 9001
+  - name: ops
+    port: 9001
     targetPort: 9001
+  - name: grpc
+    port: 50051
+    targetPort: 50051
 ---
 apiVersion: apps/v1
 kind: Deployment

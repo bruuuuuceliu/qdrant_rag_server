@@ -33,8 +33,6 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
 
 WORKDIR /app
 
-COPY --chown=rag:rag . /app
-
 # Optional CPU-only torch. Keep before `pip install .` so the CUDA wheel is not
 # re-resolved when the package install runs.
 ARG INSTALL_CPU_ONLY_TORCH=0
@@ -43,8 +41,13 @@ RUN if [ "$INSTALL_CPU_ONLY_TORCH" = "1" ]; then \
             --no-cache-dir torch; \
     fi
 
+COPY pyproject.toml /app/pyproject.toml
 RUN python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install --no-cache-dir ".[tracing]"
+    && python -c "import tomllib; p=tomllib.load(open('pyproject.toml','rb'))['project']; print('\n'.join(p['dependencies'] + p['optional-dependencies']['tracing'] + p['optional-dependencies']['sparse']))" > /tmp/runtime-requirements.txt \
+    && python -m pip install --no-cache-dir -r /tmp/runtime-requirements.txt
+
+COPY --chown=rag:rag . /app
+RUN python -m pip install --no-deps --no-build-isolation .
 
 # Optional embedding-model pre-cache (see ops runbook §5 for the model choice).
 ARG EMBEDDING_MODEL=""
