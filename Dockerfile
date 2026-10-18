@@ -18,6 +18,8 @@ FROM python:3.12-slim AS runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=8 \
     HF_HOME=/home/rag/.cache/huggingface \
     SENTENCE_TRANSFORMERS_HOME=/home/rag/.cache/huggingface/sentence_transformers \
     RAG_EMBEDDING_MODEL_CACHE_DIR=/home/rag/.cache/huggingface
