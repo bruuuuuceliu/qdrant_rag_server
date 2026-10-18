@@ -25,8 +25,9 @@ ENV PYTHONUNBUFFERED=1 \
 # Runtime system libraries: torch CPU inference needs libgomp; curl is used by
 # compose health checks against /healthz + /readyz; postgresql-client provides
 # pg_dump for the backup service.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 curl postgresql-client \
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends libgomp1 curl postgresql-client \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --create-home --home /home/rag rag
 
